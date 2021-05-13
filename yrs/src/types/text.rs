@@ -17,11 +17,13 @@ impl Text {
                 let mut start = inner.start.get();
                 let mut s = String::new();
                 while let Some(a) = start.as_ref() {
-                    let item = tr.store.blocks.get_item(&a);
-                    if let block::ItemContent::String(item_string) = &item.content {
-                        s.push_str(item_string);
+                    let blocks = tr.store.blocks.get(&a.id.client).unwrap();
+                    if let block::Block::Item(item) = &blocks.list[a.pivot as usize] {
+                        if let block::ItemContent::String(item_string) = &item.content {
+                            s.push_str(item_string);
+                        }
+                        start = item.right
                     }
-                    start = item.right
                 }
                 Some(s)
             })
@@ -39,7 +41,10 @@ impl Text {
                 let mut curr_pos = 1;
                 while curr_pos != pos {
                     if let Some(a) = ptr.as_ref() {
-                        ptr = tr.store.blocks.get_item(a).right;
+                        ptr = {
+                            let blocks = tr.store.blocks.get(&a.id.client).unwrap();
+                            blocks.list[a.pivot as usize].as_item().unwrap().right
+                        };
                         curr_pos += 1;
                     } else {
                         // todo: throw error here

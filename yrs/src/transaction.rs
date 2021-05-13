@@ -76,13 +76,13 @@ impl<'a> Transaction<'a> {
 
         let clock_end = clock_start + len;
         if let Some(mut index) = self.find_index_clean_start(client, clock_start) {
-            let mut blocks = self.store.blocks.clients.get(client).unwrap();
+            let mut blocks = self.store.blocks.get(client).unwrap();
             let mut block = &blocks.list[index];
 
             while index < blocks.list.len() && block.id().clock < clock_end {
                 if clock_end < block.clock_end() {
                     self.find_index_clean_start(client, clock_start);
-                    blocks = self.store.blocks.clients.get(client).unwrap();
+                    blocks = self.store.blocks.get(client).unwrap();
                     block = &blocks.list[index];
                 }
 
@@ -99,7 +99,7 @@ impl<'a> Transaction<'a> {
         let mut index = 0;
 
         {
-            let blocks = self.store.blocks.clients.get_mut(client)?;
+            let mut blocks = self.store.blocks.get_mut(client)?;
             index = blocks.find_pivot(clock)?;
             let block = &mut blocks.list[index];
             if let Some(item) = block.as_item_mut() {
@@ -127,7 +127,7 @@ impl<'a> Transaction<'a> {
         Some(index)
     }
 
-    fn rewire(&mut self, right_ptr: &BlockPtr, id: ID) {
+    fn rewire(&self, right_ptr: &BlockPtr, id: ID) {
         // if we had split an item, it was inserted as a new right. We need to rewrite pointers
         // of the old right to point into the new_item on its left:
         //
@@ -142,12 +142,7 @@ impl<'a> Transaction<'a> {
         //  | LEFT |     | ITEM |     | RIGHT |
         //  +------+ <-- +------+ <-- +-------+
 
-        let blocks = self
-            .store
-            .blocks
-            .clients
-            .get_mut(&right_ptr.id.client)
-            .unwrap();
+        let mut blocks = self.store.blocks.get_mut(&right_ptr.id.client).unwrap();
         let right = &mut blocks.list[right_ptr.pivot as usize];
         if let Some(right_item) = right.as_item_mut() {
             right_item.left = Some(BlockPtr::from(id))
@@ -159,7 +154,7 @@ impl<'a> Transaction<'a> {
     pub fn apply_delete(&mut self, id_set: &IdSet) -> IdSet {
         let mut unapplied = IdSet::new();
         for (client, ranges) in id_set.iter() {
-            let mut blocks = self.store.blocks.clients.get_mut(client).unwrap();
+            let mut blocks = self.store.blocks.get_mut(client).unwrap();
             let state = blocks.get_state();
 
             for range in ranges.iter() {
@@ -184,7 +179,6 @@ impl<'a> Transaction<'a> {
                                 blocks.list.insert(index, Block::Item(right));
                                 if let Some(right_ptr) = right_ptr {
                                     self.rewire(&right_ptr, id);
-                                    blocks = self.store.blocks.clients.get_mut(client).unwrap();
                                     // just to make the borrow checker happy
                                 }
                             }
@@ -208,8 +202,6 @@ impl<'a> Transaction<'a> {
                                                 }
                                             }
                                             self.delete(&ptr);
-                                            blocks =
-                                                self.store.blocks.clients.get_mut(client).unwrap();
                                             // just to make the borrow checker happy
                                         }
                                     } else {
@@ -228,31 +220,33 @@ impl<'a> Transaction<'a> {
     }
 
     fn delete(&mut self, ptr: &BlockPtr) {
-        let item = self.store.blocks.get_item_mut(&ptr);
-        if !item.deleted {
-            //TODO:
-            // if let Some(parent) = self.store.get_type(&item.parent) {
-            //     // adjust the length of parent
-            //     if (this.countable && this.parentSub === null) {
-            //         parent._length -= this.length
-            //     }
-            // }
-            item.deleted = true;
-            self.delete_set.insert(item.id.clone(), item.len());
-            // addChangedTypeToTransaction(transaction, item.type, item.parentSub)
-            if item.id.clock < self.timestamp.get_state(item.id.client) {
-                let set = self.changed.entry(item.parent.clone()).or_default();
-                set.insert(item.parent_sub.clone());
-            }
-            // item.content.delete(transaction)
-            match &mut item.content {
-                ItemContent::Doc(s, value) => {
-                    todo!()
+        let mut blocks = self.store.blocks.get_mut(&ptr.id.client).unwrap();
+        if let Block::Item(item) = &mut blocks.list[ptr.pivot as usize] {
+            if !item.deleted {
+                //TODO:
+                // if let Some(parent) = self.store.get_type(&item.parent) {
+                //     // adjust the length of parent
+                //     if (this.countable && this.parentSub === null) {
+                //         parent._length -= this.length
+                //     }
+                // }
+                item.deleted = true;
+                self.delete_set.insert(item.id.clone(), item.len());
+                // addChangedTypeToTransaction(transaction, item.type, item.parentSub)
+                if item.id.clock < self.timestamp.get_state(item.id.client) {
+                    let set = self.changed.entry(item.parent.clone()).or_default();
+                    set.insert(item.parent_sub.clone());
                 }
-                ItemContent::Type(inner) => {
-                    todo!()
+                // item.content.delete(transaction)
+                match &mut item.content {
+                    ItemContent::Doc(s, value) => {
+                        todo!()
+                    }
+                    ItemContent::Type(inner) => {
+                        todo!()
+                    }
+                    _ => {} // do nothing
                 }
-                _ => {} // do nothing
             }
         }
     }

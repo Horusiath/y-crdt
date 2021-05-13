@@ -1,8 +1,9 @@
 use crate::block::{HAS_ORIGIN, HAS_RIGHT_ORIGIN};
-use crate::block_store::{BlockStore, ClientBlockList, StateVector};
+use crate::block_store::{BlockStore, StateVector};
 use crate::updates::decoder::Decoder;
 use crate::updates::encoder::Encoder;
 use crate::{block, types};
+use std::cell::{Ref, RefMut};
 use std::collections::HashMap;
 
 pub struct Store {
@@ -30,7 +31,11 @@ impl Store {
             types::TypePtr::NamedRef(name_ref) => self.types.get(*name_ref as usize).map(|t| &t.0),
             types::TypePtr::Id(id) => {
                 // @todo the item might not exist
-                if let block::ItemContent::Type(t) = &self.blocks.get_item(id).content {
+                let blocks = self.blocks.get(&id.id.client)?;
+                let blocks = Ref::leak(blocks);
+                if let block::ItemContent::Type(t) =
+                    &blocks.list[id.pivot as usize].as_item()?.content
+                {
                     Some(t)
                 } else {
                     None
@@ -75,7 +80,14 @@ impl Store {
         let parent = self.get_type(&pos.parent).unwrap();
         let left = pos.after;
         let right = match pos.after.as_ref() {
-            Some(left_id) => self.blocks.get_item(left_id).right,
+            Some(left_id) => {
+                let blocks = self.blocks.get(&left_id.id.client).unwrap();
+                if let block::Block::Item(i) = &blocks.list[left_id.pivot as usize] {
+                    i.right
+                } else {
+                    None
+                }
+            }
             None => parent.start.get(),
         };
         let id = block::ID {
@@ -84,7 +96,7 @@ impl Store {
         };
         let pivot = self
             .blocks
-            .get_client_blocks_mut(self.client_id)
+            .get_client_blocks_mut(self.client_id, 0)
             .integrated_len as u32;
         let item = block::Item {
             id,
@@ -98,7 +110,7 @@ impl Store {
             parent_sub: None,
         };
         item.integrate(self, pivot as u32);
-        let local_block_list = self.blocks.get_client_blocks_mut(self.client_id);
+        let mut local_block_list = self.blocks.get_client_blocks_mut(self.client_id, 0);
         local_block_list.list.push(block::Block::Item(item));
         local_block_list.integrated_len += 1;
     }
@@ -117,7 +129,19 @@ impl Store {
                 let (origin, left) = if info & HAS_ORIGIN == HAS_ORIGIN {
                     let id = decoder.read_left_id();
                     let ptr = self.blocks.find_item_ptr(&id);
-                    parent = Some(self.blocks.get_item(&ptr).parent.clone());
+                    parent = {
+                        if let Some(blocks) = self.blocks.get(&ptr.id.client) {
+                            Some(
+                                blocks.list[ptr.pivot as usize]
+                                    .as_item()
+                                    .unwrap()
+                                    .parent
+                                    .clone(),
+                            )
+                        } else {
+                            None
+                        }
+                    };
                     (Some(id), Some(ptr))
                 } else {
                     (None, None)
@@ -127,7 +151,19 @@ impl Store {
                     let ptr = self.blocks.find_item_ptr(&id);
                     if info & HAS_ORIGIN != HAS_ORIGIN {
                         // only set parent if not already done so above
-                        parent = Some(self.blocks.get_item(&ptr).parent.clone());
+                        parent = {
+                            if let Some(blocks) = self.blocks.get(&ptr.id.client) {
+                                Some(
+                                    blocks.list[ptr.pivot as usize]
+                                        .as_item()
+                                        .unwrap()
+                                        .parent
+                                        .clone(),
+                                )
+                            } else {
+                                None
+                            }
+                        };
                     }
                     (Some(id), Some(ptr))
                 } else {
@@ -161,9 +197,9 @@ impl Store {
                 item.integrate(self, clock); // todo compute pivot beforehand
                                              // add item to struct list
                                              // @todo try borow of index and generalize in ss
-                let client_struct_list = self
+                let mut client_struct_list = self
                     .blocks
-                    .get_client_blocks_with_capacity_mut(client, number_of_structs as usize);
+                    .get_client_blocks_mut(client, number_of_structs as usize);
                 client_struct_list.list.push(block::Block::Item(item));
                 client_struct_list.integrated_len += 1;
 
@@ -176,9 +212,8 @@ impl Store {
     pub fn write_blocks<E: Encoder>(&self, encoder: &mut E, sv: &StateVector) {
         // turns this into a vector because at some point we want to sort this
         // @todo Sort for better perf!
-        let structs: Vec<(&u64, &ClientBlockList)> = self
+        let structs: Vec<(_, _)> = self
             .blocks
-            .clients
             .iter()
             // @todo this could be optimized
             .filter(|(client_id, sl)| sv.get_state(**client_id) < sl.get_state())

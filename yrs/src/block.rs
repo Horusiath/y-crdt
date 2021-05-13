@@ -185,13 +185,19 @@ impl Item {
         // No conflict resolution yet..
         // We only implement the reconnection part:
         if let Some(right_id) = self.right {
-            let right = blocks.get_item_mut(&right_id);
-            right.left = Some(BlockPtr { pivot, id: self.id });
+            if let Some(mut blocks) = blocks.get_mut(&right_id.id.client) {
+                if let Block::Item(right) = &mut blocks.list[right_id.pivot as usize] {
+                    right.left = Some(BlockPtr { pivot, id: self.id });
+                }
+            }
         }
         match self.left {
             Some(left_id) => {
-                let left = blocks.get_item_mut(&left_id);
-                left.right = Some(BlockPtr { pivot, id: self.id });
+                if let Some(mut blocks) = blocks.get_mut(&left_id.id.client) {
+                    if let Block::Item(left) = &mut blocks.list[left_id.pivot as usize] {
+                        left.right = Some(BlockPtr { pivot, id: self.id });
+                    }
+                }
             }
             None => {
                 let parent_type = store.init_type_from_ptr(&self.parent).unwrap();
