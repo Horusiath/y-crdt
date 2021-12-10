@@ -50,7 +50,7 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
     })
   }
 
-  await runBenchmark('[B1.1] Append N characters', filter, benchmarkName => {
+ /* await runBenchmark('[B1.1] Append N characters', filter, benchmarkName => {
     const string = prng.word(gen, N, N)
     benchmarkTemplate(
       benchmarkName,
@@ -150,7 +150,7 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
         t.assert(doc1.getText() === '')
       }
     )
-  })
+  })*/
 
   await runBenchmark('[B1.7] Insert/Delete strings at random positions', filter, benchmarkName => {
     // calculate random input
@@ -162,10 +162,12 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
         const insert = prng.word(gen, 2, 10)
         string = string.slice(0, index) + insert + string.slice(index)
         input.push({ index, insert })
+        console.log('txt.insert(&mut txn, ' + index + ', "'+ insert +'");')
       } else {
         const deleteCount = prng.uint32(gen, 1, math.min(9, string.length - index))
         string = string.slice(0, index) + string.slice(index + deleteCount)
         input.push({ index, deleteCount })
+        console.log('txt.remove_range(&mut txn, ' + index + ', "'+ deleteCount +'");')
       }
     }
     benchmarkTemplate(
@@ -187,7 +189,7 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
 
   // benchmarks with numbers begin here
 
-  await runBenchmark('[B1.8] Append N numbers', filter, benchmarkName => {
+ /* await runBenchmark('[B1.8] Append N numbers', filter, benchmarkName => {
     const numbers = Array.from({ length: N }).map(() => prng.uint32(gen, 0, 0x7fffffff))
     benchmarkTemplate(
       benchmarkName,
@@ -226,7 +228,7 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
         t.compare(doc1.getArray(), numbersReversed)
       }
     )
-  })
+  })*/
 
   await runBenchmark('[B1.11] Insert N numbers at random positions', filter, benchmarkName => {
     // calculate random input
@@ -237,12 +239,14 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
       const insert = prng.uint32(gen, 0, 0x7fffffff)
       numbers.splice(index, 0, insert)
       input.push({ index, insert })
+      console.log('array.insert(&mut txn, ' + index + ', ' + insert + ');')
     }
 
     benchmarkTemplate(
       benchmarkName,
       input,
-      (doc, op, i) => { doc.insertArray(op.index, [op.insert]) },
+      (doc, op, i) => {
+        doc.insertArray(op.index, [op.insert]) },
       (doc1, doc2) => {
         t.compare(doc1.getArray(), doc2.getArray())
         t.compare(doc1.getArray(), numbers)

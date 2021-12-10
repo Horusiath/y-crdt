@@ -1,0 +1,13 @@
+{
+  "6000": {
+    "Version": {
+      "yjs": "13.5.12"
+    },
+    "Bundle size": {
+      "yjs": "29952 bytes"
+    },
+    "Bundle size (gzipped)": {
+      "yjs": "8033 bytes"
+    }
+  }
+}

@@ -16,6 +16,10 @@ wasm-bindgen = "0.2"
 lib0 = { path = "../lib0"}
 smallstr = { version = "0.2", features = ["union"]}
 
+jemalloc-ctl = "0.3"
+jemallocator = "0.3"
+
+
 [dev-dependencies]
 criterion = "0.3"
 
