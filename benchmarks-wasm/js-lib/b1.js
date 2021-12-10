@@ -167,7 +167,7 @@ export const runBenchmarksB1 = async (crdtFactory, filter) => {
         const deleteCount = prng.uint32(gen, 1, math.min(9, string.length - index))
         string = string.slice(0, index) + string.slice(index + deleteCount)
         input.push({ index, deleteCount })
-        console.log('txt.remove_range(&mut txn, ' + index + ', "'+ deleteCount +'");')
+        console.log('txt.remove_range(&mut txn, ' + index + ', '+ deleteCount +');')
       }
     }
     benchmarkTemplate(
