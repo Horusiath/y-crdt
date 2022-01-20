@@ -282,6 +282,12 @@ impl XmlElement {
     }
 }
 
+impl AsRef<BranchRef> for XmlElement {
+    fn as_ref(&self) -> &BranchRef {
+        &self.0 .0
+    }
+}
+
 impl Into<ItemContent> for XmlElement {
     fn into(self) -> ItemContent {
         self.0.into()
@@ -585,6 +591,12 @@ impl XmlHook {
     }
 }
 
+impl AsRef<BranchRef> for XmlHook {
+    fn as_ref(&self) -> &BranchRef {
+        self.0.as_ref()
+    }
+}
+
 impl From<BranchRef> for XmlHook {
     fn from(inner: BranchRef) -> Self {
         XmlHook(Map::from(inner))
@@ -799,6 +811,12 @@ impl XmlText {
         if let Some(Observers::XmlText(eh)) = branch.observers.as_mut() {
             eh.unsubscribe(subscription_id);
         }
+    }
+}
+
+impl AsRef<BranchRef> for XmlText {
+    fn as_ref(&self) -> &BranchRef {
+        self.0.as_ref()
     }
 }
 

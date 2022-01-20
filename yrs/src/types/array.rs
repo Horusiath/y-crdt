@@ -155,6 +155,12 @@ impl Array {
     }
 }
 
+impl AsRef<BranchRef> for Array {
+    fn as_ref(&self) -> &BranchRef {
+        &self.0
+    }
+}
+
 pub struct ArrayIter<'b> {
     content: VecDeque<Value>,
     ptr: Option<BlockPtr>,

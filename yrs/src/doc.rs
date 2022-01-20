@@ -2,11 +2,14 @@ use crate::block_store::StateVector;
 use crate::event::{Subscription, UpdateEvent};
 use crate::store::Store;
 use crate::transaction::Transaction;
+use crate::types::BranchRef;
+use crate::undo::UndoManager;
 use crate::update::Update;
 use crate::updates::decoder::{Decode, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder, EncoderV1};
 use rand::Rng;
 use std::cell::UnsafeCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// A Yrs document type. Documents are most important units of collaborative resources management.
@@ -112,6 +115,28 @@ impl Doc {
     {
         let store = unsafe { &mut *self.store.get() };
         store.update_events.subscribe(f)
+    }
+
+    pub fn undo_manager<'a, I, B>(&self, scope: I) -> UndoManager
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<BranchRef> + 'a,
+    {
+        self.undo_manager_with_options(scope, crate::undo::Options::default())
+    }
+
+    pub fn undo_manager_with_options<'a, I, B>(
+        &self,
+        scope: I,
+        options: crate::undo::Options,
+    ) -> UndoManager
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<BranchRef> + 'a,
+    {
+        let store = unsafe { self.store.get().as_mut() }.unwrap();
+        let scope: HashSet<BranchRef> = scope.into_iter().map(|b| b.as_ref().clone()).collect();
+        UndoManager::with_options(store, scope, options)
     }
 }
 

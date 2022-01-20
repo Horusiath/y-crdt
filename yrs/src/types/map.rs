@@ -165,6 +165,12 @@ impl Map {
     }
 }
 
+impl AsRef<BranchRef> for Map {
+    fn as_ref(&self) -> &BranchRef {
+        &self.0
+    }
+}
+
 pub struct MapIter<'a>(Entries<'a>);
 
 impl<'a> Iterator for MapIter<'a> {

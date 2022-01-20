@@ -42,6 +42,7 @@ mod alloc;
 
 #[cfg(test)]
 mod test_utils;
+mod undo;
 
 pub use crate::alt::{diff_updates, encode_state_vector_from_update, merge_updates};
 pub use crate::block::ID;

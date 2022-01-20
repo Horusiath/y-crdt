@@ -491,6 +491,8 @@ impl Transaction {
             }
         }
 
+        store.after_transaction.publish(self, &());
+
         // 4. try GC delete set
         if !store.options.skip_gc {
             self.try_gc();

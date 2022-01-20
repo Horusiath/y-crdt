@@ -39,6 +39,8 @@ pub(crate) struct Store {
     /// A subscription handler. It contains all callbacks with registered by user functions that
     /// are supposed to be called, once a new update arrives.
     pub(crate) update_events: EventHandler<UpdateEvent>,
+
+    pub(crate) after_transaction: EventHandler<()>,
 }
 
 impl Store {
@@ -51,6 +53,7 @@ impl Store {
             pending: None,
             pending_ds: None,
             update_events: EventHandler::new(),
+            after_transaction: EventHandler::new(),
         }
     }
 

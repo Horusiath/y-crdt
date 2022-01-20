@@ -18,6 +18,7 @@ use lib0::any::Any;
 use std::cell::{BorrowMutError, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Formatter;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 pub type TypeRefs = u8;
@@ -176,6 +177,13 @@ impl BranchRef {
         if let Some(o) = self.borrow().observers.as_ref() {
             o.publish(self.clone(), txn, keys);
         }
+    }
+}
+
+impl Hash for BranchRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let branch = self.0.borrow();
+        branch.ptr.hash(state)
     }
 }
 

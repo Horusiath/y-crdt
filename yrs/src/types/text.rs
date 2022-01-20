@@ -676,6 +676,12 @@ impl Text {
     }
 }
 
+impl AsRef<BranchRef> for Text {
+    fn as_ref(&self) -> &BranchRef {
+        &self.0
+    }
+}
+
 impl Into<ItemContent> for Text {
     fn into(self) -> ItemContent {
         ItemContent::Type(self.0.clone())
@@ -878,7 +884,7 @@ impl TextEvent {
                                     }
                                 }
                             } else {
-                                // item.delete(transaction)
+                                //TODO: item.delete(transaction)
                             }
                         }
                     } else if txn.has_deleted(&item.id) {
@@ -905,7 +911,7 @@ impl TextEvent {
                                     asm.attrs.insert(key.clone(), *value.clone());
                                 }
                             } else {
-                                // item.delete(transaction)
+                                //TODO: item.delete(transaction)
                             }
                         }
                     }
