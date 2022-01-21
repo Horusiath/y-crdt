@@ -8,7 +8,7 @@ use crate::store::Store;
 use crate::types::array::Array;
 use crate::types::xml::{XmlElement, XmlText};
 use crate::types::{
-    Branch, Map, Text, TypePtr, TYPE_REFS_ARRAY, TYPE_REFS_MAP, TYPE_REFS_TEXT,
+    Branch, Event, Map, Text, TypePtr, TYPE_REFS_ARRAY, TYPE_REFS_MAP, TYPE_REFS_TEXT,
     TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_TEXT,
 };
 use crate::update::Update;
@@ -33,6 +33,7 @@ pub struct Transaction {
     /// All types that were directly modified (property added or child inserted/deleted).
     /// New types are not included in this Set.
     changed: HashMap<TypePtr, HashSet<Option<Rc<str>>>>,
+
     committed: bool,
 }
 
@@ -484,9 +485,44 @@ impl Transaction {
         // 2. emit 'beforeObserverCalls'
         // 3. for each change observed by the transaction call 'afterTransaction'
         if !self.changed.is_empty() {
+            let mut changed_parents: HashMap<TypePtr, Vec<usize>> = HashMap::new();
+            let mut event_cache = Vec::new();
+
             for (ptr, subs) in self.changed.iter() {
                 if let Some(branch) = store.get_type(ptr) {
-                    branch.trigger(self, subs.clone());
+                    if let Some(e) = branch.trigger(self, subs.clone()) {
+                        event_cache.push(e);
+                        let mut current = branch.borrow_mut();
+                        loop {
+                            if current.has_deep_observers() {
+                                let entry = changed_parents.entry(current.ptr.clone()).or_default();
+                                entry.push(event_cache.len() - 1);
+                            }
+
+                            if let TypePtr::Id(id) = &current.ptr {
+                                let item = store.blocks.get_item(id).unwrap();
+                                if let Some(parent) = store.get_type(&item.parent) {
+                                    current = parent.borrow_mut();
+                                    continue;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // deep observe events
+            for (ptr, events) in changed_parents.iter() {
+                // sort events by path length so that top-level events are fired first.
+                let mut sorted: Vec<&Event> = events.iter().map(|&i| &event_cache[i]).collect();
+                sorted.sort_by(|&a, &b| a.path(self).len().cmp(&b.path(self).len()));
+                // We don't need to check for events.length
+                // because we know it has at least one element
+                for &e in sorted.iter() {
+                    if let Some(branch) = store.get_type(ptr) {
+                        branch.trigger_deep(self, e);
+                    }
                 }
             }
         }

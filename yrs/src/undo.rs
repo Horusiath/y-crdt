@@ -262,6 +262,7 @@ pub enum EventAction {
 
 #[cfg(test)]
 mod test {
+    use crate::test_utils::exchange_updates;
     use crate::types::text::Diff;
     use crate::types::{Attrs, Value};
     use crate::undo::EventKind;
@@ -278,23 +279,6 @@ mod test {
         let mut txn = doc.transact();
         let txt = txn.get_text("text");
         f(&txt, &mut txn, a, b);
-    }
-
-    fn sync_all(docs: [&Doc; 2]) {
-        for &d1 in docs.iter() {
-            for &d2 in docs.iter() {
-                if d1.client_id != d2.client_id {
-                    let mut t1 = d1.transact();
-                    let mut t2 = d2.transact();
-                    let sv1 = d1.get_state_vector(&t1);
-                    let sv2 = d2.get_state_vector(&t2);
-                    let u1 = d1.encode_delta_as_update_v1(&t1, &sv2);
-                    let u2 = d2.encode_delta_as_update_v1(&t2, &sv1);
-                    t1.apply_update(Update::decode_v1(u2.as_slice()));
-                    t2.apply_update(Update::decode_v1(u1.as_slice()));
-                }
-            }
-        }
     }
 
     #[test]
@@ -337,7 +321,7 @@ mod test {
 
         text_run(&d1, Text::insert, 0, "abc");
         text_run(&d2, Text::insert, 0, "xyz");
-        sync_all([&d1, &d2]);
+        exchange_updates(&[&d1, &d2]);
         {
             let mut txn = d1.transact();
             mgr.undo(&mut txn);
@@ -345,9 +329,9 @@ mod test {
             mgr.redo(&mut txn);
             assert_eq!(txt1.to_string(&txn), "abcxyz");
         }
-        sync_all([&d1, &d2]);
+        exchange_updates(&[&d1, &d2]);
         text_run(&d2, Text::remove_range, 0, 1);
-        sync_all([&d1, &d2]);
+        exchange_updates(&[&d1, &d2]);
         {
             let mut txn = d1.transact();
             mgr.undo(&mut txn);
@@ -465,11 +449,11 @@ mod test {
             mgr.redo(&mut txn);
             assert_eq!(&m1.to_json(&txn), &expected);
         }
-        sync_all([&d1, &d2]);
+        exchange_updates(&[&d1, &d2]);
 
         // if content is overwritten by another user, undo operations should be skipped
         m2.insert(&mut d2.transact(), "a", 44);
-        sync_all([&d1, &d2]);
+        exchange_updates(&[&d1, &d2]);
         {
             let mut txn = d1.transact();
             mgr.undo(&mut txn);

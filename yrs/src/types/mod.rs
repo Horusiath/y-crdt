@@ -17,6 +17,7 @@ use crate::types::xml::{XmlElement, XmlEvent, XmlText, XmlTextEvent};
 use lib0::any::Any;
 use std::cell::{BorrowMutError, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::TryInto;
 use std::fmt::Formatter;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -173,9 +174,23 @@ impl BranchRef {
         txn.create_item(&pos, value, None)
     }
 
-    pub(crate) fn trigger(&self, txn: &Transaction, keys: HashSet<Option<Rc<str>>>) {
-        if let Some(o) = self.borrow().observers.as_ref() {
-            o.publish(self.clone(), txn, keys);
+    pub(crate) fn trigger(
+        &self,
+        txn: &Transaction,
+        keys: HashSet<Option<Rc<str>>>,
+    ) -> Option<Event> {
+        let current = self.borrow_mut();
+        if let Some(o) = current.observers.as_ref() {
+            Some(o.publish(self.clone(), txn, keys))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn trigger_deep(&self, txn: &Transaction, e: &Event) {
+        let current = self.borrow_mut();
+        if let Some(o) = current.deep_observers.as_ref() {
+            o.publish(txn, e)
         }
     }
 }
@@ -254,6 +269,7 @@ pub struct Branch {
     type_ref: TypeRefs,
 
     observers: Option<Observers>,
+    deep_observers: Option<EventHandler<Event>>,
 }
 
 impl std::fmt::Debug for Branch {
@@ -293,7 +309,28 @@ impl Branch {
             name,
             type_ref,
             observers: None,
+            deep_observers: None,
         }
+    }
+
+    pub fn observe_deep<F>(&mut self, f: F) -> Subscription<Event>
+    where
+        F: Fn(&Transaction, &Event) -> () + 'static,
+    {
+        let eh = self
+            .deep_observers
+            .get_or_insert_with(EventHandler::default);
+        eh.subscribe(f)
+    }
+
+    pub fn unobserve_deep(&mut self, subscription_id: SubscriptionId) {
+        if let Some(eh) = self.deep_observers.as_mut() {
+            eh.unsubscribe(subscription_id);
+        }
+    }
+
+    pub(crate) fn has_deep_observers(&self) -> bool {
+        self.deep_observers.is_some()
     }
 
     /// Returns an identifier of an underlying complex data type (eg. is it an Array or a Map).
@@ -538,6 +575,66 @@ impl Value {
     }
 }
 
+impl TryInto<Text> for Value {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<Text, Self::Error> {
+        if let Value::YText(v) = self {
+            Ok(v)
+        } else {
+            Err("Value is not a Text")
+        }
+    }
+}
+
+impl TryInto<XmlText> for Value {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<XmlText, Self::Error> {
+        if let Value::YXmlText(v) = self {
+            Ok(v)
+        } else {
+            Err("Value is not a XmlText")
+        }
+    }
+}
+
+impl TryInto<Map> for Value {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<Map, Self::Error> {
+        if let Value::YMap(v) = self {
+            Ok(v)
+        } else {
+            Err("Value is not a Map")
+        }
+    }
+}
+
+impl TryInto<Array> for Value {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<Array, Self::Error> {
+        if let Value::YArray(v) = self {
+            Ok(v)
+        } else {
+            Err("Value is not an Array")
+        }
+    }
+}
+
+impl TryInto<XmlElement> for Value {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<XmlElement, Self::Error> {
+        if let Value::YXmlElement(v) = self {
+            Ok(v)
+        } else {
+            Err("Value is not an XmlElement")
+        }
+    }
+}
+
 impl<T> From<T> for Value
 where
     T: Into<Any>,
@@ -747,13 +844,33 @@ impl Observers {
         branch_ref: BranchRef,
         txn: &Transaction,
         keys: HashSet<Option<Rc<str>>>,
-    ) {
+    ) -> Event {
         match self {
-            Observers::Text(eh) => eh.publish(txn, &TextEvent::new(branch_ref)),
-            Observers::Array(eh) => eh.publish(txn, &ArrayEvent::new(branch_ref)),
-            Observers::Map(eh) => eh.publish(txn, &MapEvent::new(branch_ref, keys)),
-            Observers::Xml(eh) => eh.publish(txn, &XmlEvent::new(branch_ref, keys)),
-            Observers::XmlText(eh) => eh.publish(txn, &XmlTextEvent::new(branch_ref, keys)),
+            Observers::Text(eh) => {
+                let e = TextEvent::new(branch_ref);
+                eh.publish(txn, &e);
+                Event::Text(e)
+            }
+            Observers::Array(eh) => {
+                let e = ArrayEvent::new(branch_ref);
+                eh.publish(txn, &e);
+                Event::Array(e)
+            }
+            Observers::Map(eh) => {
+                let e = MapEvent::new(branch_ref, keys);
+                eh.publish(txn, &e);
+                Event::Map(e)
+            }
+            Observers::Xml(eh) => {
+                let e = XmlEvent::new(branch_ref, keys);
+                eh.publish(txn, &e);
+                Event::Xml(e)
+            }
+            Observers::XmlText(eh) => {
+                let e = XmlTextEvent::new(branch_ref, keys);
+                eh.publish(txn, &e);
+                Event::XmlText(e)
+            }
         }
     }
 }
@@ -765,6 +882,7 @@ impl Observers {
 pub type Path = VecDeque<PathSegment>;
 
 /// A single segment of a [Path].
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PathSegment {
     /// Key segments are used to inform how to access child shared collections within a [Map] types.
     Key(Rc<str>),
@@ -839,6 +957,107 @@ pub enum Delta {
 
 /// An alias for map of attributes used as formatting parameters by [Text] and [XmlText] types.
 pub type Attrs = HashMap<Box<str>, Any>;
+
+//TODO: think about better way to substitute inheritance
+pub enum Event {
+    Text(TextEvent),
+    Array(ArrayEvent),
+    Map(MapEvent),
+    Xml(XmlEvent),
+    XmlText(XmlTextEvent),
+}
+
+impl Event {
+    pub fn path(&self, txn: &Transaction) -> Path {
+        match self {
+            Event::Text(e) => e.path(txn),
+            Event::Array(e) => e.path(txn),
+            Event::Map(e) => e.path(txn),
+            Event::XmlText(e) => e.path(txn),
+            Event::Xml(e) => e.path(txn),
+        }
+    }
+
+    fn set_current(&mut self, current_target: BranchRef) {
+        match self {
+            Event::Text(e) => {
+                e.current_target = current_target;
+            }
+            Event::Array(e) => {
+                e.current_target = current_target;
+            }
+            Event::Map(e) => {
+                e.current_target = current_target;
+            }
+            Event::XmlText(e) => {
+                e.current_target = current_target;
+            }
+            Event::Xml(e) => {
+                e.current_target = current_target;
+            }
+        }
+    }
+}
+
+impl<'a> TryInto<&'a TextEvent> for &'a Event {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<&'a TextEvent, Self::Error> {
+        if let Event::Text(e) = self {
+            Ok(e)
+        } else {
+            Err("Wrapped event is not TextEvent")
+        }
+    }
+}
+
+impl<'a> TryInto<&'a ArrayEvent> for &'a Event {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<&'a ArrayEvent, Self::Error> {
+        if let Event::Array(e) = self {
+            Ok(e)
+        } else {
+            Err("Wrapped event is not ArrayEvent")
+        }
+    }
+}
+
+impl<'a> TryInto<&'a MapEvent> for &'a Event {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<&'a MapEvent, Self::Error> {
+        if let Event::Map(e) = self {
+            Ok(e)
+        } else {
+            Err("Wrapped event is not MapEvent")
+        }
+    }
+}
+
+impl<'a> TryInto<&'a XmlEvent> for &'a Event {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<&'a XmlEvent, Self::Error> {
+        if let Event::Xml(e) = self {
+            Ok(e)
+        } else {
+            Err("Wrapped event is not XmlEvent")
+        }
+    }
+}
+
+impl<'a> TryInto<&'a XmlTextEvent> for &'a Event {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<&'a XmlTextEvent, Self::Error> {
+        if let Event::XmlText(e) = self {
+            Ok(e)
+        } else {
+            Err("Wrapped event is not XmlTextEvent")
+        }
+    }
+}
 
 pub(crate) fn event_keys(
     txn: &Transaction,
