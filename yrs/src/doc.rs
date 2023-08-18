@@ -604,7 +604,6 @@ impl Options {
         let encoding = match self.offset_kind {
             OffsetKind::Bytes => 1,
             OffsetKind::Utf16 => 0, // 0 for compatibility with Yjs, which doesn't have this option
-            OffsetKind::Utf32 => 2,
         };
         m.insert("encoding".to_owned(), Any::BigInt(encoding));
         m.insert("autoLoad".to_owned(), self.auto_load.into());
@@ -646,7 +645,6 @@ impl Decode for Options {
                         options.collection_id = Some(cid.to_string())
                     }
                     ("encoding", Any::BigInt(1)) => options.offset_kind = OffsetKind::Bytes,
-                    ("encoding", Any::BigInt(2)) => options.offset_kind = OffsetKind::Utf32,
                     ("encoding", _) => options.offset_kind = OffsetKind::Utf16,
                     _ => { /* do nothing */ }
                 }
@@ -665,8 +663,6 @@ pub enum OffsetKind {
     Bytes,
     /// Compute editable strings length and offset using UTF-16 chars count.
     Utf16,
-    /// Compute editable strings length and offset using Unicode code points number.
-    Utf32,
 }
 
 /// Trait implemented by [Doc] and shared types, used for carrying over the responsibilities of

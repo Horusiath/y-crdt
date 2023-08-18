@@ -11,7 +11,6 @@ use crate::*;
 use atomic_refcell::{AtomicRef, AtomicRefMut};
 use lib0::error::Error;
 use smallvec::SmallVec;
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -963,14 +962,6 @@ impl<'doc> TransactionMut<'doc> {
         self.merge_blocks.append(&mut merge_blocks);
         for _ in snapshot.delete_set.deleted_blocks(self) {
             // do nothing just split the blocks by delete set
-        }
-    }
-
-    fn link(&mut self, mut source: BlockPtr, link: BranchPtr) {
-        if let Block::Item(item) = source.deref_mut() {
-            item.info.set_linked();
-            let links = self.store.linked_by.entry(source).or_default();
-            links.insert(link);
         }
     }
 

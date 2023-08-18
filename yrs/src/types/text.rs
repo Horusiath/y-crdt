@@ -196,7 +196,7 @@ pub trait Text: AsRef<Branch> + Sized {
     /// use yrs::{Doc, Options, Text, GetString, Transact, OffsetKind};
     ///
     /// let doc = Doc::with_options(Options {
-    ///     offset_kind: OffsetKind::Utf32,
+    ///     offset_kind: OffsetKind::Utf16,
     ///     ..Default::default()
     /// });
     /// let ytext = doc.get_or_insert_text("text");
@@ -1837,23 +1837,10 @@ mod test {
     }
 
     #[test]
-    fn utf32_encoding() {
-        let mut options = Options::with_client_id(1);
-        options.offset_kind = OffsetKind::Utf32;
-        let doc = Doc::with_options(options);
-        let txt = doc.get_or_insert_text("content");
-
-        txt.insert(&mut doc.transact_mut(), 0, r#"“”"#); // these chars are 3B long each
-        txt.insert(&mut doc.transact_mut(), 1, r#"test"#);
-
-        assert_eq!(txt.get_string(&txt.transact()), r#"“test”"#);
-    }
-
-    #[test]
     fn unicode_support() {
         let d1 = {
             let mut options = Options::with_client_id(1);
-            options.offset_kind = OffsetKind::Utf32;
+            options.offset_kind = OffsetKind::Utf16;
             Doc::with_options(options)
         };
         let txt1 = d1.get_or_insert_text("test");
@@ -2218,7 +2205,7 @@ mod test {
     #[test]
     fn yrs_delete() {
         let doc = Doc::with_options(Options {
-            offset_kind: OffsetKind::Utf32,
+            offset_kind: OffsetKind::Utf16,
             ..Default::default()
         });
 
