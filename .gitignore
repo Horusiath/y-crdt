@@ -7,7 +7,7 @@ pkg
 .vscode/
 cmake-build-debug/
 tests-ffi/lib
-ywasm/pkg
+ywasm-core/pkg
 node_modules/
 dist/
 large-test-dataset.bin

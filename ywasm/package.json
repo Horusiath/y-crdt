@@ -1,0 +1,45 @@
+{
+  "name": "ywasm",
+  "version": "0.17.0",
+  "description": "JavaScript bindings to Yrs via WebAssembly",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --experimental-wasm-modules ./tests/index.js",
+    "dist": "rm -rf dist && rollup -c && tsc",
+    "watch": "rollup -wc",
+    "lint": "markdownlint README.md && standard && tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y-crdt/y-crdt.git"
+  },
+  "keywords": [
+    "yrs",
+    "yjs",
+    "crdt",
+    "wasm",
+    "local-first"
+  ],
+  "contributors": [
+    "Bartosz Sypytkowski <b.sypytkowski@gmail.com>",
+    "Kevin Jahns <kevin.jahns@pm.me>"
+  ],
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/y-crdt/y-crdt/issues"
+  },
+  "homepage": "https://github.com/y-crdt/y-crdt#readme",
+  "dependencies": {
+    "ywasm-core": "file:../ywasm-core/pkg"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^24.0.1",
+    "@rollup/plugin-node-resolve": "^15.0.1",
+    "@types/node": "^18.15.5",
+    "jsdoc": "^3.6.7",
+    "rollup": "^3.20.0",
+    "markdownlint-cli": "^0.23.2",
+    "lib0": "^0.2.42",
+    "zlib": "^1.0.5"
+  }
+}

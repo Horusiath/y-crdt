@@ -1,4 +1,4 @@
-# Ywasm
+# ywasm-core
 
 This project is a wrapper around [Yrs](../yrs/README.md) and targets Web Assembly bindings.
 

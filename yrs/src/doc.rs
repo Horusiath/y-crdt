@@ -1,4 +1,5 @@
 use crate::block::{Block, BlockPtr, ClientID, ItemContent, Prelim};
+use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
 use crate::store::{Store, StoreRef};
 use crate::transaction::{Origin, Transaction, TransactionMut};
@@ -6,12 +7,12 @@ use crate::types::{Branch, BranchPtr, ToJson, TypeRef, Value};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
-use crate::{Any};
+use crate::Any;
 use crate::{
     uuid_v4, ArrayRef, MapRef, ReadTxn, SubscriptionId, TextRef, Uuid, WriteTxn, XmlElementRef,
     XmlFragmentRef, XmlTextRef,
 };
-use atomic_refcell::{AtomicRef, AtomicRefMut, BorrowError, BorrowMutError};
+use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut, BorrowError, BorrowMutError};
 use rand::Rng;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -19,7 +20,6 @@ use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use thiserror::Error;
-use crate::encoding::read::Error;
 
 /// A Yrs document type. Documents are most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
@@ -475,8 +475,22 @@ impl Doc {
         None
     }
 
+    /// Checks if two document references point to the same [Doc] instance.
     pub fn ptr_eq(a: &Doc, b: &Doc) -> bool {
         Arc::ptr_eq(&a.store.0, &b.store.0)
+    }
+
+    /// Returns a raw pointer representing current [Doc]'s store. Document can be later retrieved
+    /// back from that pointer using [Doc::from_raw].
+    pub fn into_raw(self) -> *const AtomicRefCell<Store> {
+        Arc::into_raw(self.store.0)
+    }
+
+    /// Restores [Doc] instance given a raw pointer (returned by [Doc::into_raw] method).
+    pub unsafe fn from_raw(ptr: *const AtomicRefCell<Store>) -> Self {
+        Doc {
+            store: StoreRef(Arc::from_raw(ptr)),
+        }
     }
 
     pub(crate) fn addr(&self) -> DocAddr {
@@ -888,8 +902,7 @@ pub(crate) struct DocAddr(usize);
 
 impl DocAddr {
     pub fn new(doc: &Doc) -> Self {
-        let ptr = Arc::as_ptr(&doc.store.0);
-        DocAddr(ptr as usize)
+        DocAddr(doc.clone().into_raw() as usize)
     }
 }
 
@@ -902,7 +915,11 @@ mod test {
     use crate::update::Update;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-    use crate::{Any, any, Array, ArrayPrelim, ArrayRef, DeleteSet, Doc, GetString, Map, MapRef, Options, StateVector, SubscriptionId, Text, TextRef, Transact, Uuid, XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlTextRef};
+    use crate::{
+        any, Any, Array, ArrayPrelim, ArrayRef, DeleteSet, Doc, GetString, Map, MapRef, Options,
+        StateVector, SubscriptionId, Text, TextRef, Transact, Uuid, XmlElementPrelim, XmlFragment,
+        XmlFragmentRef, XmlTextRef,
+    };
     use std::cell::{Cell, RefCell, RefMut};
     use std::collections::BTreeSet;
     use std::rc::Rc;

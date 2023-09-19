@@ -1,4 +1,4 @@
-import * as Y from 'ywasm'
+import * as Y from '../src'
 
 /**
  * @this {YDoc}

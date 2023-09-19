@@ -1,4 +1,4 @@
-import * as Y from 'ywasm'
+import * as Y from '../src'
 import * as t from 'lib0/testing'
 
 /**

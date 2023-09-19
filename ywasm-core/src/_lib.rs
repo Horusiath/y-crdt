@@ -1,3 +1,9 @@
+mod array;
+mod branch_ref;
+mod doc;
+mod js;
+mod transaction;
+
 use js_sys::{Object, Reflect, Uint8Array};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,18 +23,18 @@ use yrs::types::text::{ChangeKind, Diff, TextEvent, YChange};
 use yrs::types::xml::{XmlEvent, XmlTextEvent};
 use yrs::types::{
     Attrs, Branch, BranchPtr, Change, DeepEventsSubscription, DeepObservable, Delta, EntryChange,
-    Event, Events, Path, PathSegment, ToJson, TypeRef, Value
+    Event, Events, Path, PathSegment, ToJson, TypeRef, Value,
 };
 use yrs::undo::{EventKind, UndoEventSubscription};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use yrs::{
-    Array, ArrayRef, Assoc, DeleteSet, DestroySubscription, Doc, GetString, IndexScope, Map,
+    Any, Array, ArrayRef, Assoc, DeleteSet, DestroySubscription, Doc, GetString, IndexScope, Map,
     MapRef, Observable, Offset, OffsetKind, Options, Origin, ReadTxn, Snapshot, StateVector,
     StickyIndex, Store, SubdocsEvent, SubdocsEventIter, SubdocsSubscription, Subscription, Text,
     TextRef, Transact, Transaction, TransactionCleanupEvent, TransactionCleanupSubscription,
     TransactionMut, UndoManager, Update, UpdateSubscription, Xml, XmlElementPrelim, XmlElementRef,
-    XmlFragment, XmlFragmentRef, XmlNode, XmlTextPrelim, XmlTextRef, ID, Any
+    XmlFragment, XmlFragmentRef, XmlNode, XmlTextPrelim, XmlTextRef, ID,
 };
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
