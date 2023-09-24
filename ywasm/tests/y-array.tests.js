@@ -1,13 +1,13 @@
 import { exchangeUpdates } from './testHelper.js' // eslint-disable-line
 
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 
 /**
  * @param {t.TestCase} tc
  */
 export const testInserts = tc => {
-    const d1 = new Y.YDoc({clientID:1})
+    const d1 = new Y.Doc({clientID:1})
     t.compare(d1.id, 1)
     var x = d1.getArray('test');
 
@@ -19,7 +19,7 @@ export const testInserts = tc => {
     var value = x.toJson()
     t.compare(value, expected)
 
-    const d2 = new Y.YDoc({clientID:2})
+    const d2 = new Y.Doc({clientID:2})
     x = d2.getArray('test');
 
     exchangeUpdates([d1, d2])
@@ -32,7 +32,7 @@ export const testInserts = tc => {
  * @param {t.TestCase} tc
  */
 export const testInsertsNested = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     var x = d1.getArray('test');
 
     const nested = new Y.YArray();
@@ -45,7 +45,7 @@ export const testInsertsNested = tc => {
     var value = x.toJson()
     t.compare(value, expected)
 
-    const d2 = new Y.YDoc()
+    const d2 = new Y.Doc()
     x = d2.getArray('test');
 
     exchangeUpdates([d1, d2])
@@ -58,7 +58,7 @@ export const testInsertsNested = tc => {
  * @param {t.TestCase} tc
  */
 export const testDelete = tc => {
-    const d1 = new Y.YDoc({clientID:1})
+    const d1 = new Y.Doc({clientID:1})
     t.compare(d1.id, 1)
     var x = d1.getArray('test')
 
@@ -70,7 +70,7 @@ export const testDelete = tc => {
     var value = x.toJson()
     t.compare(value, expected)
 
-    const d2 = new Y.YDoc({clientID:2})
+    const d2 = new Y.Doc({clientID:2})
     x = d2.getArray('test')
 
     exchangeUpdates([d1, d2])
@@ -83,7 +83,7 @@ export const testDelete = tc => {
  * @param {t.TestCase} tc
  */
 export const testGet = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getArray('test')
 
     x.insert(0, [1, 2, true])
@@ -111,7 +111,7 @@ export const testGet = tc => {
  * @param {t.TestCase} tc
  */
 export const testIterator = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getArray('test')
 
     x.insert(0, [1, 2, 3])
@@ -130,7 +130,7 @@ export const testIterator = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     /**
      * @param {Y.YArray} tc
      */
@@ -180,7 +180,7 @@ export const testObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserveDeepEventOrder = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const arr = d1.getArray('array')
 
     /**
@@ -203,7 +203,7 @@ export const testObserveDeepEventOrder = tc => {
  * @param {t.TestCase} tc
  */
 export const testMove = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const arr = d1.getArray('array')
 
     let e = null

@@ -1,18 +1,17 @@
 import { exchangeUpdates } from './testHelper.js' // eslint-disable-line
-
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 
 /**
  * @param {t.TestCase} tc
  */
 export const testOnUpdate = tc => {
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     const text1 = d1.getText('text')
     text1.insert(0, 'hello')
     let expected = Y.encodeStateAsUpdate(d1)
 
-    const d2 = new Y.YDoc(2)
+    const d2 = new Y.Doc(2)
     const text2 = d2.getText('text')
     let actual;
     const sub = d2.onUpdate(e => actual = e);
@@ -37,12 +36,12 @@ export const testOnUpdate = tc => {
  * @param {t.TestCase} tccls
  */
 export const testOnUpdateV2 = tc => {
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     const text1 = d1.getText('text')
     text1.insert(0, 'hello')
     let expected = Y.encodeStateAsUpdateV2(d1)
 
-    const d2 = new Y.YDoc(2)
+    const d2 = new Y.Doc(2)
     const text2 = d2.getText('text')
     let actual;
     const sub = d2.onUpdateV2(e => actual = e);
@@ -67,7 +66,7 @@ export const testOnUpdateV2 = tc => {
  * @param {t.TestCase} tc
  */
 export const testOnAfterTransaction = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     const text = doc.getText('text')
     let event;
     const sub = doc.onAfterTransaction(e => event = e);
@@ -100,7 +99,7 @@ export const testOnAfterTransaction = tc => {
  * @param {t.TestCase} tc
  */
 export const testSnapshots = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     const text = doc.getText('text')
     text.insert(0, 'hello')
     const prev = Y.snapshot(doc)
@@ -118,14 +117,14 @@ export const testSnapshots = tc => {
  * @param {t.TestCase} tc
  */
 export const testSnapshotState = tc => {
-    const d1 = new Y.YDoc({clientID: 1, gc: false})
+    const d1 = new Y.Doc({clientID: 1, gc: false})
     const txt1 = d1.getText('text')
     txt1.insert(0, 'hello')
     const prev = Y.snapshot(d1)
     txt1.insert(5, ' world')
     const state = Y.encodeStateFromSnapshotV1(d1, prev)
 
-    const d2 = new Y.YDoc(2)
+    const d2 = new Y.Doc(2)
     const txt2 = d2.getText('text')
     Y.applyUpdate(d2, state)
 
@@ -136,7 +135,7 @@ export const testSnapshotState = tc => {
  * @param {t.TestCase} tc
  */
 export const testSubdoc = tc => {
-    const doc = new Y.YDoc()
+    const doc = new Y.Doc()
     doc.load() // doesn't do anything
     {
         /**
@@ -150,7 +149,7 @@ export const testSubdoc = tc => {
             event = [added, removed, loaded]
         })
         const subdocs = doc.getMap('mysubdocs')
-        const docA = new Y.YDoc({ guid: 'a' })
+        const docA = new Y.Doc({ guid: 'a' })
         docA.load()
         subdocs.set('a', docA)
         t.compare(event, [['a'], [], ['a']])
@@ -165,12 +164,12 @@ export const testSubdoc = tc => {
         subdocs.get('a').load()
         t.compare(event, [[], [], ['a']])
 
-        subdocs.set('b', new Y.YDoc({ guid: 'a', shouldLoad: false }))
+        subdocs.set('b', new Y.Doc({ guid: 'a', shouldLoad: false }))
         t.compare(event, [['a'], [], []])
         subdocs.get('b').load()
         t.compare(event, [[], [], ['a']])
 
-        const docC = new Y.YDoc({ guid: 'c' })
+        const docC = new Y.Doc({ guid: 'c' })
         docC.load()
         subdocs.set('c', docC)
         t.compare(event, [['c'], [], ['c']])
@@ -178,7 +177,7 @@ export const testSubdoc = tc => {
         t.compare(doc.getSubdocGuids(), new Set(['a', 'c']))
     }
 
-    const doc2 = new Y.YDoc()
+    const doc2 = new Y.Doc()
     // root-level types must be prepared in advance for subdocs to work atm
     const subdocs2 = doc2.getMap('mysubdocs')
     {

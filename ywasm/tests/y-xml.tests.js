@@ -1,13 +1,13 @@
 import { exchangeUpdates } from './testHelper.js' // eslint-disable-line
 
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 
 /**
  * @param {t.TestCase} tc
  */
 export const testInsert = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
     d1.transact(txn => {
         let b = root.pushXmlText(txn)
@@ -27,7 +27,7 @@ export const testInsert = tc => {
  * @param {t.TestCase} tc
  */
 export const testAttributes = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
     const xml = root.insertXmlElement(0, 'div')
     let actual = d1.transact(txn => {
@@ -66,7 +66,7 @@ export const testAttributes = tc => {
  * @param {t.TestCase} tc
  */
 export const testSiblings = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
     const first = d1.transact(txn => {
         let b = root.pushXmlText(txn)
@@ -95,7 +95,7 @@ export const testSiblings = tc => {
  * @param {t.TestCase} tc
  */
 export const testTreeWalker = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
     d1.transact(txn => {
         let b = root.pushXmlText(txn)
@@ -125,7 +125,7 @@ export const testTreeWalker = tc => {
  * @param {t.TestCase} tc
  */
 export const testXmlTextObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const f = d1.getXmlFragment('test');
     const x = f.insertXmlText(0)
     let target = null
@@ -209,7 +209,7 @@ export const testXmlTextObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testXmlElementObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const f = d1.getXmlFragment('test');
     const x = f.insertXmlElement(0,'div')
     let target = null

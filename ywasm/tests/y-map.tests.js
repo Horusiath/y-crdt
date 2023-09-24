@@ -1,13 +1,13 @@
 import { exchangeUpdates } from './testHelper.js' // eslint-disable-line
 
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 
 /**
  * @param {t.TestCase} tc
  */
 export const testSet = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getMap('test')
 
     var value = x.get('key')
@@ -26,7 +26,7 @@ export const testSet = tc => {
  * @param {t.TestCase} tc
  */
 export const testSetNested = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getMap('test')
     const nested = new Y.YMap({ a: 'A' })
 
@@ -46,7 +46,7 @@ export const testSetNested = tc => {
  * @param {t.TestCase} tc
  */
 export const testDelete = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getMap('test')
 
     x.set('key', 'value1')
@@ -72,7 +72,7 @@ export const testDelete = tc => {
  * @param {t.TestCase} tc
  */
 export const testIterator = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getMap('test')
 
     d1.transact(txn => {
@@ -100,7 +100,7 @@ export const testIterator = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     /**
      * @param {Y.YMap} tc
      */
@@ -152,7 +152,7 @@ export const testObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserversUsingObservedeep = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const map = d1.getMap('map')
 
     /**

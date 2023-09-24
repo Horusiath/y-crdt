@@ -1,14 +1,14 @@
 import { exchangeUpdates } from './testHelper.js' // eslint-disable-line
 
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 
 /**
  * @param {t.TestCase} tc
  */
 export const testUndoText = tc => {
-    const d0 = new Y.YDoc({clientID:1})
-    const d1 = new Y.YDoc({clientID:2})
+    const d0 = new Y.Doc({clientID:1})
+    const d1 = new Y.Doc({clientID:2})
     const text0 = d0.getText("test")
     const text1 = d1.getText("test")
     const undoManager = new Y.YUndoManager(d0, text0)
@@ -57,7 +57,7 @@ export const testUndoText = tc => {
  * @param {t.TestCase} tc
  */
 export const testDoubleUndo = tc => {
-    const doc = new Y.YDoc({clientID:1})
+    const doc = new Y.Doc({clientID:1})
     const text = doc.getText("test")
     text.insert(0, '1221')
 
@@ -78,8 +78,8 @@ export const testDoubleUndo = tc => {
  * @param {t.TestCase} tc
  */
 export const testUndoMap = tc => {
-    const d0 = new Y.YDoc({clientID:1})
-    const d1 = new Y.YDoc({clientID:2})
+    const d0 = new Y.Doc({clientID:1})
+    const d1 = new Y.Doc({clientID:2})
     const map0 = d0.getMap("test")
     const map1 = d1.getMap("test")
     map0.set('a', 0)
@@ -121,8 +121,8 @@ export const testUndoMap = tc => {
  * @param {t.TestCase} tc
  */
 export const testUndoArray = tc => {
-    const d0 = new Y.YDoc({clientID:1})
-    const d1 = new Y.YDoc({clientID:2})
+    const d0 = new Y.Doc({clientID:1})
+    const d1 = new Y.Doc({clientID:2})
     const array0 = d0.getArray("test")
     const array1 = d1.getArray("test")
     const undoManager = new Y.YUndoManager(d0, array0)
@@ -175,7 +175,7 @@ export const testUndoArray = tc => {
  * @param {t.TestCase} tc
  */
 export const testUndoXml = tc => {
-    const d0 = new Y.YDoc({clientID:1})
+    const d0 = new Y.Doc({clientID:1})
     const xml0 = d0.getXmlElement("undefined")
     const undoManager = new Y.YUndoManager(d0, xml0)
     const child = xml0.insertXmlElement(0, 'p')

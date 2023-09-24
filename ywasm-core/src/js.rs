@@ -7,8 +7,8 @@ use yrs::block::{ItemContent, Prelim, Unused};
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{Branch, BranchPtr, TypeRef};
 use yrs::{
-    Any, ArrayRef, Map, MapRef, Text, TextRef, TransactionMut, Value, XmlElementRef, XmlFragment,
-    XmlFragmentRef, XmlTextRef,
+    Any, ArrayRef, DeleteSet, Map, MapRef, StateVector, Text, TextRef, TransactionMut, Value,
+    XmlElementRef, XmlFragment, XmlFragmentRef, XmlTextRef,
 };
 
 /// Conversion trait for Rust values to be returned to JavaScript host as JS objects.
@@ -79,6 +79,43 @@ impl IntoJs for Value {
     }
 }
 
+impl IntoJs for StateVector {
+    type Return = js_sys::Map;
+
+    fn into_js(self) -> Self::Return {
+        let m = js_sys::Map::new();
+        for (&k, &v) in self.iter() {
+            let key: JsValue = k.into();
+            let value: JsValue = v.into();
+            m.set(&key, &value);
+        }
+        m
+    }
+}
+
+impl IntoJs for DeleteSet {
+    type Return = js_sys::Map;
+
+    fn into_js(self) -> Self::Return {
+        let m = js_sys::Map::new();
+        for (&k, v) in self.iter() {
+            let key: JsValue = k.into();
+            let iter = v.iter().map(|r| {
+                let start = r.start;
+                let len = r.end - r.start;
+                let res: JsValue = js_sys::Array::of2(&start.into(), &len.into()).into();
+                res
+            });
+            let value = js_sys::Array::new();
+            for v in iter {
+                value.push(&v);
+            }
+            m.set(&key, &value);
+        }
+        m
+    }
+}
+
 /// Conversion trait used from incoming JavaScript objects to be mapped onto Rust types.
 pub trait FromJs: Sized {
     fn from_js(js: JsValue) -> Result<Self, JsValue>;
@@ -146,7 +183,6 @@ where
 }
 
 static FIELD_TYPE: &str = "__type";
-static FIELD_NAME: &str = "name";
 static FIELD_PRELIM: &str = "prelim";
 
 #[repr(transparent)]

@@ -1,10 +1,8 @@
-use crate::branch_ref::BranchRef;
+use crate::branch_abi;
 use crate::js::{FromJs, IntoJs, JsPrelim};
 use crate::transaction::Transaction;
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
-use wasm_bindgen::describe::{inform, WasmDescribe, U32};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::ToJson;
@@ -13,43 +11,11 @@ use yrs::{Any, Array, ArrayRef, TransactionMut, Value};
 #[repr(transparent)]
 pub struct YArray(ArrayRef);
 
-impl WasmDescribe for YArray {
-    fn describe() {
-        inform(U32)
-    }
-}
+branch_abi!(YArray, ArrayRef);
 
-impl FromWasmAbi for YArray {
-    type Abi = u32;
-
-    unsafe fn from_abi(js: Self::Abi) -> Self {
-        let branch = BranchRef::from_abi(js);
-        YArray(ArrayRef::from(branch.into_ptr()))
-    }
-}
-
-impl IntoWasmAbi for YArray {
-    type Abi = u32;
-
-    fn into_abi(self) -> Self::Abi {
-        let branch = BranchRef::from(self.0);
-        branch.into_abi()
-    }
-}
-
-impl Deref for YArray {
-    type Target = ArrayRef;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<ArrayRef> for YArray {
-    #[inline]
-    fn from(value: ArrayRef) -> Self {
-        YArray(value)
+impl YArray {
+    pub fn new(v: ArrayRef) -> Self {
+        Self(v)
     }
 }
 

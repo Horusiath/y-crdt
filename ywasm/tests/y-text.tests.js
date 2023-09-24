@@ -1,13 +1,13 @@
 import { exchangeUpdates } from './testHelper.js' // eslint-disable-line
 
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 
 /**
  * @param {t.TestCase} tc
  */
 export const testInserts = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     var x = d1.getText('test')
 
     x.push("hello!")
@@ -18,7 +18,7 @@ export const testInserts = tc => {
     var value = x.toString()
     t.compareStrings(value, expected)
 
-    const d2 = new  Y.YDoc({clientID:2})
+    const d2 = new  Y.Doc({clientID:2})
     x = d2.getText('test')
 
     exchangeUpdates([d1, d2])
@@ -31,7 +31,7 @@ export const testInserts = tc => {
  * @param {t.TestCase} tc
  */
 export const testDeletes = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     var x = d1.getText('test')
 
     x.push("hello world!")
@@ -46,7 +46,7 @@ export const testDeletes = tc => {
     var value = x.toString()
     t.compareStrings(value, expected)
 
-    const d2 = new  Y.YDoc({clientID:2})
+    const d2 = new  Y.Doc({clientID:2})
     x = d2.getText('test')
 
     exchangeUpdates([d1, d2])
@@ -59,7 +59,7 @@ export const testDeletes = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     /**
      * @param {Y.YText} tc
      */
@@ -110,7 +110,7 @@ export const testObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testToDeltaEmbedAttributes = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const text = d1.getText('test')
 
     let delta = null

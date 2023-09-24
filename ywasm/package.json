@@ -3,6 +3,7 @@
   "version": "0.17.0",
   "description": "JavaScript bindings to Yrs via WebAssembly",
   "main": "src/index.js",
+  "type": "module",
   "scripts": {
     "test": "node --experimental-wasm-modules ./tests/index.js",
     "dist": "rm -rf dist && rollup -c && tsc",

@@ -1,4 +1,4 @@
-import * as Y from '../src'
+import * as Y from '../src/index.js'
 import * as t from 'lib0/testing'
 import * as fs from 'fs'
 import * as zlib from 'zlib'
@@ -13,7 +13,7 @@ const run = (tc, filename) => {
             ? zlib.gunzipSync(fs.readFileSync(filename))
             : fs.readFileSync(filename, 'utf-8')
     )
-    const doc = new Y.YDoc()
+    const doc = new Y.Doc()
     const text = doc.getText('text')
     if (startContent && startContent !== '') {
         text.push(startContent)

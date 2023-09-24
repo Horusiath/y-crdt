@@ -1,6 +1,6 @@
 use crate::js::{FromJs, IntoJs};
 use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
-use wasm_bindgen::describe::{inform, WasmDescribe, U32};
+use wasm_bindgen::describe::{inform, WasmDescribe, RUST_STRUCT};
 use wasm_bindgen::JsValue;
 use yrs::types::{Branch, BranchPtr};
 
@@ -16,7 +16,10 @@ impl BranchRef {
 
 impl WasmDescribe for BranchRef {
     fn describe() {
-        inform(U32);
+        inform(RUST_STRUCT);
+        for c in "BranchRef".chars() {
+            inform(c as u32);
+        }
     }
 }
 
@@ -26,6 +29,7 @@ impl FromWasmAbi for BranchRef {
     #[inline]
     unsafe fn from_abi(js: Self::Abi) -> Self {
         let ptr: *mut Branch = js as *mut Branch;
+        assert!(!ptr.is_null());
         BranchRef(BranchPtr::from(ptr.as_ref().unwrap()))
     }
 }
