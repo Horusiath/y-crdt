@@ -1,15 +1,22 @@
-use crate::branch_abi;
+use std::ops::Deref;
 use wasm_bindgen::prelude::wasm_bindgen;
 use yrs::TextRef;
 
-#[repr(transparent)]
+#[wasm_bindgen]
 pub struct YText(TextRef);
 
-branch_abi!(YText, TextRef);
+impl From<TextRef> for YText {
+    fn from(value: TextRef) -> Self {
+        YText(value)
+    }
+}
 
-impl YText {
-    pub fn new(v: TextRef) -> Self {
-        Self(v)
+impl Deref for YText {
+    type Target = TextRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

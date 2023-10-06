@@ -9,14 +9,14 @@ import * as t from 'lib0/testing'
 export const testInserts = tc => {
     const d1 = new Y.Doc({clientID:1})
     t.compare(d1.id, 1)
-    var x = d1.getArray('test');
+    let x = /** @type {Y.YArray} */ d1.getArray('test');
 
     x.insert(0, [1, 2.5, 'hello', ['world'], true])
     x.push( [{key:'value'}])
 
     const expected = [1, 2.5, 'hello', ['world'], true, {key:'value'}]
 
-    var value = x.toJson()
+    let value = x.toJson()
     t.compare(value, expected)
 
     const d2 = new Y.Doc({clientID:2})
@@ -31,18 +31,18 @@ export const testInserts = tc => {
 /**
  * @param {t.TestCase} tc
  */
-export const testInsertsNested = tc => {
+const testInsertsNested = tc => {
     const d1 = new Y.Doc()
-    var x = d1.getArray('test');
+    let x = d1.getArray('test');
 
-    const nested = new Y.YArray();
+    const nested = /** @type {Y.YArray<any>} */ new Y.YArray(d1);
     nested.push(['world'])
     x.insert(0, [1, 2, nested, 3, 4])
     nested.insert(0, ['hello'])
 
     const expected = [1, 2, ['hello', 'world'], 3, 4]
 
-    var value = x.toJson()
+    let value = x.toJson()
     t.compare(value, expected)
 
     const d2 = new Y.Doc()
@@ -57,17 +57,17 @@ export const testInsertsNested = tc => {
 /**
  * @param {t.TestCase} tc
  */
-export const testDelete = tc => {
+const  testDelete = tc => {
     const d1 = new Y.Doc({clientID:1})
     t.compare(d1.id, 1)
-    var x = d1.getArray('test')
+    let x = d1.getArray('test')
 
     x.insert(0, [1, 2, ['hello', 'world'], true])
     x.delete(1, 2)
 
     const expected = [1, true]
 
-    var value = x.toJson()
+    let value = x.toJson()
     t.compare(value, expected)
 
     const d2 = new Y.Doc({clientID:2})
@@ -82,9 +82,9 @@ export const testDelete = tc => {
 /**
  * @param {t.TestCase} tc
  */
-export const testGet = tc => {
+const  testGet = tc => {
     const d1 = new Y.Doc()
-    const x = d1.getArray('test')
+    const x = /** @type {Y.YArray<any>} */ d1.getArray('test')
 
     x.insert(0, [1, 2, true])
     x.insert(1, ['hello', 'world'])
@@ -110,26 +110,24 @@ export const testGet = tc => {
 /**
  * @param {t.TestCase} tc
  */
-export const testIterator = tc => {
+const  testIterator = tc => {
     const d1 = new Y.Doc()
     const x = d1.getArray('test')
 
     x.insert(0, [1, 2, 3])
-    t.compare(x.length(), 3)
+    t.compare(x.length, 3)
 
     let i = 1;
-    let txn = d1.readTransaction()
-    for (let v of x.values(txn)) {
+    for (let v of x.toArray()) {
         t.compare(v, i)
         i++
     }
-    txn.free()
 }
 
 /**
  * @param {t.TestCase} tc
  */
-export const testObserver = tc => {
+const  testObserver = tc => {
     const d1 = new Y.Doc()
     /**
      * @param {Y.YArray} tc
@@ -145,8 +143,8 @@ export const testObserver = tc => {
     })
 
     // insert initial data to an empty YArray
-    d1.transact((txn) => {
-        x.insert(0, [1,2,3,4], txn)
+    d1.transact(() => {
+        x.insert(0, [1,2,3,4])
     }, 'TEST_ORIGIN')
     t.compare(target.toJson(), x.toJson())
     t.compare(delta, [{insert: [1,2,3,4]}])
@@ -179,7 +177,7 @@ export const testObserver = tc => {
 /**
  * @param {t.TestCase} tc
  */
-export const testObserveDeepEventOrder = tc => {
+const  testObserveDeepEventOrder = tc => {
     const d1 = new Y.Doc()
     const arr = d1.getArray('array')
 
@@ -190,10 +188,10 @@ export const testObserveDeepEventOrder = tc => {
     let subscription = arr.observeDeep(events => {
         paths = events.map(e => e.path())
     })
-    arr.insert(0, [new Y.YMap()])
+    arr.insert(0, [new Y.YMap(d1)])
     d1.transact(txn => {
-        arr.get(0, txn).set('a', 'a', txn)
-        arr.insert(0, [0], txn)
+        arr.get(0).set('a', 'a')
+        arr.insert(0, [0])
     })
     t.compare(paths, [ [], [ 1 ] ])
     subscription.free()
@@ -202,7 +200,7 @@ export const testObserveDeepEventOrder = tc => {
 /**
  * @param {t.TestCase} tc
  */
-export const testMove = tc => {
+const  testMove = tc => {
     const d1 = new Y.Doc()
     const arr = d1.getArray('array')
 

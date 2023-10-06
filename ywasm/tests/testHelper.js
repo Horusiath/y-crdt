@@ -1,20 +1,7 @@
 import * as Y from '../src/index.js'
 
 /**
- * @this {YDoc}
- */
-Y.YDoc.prototype.transact = function(callback, origin) {
-  let txn = this.writeTransaction(origin)
-  try {
-      return callback(txn)
-  } finally {
-      txn.commit()
-      txn.free()
-  }
-};
-
-/**
- * @param {Array<YDoc>} docs
+ * @param {Array<Y.Doc>} docs
  */
 export const exchangeUpdates = docs => {
     for(let d1 of docs) {

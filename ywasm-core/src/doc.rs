@@ -2,23 +2,20 @@ use crate::array::YArray;
 use crate::js::{FromJs, IntoJs};
 use crate::map::YMap;
 use crate::text::YText;
+use crate::transaction::JsOriginProvider;
 use crate::xml::{YXmlElement, YXmlFragment, YXmlText};
 use crate::Transaction;
 use js_sys::Uint8Array;
 use std::ops::{Deref, DerefMut};
-use std::ptr::null;
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, OptionIntoWasmAbi};
-use wasm_bindgen::describe::{inform, WasmDescribe, U32};
+use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::block::ClientID;
 use yrs::{
-    DestroySubscription, Doc, ReadTxn, SubdocsEvent, SubdocsEventIter, SubdocsSubscription,
-    Transact, TransactionCleanupEvent, TransactionCleanupSubscription, UpdateSubscription,
+    Doc, ReadTxn, SubdocsEvent, SubdocsEventIter, SubscriptionId, Transact, TransactionCleanupEvent,
 };
 
-#[repr(transparent)]
-#[derive(Clone)]
+#[wasm_bindgen]
 pub struct YDoc(Doc);
 
 impl From<Doc> for YDoc {
@@ -32,34 +29,6 @@ impl Into<Doc> for YDoc {
     #[inline]
     fn into(self) -> Doc {
         self.0
-    }
-}
-
-impl WasmDescribe for YDoc {
-    fn describe() {
-        inform(U32)
-    }
-}
-
-impl FromWasmAbi for YDoc {
-    type Abi = u32;
-
-    unsafe fn from_abi(js: Self::Abi) -> Self {
-        YDoc(Doc::from_raw(js as *const _))
-    }
-}
-
-impl IntoWasmAbi for YDoc {
-    type Abi = u32;
-
-    fn into_abi(self) -> Self::Abi {
-        self.0.into_raw() as u32
-    }
-}
-
-impl OptionIntoWasmAbi for YDoc {
-    fn none() -> Self::Abi {
-        null::<YDoc>() as u32
     }
 }
 
@@ -122,7 +91,7 @@ impl YDoc {
                 }
 
                 if let Some(collection_id) =
-                    js_sys::Reflect::get(js, &JsValue::from_str("collectionid"))
+                    js_sys::Reflect::get(js, &JsValue::from_str("collectionID"))
                         .ok()
                         .and_then(|v| v.as_string())
                 {
@@ -161,30 +130,30 @@ impl YDoc {
 
     /// Returns a parent document of this document or null if current document is not sub-document.
     #[wasm_bindgen(getter, js_name = parentDoc)]
-    pub fn parent_doc(self) -> Option<YDoc> {
+    pub fn parent_doc(&self) -> Option<YDoc> {
         let doc = self.0.parent_doc()?;
         Some(YDoc(doc))
     }
 
     /// Gets unique peer identifier of this `YDoc` instance.
     #[wasm_bindgen(getter)]
-    pub fn id(self) -> f64 {
+    pub fn id(&self) -> f64 {
         self.deref().client_id() as f64
     }
 
     /// Gets globally unique identifier of this `YDoc` instance.
     #[wasm_bindgen(getter)]
-    pub fn guid(self) -> String {
+    pub fn guid(&self) -> String {
         self.deref().options().guid.to_string()
     }
 
     #[wasm_bindgen(getter, js_name = shouldLoad)]
-    pub fn should_load(self) -> bool {
+    pub fn should_load(&self) -> bool {
         self.deref().options().should_load
     }
 
     #[wasm_bindgen(getter, js_name = autoLoad)]
-    pub fn auto_load(self) -> bool {
+    pub fn auto_load(&self) -> bool {
         self.deref().options().auto_load
     }
 
@@ -216,7 +185,7 @@ impl YDoc {
     /// doc.transact(txn => text.insert(txn, 0, 'hello world'))
     /// ```
     #[wasm_bindgen(js_name = startTransaction)]
-    pub fn start_transaction(self, origin: JsValue) -> Transaction {
+    pub fn start_transaction(&self, origin: JsValue) -> Transaction {
         if origin.is_null() || origin.is_undefined() {
             Transaction::from(self.deref().transact_mut())
         } else {
@@ -233,7 +202,7 @@ impl YDoc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YText` instance.
     #[wasm_bindgen(js_name = getText)]
-    pub fn get_text(self, name: &str) -> YText {
+    pub fn get_text(&self, name: &str) -> YText {
         self.deref().get_or_insert_text(name).into()
     }
 
@@ -245,7 +214,7 @@ impl YDoc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YArray` instance.
     #[wasm_bindgen(js_name = getArray)]
-    pub fn get_array(self, name: &str) -> YArray {
+    pub fn get_array(&self, name: &str) -> YArray {
         self.deref().get_or_insert_array(name).into()
     }
 
@@ -257,7 +226,7 @@ impl YDoc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YMap` instance.
     #[wasm_bindgen(js_name = getMap)]
-    pub fn get_map(self, name: &str) -> YMap {
+    pub fn get_map(&self, name: &str) -> YMap {
         self.deref().get_or_insert_map(name).into()
     }
 
@@ -269,7 +238,7 @@ impl YDoc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YXmlFragment` instance.
     #[wasm_bindgen(js_name = getXmlFragment)]
-    pub fn get_xml_fragment(self, name: &str) -> YXmlFragment {
+    pub fn get_xml_fragment(&self, name: &str) -> YXmlFragment {
         self.deref().get_or_insert_xml_fragment(name).into()
     }
 
@@ -281,7 +250,7 @@ impl YDoc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YXmlElement` instance.
     #[wasm_bindgen(js_name = getXmlElement)]
-    pub fn get_xml_element(self, name: &str) -> YXmlElement {
+    pub fn get_xml_element(&self, name: &str) -> YXmlElement {
         self.deref().get_or_insert_xml_element(name).into()
     }
 
@@ -293,7 +262,7 @@ impl YDoc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YXmlText` instance.
     #[wasm_bindgen(js_name = getXmlText)]
-    pub fn get_xml_text(self, name: &str) -> YXmlText {
+    pub fn get_xml_text(&self, name: &str) -> YXmlText {
         self.deref().get_or_insert_xml_text(name).into()
     }
 
@@ -302,15 +271,21 @@ impl YDoc {
     /// update.
     ///
     /// Returns an observer, which can be freed in order to unsubscribe this callback.
-    #[wasm_bindgen(js_name = onUpdate)]
-    pub fn on_update(self, f: js_sys::Function) -> YUpdateObserver {
+    #[wasm_bindgen(js_name = observeUpdate)]
+    pub fn observe_update(&self, f: js_sys::Function) -> SubscriptionId {
         self.deref()
-            .observe_update_v1(move |_, e| {
-                let arg = Uint8Array::from(e.update.as_slice());
-                f.call1(&JsValue::UNDEFINED, &arg).unwrap();
+            .observe_update_v1(move |txn, e| {
+                let update = Uint8Array::from(e.update.as_slice());
+                let origin = txn.origin_js();
+                f.call2(&JsValue::UNDEFINED, &update, &origin).unwrap();
             })
             .unwrap()
             .into()
+    }
+
+    #[wasm_bindgen(js_name = unobserveUpdate)]
+    pub fn unobserve_update(&self, subscription_id: SubscriptionId) {
+        self.deref().unobserve_update_v1(subscription_id)
     }
 
     /// Subscribes given function to be called any time, a remote update is being applied to this
@@ -318,23 +293,29 @@ impl YDoc {
     /// update.
     ///
     /// Returns an observer, which can be freed in order to unsubscribe this callback.
-    #[wasm_bindgen(js_name = onUpdateV2)]
-    pub fn on_update_v2(self, f: js_sys::Function) -> YUpdateObserver {
+    #[wasm_bindgen(js_name = observeUpdateV2)]
+    pub fn observe_update_v2(&self, f: js_sys::Function) -> SubscriptionId {
         self.deref()
-            .observe_update_v2(move |_, e| {
-                let arg = Uint8Array::from(e.update.as_slice());
-                f.call1(&JsValue::UNDEFINED, &arg).unwrap();
+            .observe_update_v2(move |txn, e| {
+                let update = Uint8Array::from(e.update.as_slice());
+                let origin = txn.origin_js();
+                f.call2(&JsValue::UNDEFINED, &update, &origin).unwrap();
             })
             .unwrap()
             .into()
+    }
+
+    #[wasm_bindgen(js_name = unobserveUpdateV2)]
+    pub fn unobserve_update_v2(&self, subscription_id: SubscriptionId) {
+        self.deref().unobserve_update_v2(subscription_id)
     }
 
     /// Subscribes given function to be called, whenever a transaction created by this document is
     /// being committed.
     ///
     /// Returns an observer, which can be freed in order to unsubscribe this callback.
-    #[wasm_bindgen(js_name = onAfterTransaction)]
-    pub fn on_after_transaction(self, f: js_sys::Function) -> YAfterTransactionObserver {
+    #[wasm_bindgen(js_name = observeAfterTransaction)]
+    pub fn observe_after_transaction(&self, f: js_sys::Function) -> SubscriptionId {
         self.deref()
             .observe_transaction_cleanup(move |_, e| {
                 let arg: JsValue = YAfterTransactionEvent::new(e).into();
@@ -344,12 +325,17 @@ impl YDoc {
             .into()
     }
 
+    #[wasm_bindgen(js_name = unobserveAfterTransaction)]
+    pub fn unobserve_after_transaction(&self, subscription_id: SubscriptionId) {
+        self.deref().unobserve_after_transaction(subscription_id)
+    }
+
     /// Subscribes given function to be called, whenever a subdocuments are being added, removed
     /// or loaded as children of a current document.
     ///
     /// Returns an observer, which can be freed in order to unsubscribe this callback.
-    #[wasm_bindgen(js_name = onSubdocs)]
-    pub fn on_subdocs(self, f: js_sys::Function) -> YSubdocsObserver {
+    #[wasm_bindgen(js_name = observeSubdocs)]
+    pub fn observe_subdocs(&self, f: js_sys::Function) -> SubscriptionId {
         self.deref()
             .observe_subdocs(move |_, e| {
                 let arg: JsValue = YSubdocsEvent::new(e).into();
@@ -359,11 +345,16 @@ impl YDoc {
             .into()
     }
 
+    #[wasm_bindgen(js_name = unobserveSubdocs)]
+    pub fn unobserve_subdocs(&self, subscription_id: SubscriptionId) {
+        self.deref().unobserve_subdocs(subscription_id)
+    }
+
     /// Subscribes given function to be called, whenever current document is being destroyed.
     ///
     /// Returns an observer, which can be freed in order to unsubscribe this callback.
-    #[wasm_bindgen(js_name = onDestroy)]
-    pub fn on_destroy(self, f: js_sys::Function) -> YDestroyObserver {
+    #[wasm_bindgen(js_name = observeDestroy)]
+    pub fn observe_destroy(&self, f: js_sys::Function) -> SubscriptionId {
         self.deref()
             .observe_destroy(move |_, e| {
                 let arg: JsValue = YDoc::from(e.clone()).into_js();
@@ -373,10 +364,15 @@ impl YDoc {
             .into()
     }
 
+    #[wasm_bindgen(js_name = unobserveDestroy)]
+    pub fn unobserve_destroy(&self, subscription_id: SubscriptionId) {
+        self.deref().unobserve_destroy(subscription_id)
+    }
+
     /// Notify the parent document that you request to load data into this subdocument
     /// (if it is a subdocument).
     #[wasm_bindgen(js_name = load)]
-    pub fn load(self, parent_txn: &mut Transaction) {
+    pub fn load(&self, parent_txn: &mut Transaction) {
         self.0.load(parent_txn)
     }
 
@@ -388,7 +384,7 @@ impl YDoc {
 
     /// Returns a list of sub-documents existings within the scope of this document.
     #[wasm_bindgen(js_name = getSubdocs)]
-    pub fn subdocs(self, txn: &Transaction) -> js_sys::Array {
+    pub fn subdocs(&self, txn: &Transaction) -> js_sys::Array {
         let buf = js_sys::Array::new();
         for doc in txn.subdocs() {
             let doc = YDoc::from(doc.clone());
@@ -400,7 +396,7 @@ impl YDoc {
     /// Returns a list of unique identifiers of the sub-documents existings within the scope of
     /// this document.
     #[wasm_bindgen(js_name = getSubdocGuids)]
-    pub fn subdoc_guids(self, txn: &Transaction) -> js_sys::Set {
+    pub fn subdoc_guids(&self, txn: &Transaction) -> js_sys::Set {
         let buf = js_sys::Set::new(&js_sys::Array::new());
         for uid in txn.subdoc_guids() {
             let str = uid.to_string();
@@ -458,24 +454,6 @@ impl YSubdocsEvent {
 }
 
 #[wasm_bindgen]
-pub struct YSubdocsObserver(SubdocsSubscription);
-
-impl From<SubdocsSubscription> for YSubdocsObserver {
-    fn from(o: SubdocsSubscription) -> Self {
-        YSubdocsObserver(o)
-    }
-}
-
-#[wasm_bindgen]
-pub struct YDestroyObserver(DestroySubscription);
-
-impl From<DestroySubscription> for YDestroyObserver {
-    fn from(o: DestroySubscription) -> Self {
-        YDestroyObserver(o)
-    }
-}
-
-#[wasm_bindgen]
 pub struct YAfterTransactionEvent {
     before_state: js_sys::Map,
     after_state: js_sys::Map,
@@ -488,21 +466,21 @@ impl YAfterTransactionEvent {
     /// time descriptor at the moment when transaction was originally created, prior to any changes
     /// made in scope of this transaction.
     #[wasm_bindgen(getter, js_name = beforeState)]
-    pub fn before_state(self) -> js_sys::Map {
+    pub fn before_state(&self) -> js_sys::Map {
         self.before_state.clone()
     }
 
     /// Returns a state vector - a map of entries (clientId, clock) - that represents logical
     /// time descriptor at the moment when transaction was comitted.
     #[wasm_bindgen(getter, js_name = afterState)]
-    pub fn after_state(self) -> js_sys::Map {
+    pub fn after_state(&self) -> js_sys::Map {
         self.after_state.clone()
     }
 
     /// Returns a delete set - a map of entries (clientId, (clock, len)[]) - that represents a range
     /// of all blocks deleted as part of current transaction.
     #[wasm_bindgen(getter, js_name = deleteSet)]
-    pub fn delete_set(self) -> js_sys::Map {
+    pub fn delete_set(&self) -> js_sys::Map {
         self.delete_set.clone()
     }
 
@@ -512,23 +490,5 @@ impl YAfterTransactionEvent {
             after_state: e.after_state.clone().into_js(),
             delete_set: e.delete_set.clone().into_js(),
         }
-    }
-}
-
-#[wasm_bindgen]
-pub struct YAfterTransactionObserver(TransactionCleanupSubscription);
-
-impl From<TransactionCleanupSubscription> for YAfterTransactionObserver {
-    fn from(o: TransactionCleanupSubscription) -> Self {
-        YAfterTransactionObserver(o)
-    }
-}
-
-#[wasm_bindgen]
-pub struct YUpdateObserver(UpdateSubscription);
-
-impl From<UpdateSubscription> for YUpdateObserver {
-    fn from(o: UpdateSubscription) -> Self {
-        YUpdateObserver(o)
     }
 }

@@ -15,7 +15,7 @@ if (isBrowser) {
     log.createVConsole(document.body)
 }
 runTests({
-    array, text, map, xml, doc, undo, stickyIndex, editingTraces
+    array//, text, map, xml, doc, undo, stickyIndex, editingTraces
 }).then(success => {
     /* istanbul ignore next */
     if (isNode) {

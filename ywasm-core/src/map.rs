@@ -1,15 +1,22 @@
-use crate::branch_abi;
+use std::ops::Deref;
 use wasm_bindgen::prelude::wasm_bindgen;
 use yrs::MapRef;
 
-#[repr(transparent)]
+#[wasm_bindgen]
 pub struct YMap(MapRef);
 
-branch_abi!(YMap, MapRef);
+impl From<MapRef> for YMap {
+    fn from(value: MapRef) -> Self {
+        YMap(value)
+    }
+}
 
-impl YMap {
-    pub fn new(v: MapRef) -> Self {
-        Self(v)
+impl Deref for YMap {
+    type Target = MapRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

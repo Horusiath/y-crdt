@@ -1,43 +1,64 @@
-use crate::branch_abi;
+use std::ops::Deref;
 use wasm_bindgen::prelude::wasm_bindgen;
 use yrs::{XmlElementRef, XmlFragmentRef, XmlTextRef};
 
-#[repr(transparent)]
+#[wasm_bindgen]
 pub struct YXmlFragment(XmlFragmentRef);
 
-branch_abi!(YXmlFragment, XmlFragmentRef);
+impl From<XmlFragmentRef> for YXmlFragment {
+    fn from(value: XmlFragmentRef) -> Self {
+        YXmlFragment(value)
+    }
+}
 
-impl YXmlFragment {
-    pub fn new(v: XmlFragmentRef) -> Self {
-        Self(v)
+impl Deref for YXmlFragment {
+    type Target = XmlFragmentRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 #[wasm_bindgen]
 impl YXmlFragment {}
 
-#[repr(transparent)]
+#[wasm_bindgen]
 pub struct YXmlElement(XmlElementRef);
 
-branch_abi!(YXmlElement, XmlElementRef);
+impl From<XmlElementRef> for YXmlElement {
+    fn from(value: XmlElementRef) -> Self {
+        YXmlElement(value)
+    }
+}
 
-impl YXmlElement {
-    pub fn new(v: XmlElementRef) -> Self {
-        Self(v)
+impl Deref for YXmlElement {
+    type Target = XmlElementRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 #[wasm_bindgen]
 impl YXmlElement {}
 
-#[repr(transparent)]
+#[wasm_bindgen]
 pub struct YXmlText(XmlTextRef);
 
-branch_abi!(YXmlText, XmlTextRef);
+impl From<XmlTextRef> for YXmlText {
+    fn from(value: XmlTextRef) -> Self {
+        YXmlText(value)
+    }
+}
 
-impl YXmlText {
-    pub fn new(v: XmlTextRef) -> Self {
-        Self(v)
+impl Deref for YXmlText {
+    type Target = XmlTextRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

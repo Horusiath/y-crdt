@@ -1,6 +1,5 @@
 use crate::array::ArrayExt;
-use crate::branch_ref::BranchRef;
-use crate::doc::YDoc;
+use crate::{YArray, YDoc, YMap, YText, YXmlElement, YXmlFragment, YXmlText};
 use std::collections::HashMap;
 use wasm_bindgen::JsValue;
 use yrs::block::{ItemContent, Prelim, Unused};
@@ -68,12 +67,12 @@ impl IntoJs for Value {
     fn into_js(self) -> Self::Return {
         match self {
             Value::Any(v) => v.into_js(),
-            Value::YArray(v) => BranchRef::from(v).into_js(),
-            Value::YText(v) => BranchRef::from(v).into_js(),
-            Value::YMap(v) => BranchRef::from(v).into_js(),
-            Value::YXmlElement(v) => BranchRef::from(v).into_js(),
-            Value::YXmlText(v) => BranchRef::from(v).into_js(),
-            Value::YXmlFragment(v) => BranchRef::from(v).into_js(),
+            Value::YArray(v) => YArray::from(v).into(),
+            Value::YText(v) => YText::from(v).into(),
+            Value::YMap(v) => YMap::from(v).into(),
+            Value::YXmlElement(v) => YXmlElement::from(v).into(),
+            Value::YXmlText(v) => YXmlText::from(v).into(),
+            Value::YXmlFragment(v) => YXmlFragment::from(v).into(),
             Value::YDoc(doc) => YDoc::from(doc).into_js(),
         }
     }
@@ -182,7 +181,7 @@ where
     }
 }
 
-static FIELD_TYPE: &str = "__type";
+static FIELD_KIND: &str = "__kind";
 static FIELD_PRELIM: &str = "prelim";
 
 #[repr(transparent)]
@@ -190,14 +189,14 @@ pub struct JsPrelim(JsValue);
 
 impl JsPrelim {
     pub fn type_ref(&self) -> Option<TypeRef> {
-        let field = js_sys::Reflect::get(&self.0, &JsValue::from_str(FIELD_TYPE)).ok()?;
+        let field = js_sys::Reflect::get(&self.0, &JsValue::from_str(FIELD_KIND)).ok()?;
         let value = field.as_f64()? as u8;
         match value {
             yrs::types::TYPE_REFS_ARRAY => Some(TypeRef::Array),
             yrs::types::TYPE_REFS_MAP => Some(TypeRef::Map),
             yrs::types::TYPE_REFS_TEXT => Some(TypeRef::Text),
             yrs::types::TYPE_REFS_XML_ELEMENT => {
-                let name = js_sys::Reflect::get(&self.0, &JsValue::from_str(FIELD_TYPE)).ok()?;
+                let name = js_sys::Reflect::get(&self.0, &JsValue::from_str(FIELD_KIND)).ok()?;
                 Some(TypeRef::XmlElement(name.as_string()?.into()))
             }
             yrs::types::TYPE_REFS_XML_FRAGMENT => Some(TypeRef::XmlFragment),
