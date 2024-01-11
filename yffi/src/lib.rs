@@ -16,14 +16,12 @@ use yrs::types::weak::{LinkSource, Unquote as NativeUnquote, WeakEvent, WeakRef}
 use yrs::types::xml::{Attributes as NativeAttributes, XmlNode};
 use yrs::types::xml::{TreeWalker as NativeTreeWalker, XmlFragment};
 use yrs::types::xml::{XmlEvent, XmlTextEvent};
-use yrs::types::{
-    Attrs, BranchPtr, Change, Delta, EntryChange, Event, PathSegment, TypeRef, Value,
-};
+use yrs::types::{Attrs, Change, Delta, EntryChange, Event, PathSegment, TypeRef, Value};
 use yrs::undo::EventKind;
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use yrs::{
-    uuid_v4, Any, Array, ArrayRef, Assoc, DeleteSet, GetString, Map, MapRef, Observable,
+    uuid_v4, Any, Array, ArrayRef, Assoc, BranchPtr, DeleteSet, GetString, Map, MapRef, Observable,
     OffsetKind, Options, Origin, Quotable, ReadTxn, Snapshot, StateVector, StickyIndex, Store,
     SubdocsEvent, SubdocsEventIter, SubscriptionId, Text, TextRef, Transact,
     TransactionCleanupEvent, Update, Xml, XmlElementPrelim, XmlElementRef, XmlFragmentRef,
@@ -119,7 +117,7 @@ pub type Doc = yrs::Doc;
 ///
 /// Using write methods of different shared types (eg. `ytext_insert` and `yarray_insert`) over
 /// the same branch may result in undefined behavior.
-pub type Branch = yrs::types::Branch;
+pub type Branch = yrs::Branch;
 
 /// Iterator structure used by shared array data type.
 #[repr(transparent)]

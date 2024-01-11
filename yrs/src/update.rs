@@ -2,13 +2,14 @@ use crate::block::{
     BlockRange, ClientID, Item, ItemContent, ItemPtr, BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER,
     HAS_ORIGIN, HAS_PARENT_SUB, HAS_RIGHT_ORIGIN,
 };
+use crate::branch::TypePtr;
 use crate::encoding::read::Error;
 use crate::id_set::DeleteSet;
 use crate::slice::ItemSlice;
 #[cfg(test)]
 use crate::store::Store;
 use crate::transaction::TransactionMut;
-use crate::types::{TypePtr, TypeRef};
+use crate::types::TypeRef;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
@@ -1048,8 +1049,8 @@ impl Iterator for IntoBlocks {
 #[cfg(test)]
 mod test {
     use crate::block::{Item, ItemContent};
+    use crate::branch::TypePtr;
     use crate::encoding::read::Cursor;
-    use crate::types::TypePtr;
     use crate::update::{BlockCarrier, Update};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
@@ -1244,7 +1245,7 @@ mod test {
     fn test_v1_v2() {
         let bytes = vec![0, 1, 198, 182, 140, 174, 4, 4, 2, 2, 6, 1, 4, 2, 7, 2];
         let update_v1 = Update::decode_v1(&bytes).unwrap();
-        let bytes_v2 = update_v1.encode_v2();
+        let _ = update_v1.encode_v2();
         let update_v2 = Update::decode_v1(&bytes).unwrap();
         assert_eq!(update_v1, update_v2);
     }

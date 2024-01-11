@@ -1,4 +1,5 @@
 use crate::block::{Item, ItemContent, ItemPtr, Prelim, ID};
+use crate::branch::{Branch, BranchPtr, TypePtr};
 use crate::doc::DocAddr;
 use crate::error::Error;
 use crate::event::SubdocsEvent;
@@ -7,7 +8,7 @@ use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::store::{Store, SubdocGuids, SubdocsIter};
-use crate::types::{Branch, BranchPtr, Event, Events, SharedRef, TypePtr, TypeRef, Value};
+use crate::types::{Event, Events, SharedRef, TypeRef, Value};
 use crate::update::Update;
 use crate::utils::OptionExt;
 use crate::*;

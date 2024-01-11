@@ -1,5 +1,6 @@
 use crate::block::{BlockCell, ClientID, ItemContent, ItemPtr};
 use crate::block_store::BlockStore;
+use crate::branch::{Branch, BranchPtr};
 use crate::doc::{
     AfterTransactionSubscription, DestroySubscription, DocAddr, Options, SubdocsSubscription,
 };
@@ -7,7 +8,7 @@ use crate::error::Error;
 use crate::event::SubdocsEvent;
 use crate::id_set::DeleteSet;
 use crate::slice::ItemSlice;
-use crate::types::{Branch, BranchPtr, Path, PathSegment, TypeRef};
+use crate::types::{Path, PathSegment, TypeRef};
 use crate::update::PendingUpdate;
 use crate::updates::encoder::{Encode, Encoder};
 use crate::StateVector;

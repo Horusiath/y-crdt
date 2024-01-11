@@ -17,17 +17,17 @@ use yrs::types::text::{ChangeKind, Diff, TextEvent, YChange};
 use yrs::types::weak::{LinkSource, WeakEvent, WeakPrelim, WeakRef};
 use yrs::types::xml::{XmlEvent, XmlTextEvent};
 use yrs::types::{
-    Attrs, Branch, BranchPtr, Change, DeepEventsSubscription, DeepObservable, Delta, EntryChange,
-    Event, Events, Path, PathSegment, ToJson, TypeRef, Value,
+    Attrs, Change, DeepEventsSubscription, DeepObservable, Delta, EntryChange, Event, Events, Path,
+    PathSegment, ToJson, TypeRef, Value,
 };
 use yrs::undo::UndoManager;
 use yrs::undo::{EventKind, UndoEventSubscription};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use yrs::{
-    Any, Array, ArrayRef, Assoc, DeleteSet, DestroySubscription, Doc, GetString, IndexScope, Map,
-    MapRef, Observable, Offset, OffsetKind, Options, Origin, Quotable, ReadTxn, Snapshot,
-    StateVector, StickyIndex, Store, SubdocsEvent, SubdocsEventIter, SubdocsSubscription,
+    Any, Array, ArrayRef, Assoc, Branch, BranchPtr, DeleteSet, DestroySubscription, Doc, GetString,
+    IndexScope, Map, MapRef, Observable, Offset, OffsetKind, Options, Origin, Quotable, ReadTxn,
+    Snapshot, StateVector, StickyIndex, Store, SubdocsEvent, SubdocsEventIter, SubdocsSubscription,
     Subscription, Text, TextRef, Transact, Transaction, TransactionCleanupEvent,
     TransactionCleanupSubscription, TransactionMut, Update, UpdateSubscription, Xml,
     XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlNode, XmlTextPrelim,
@@ -440,7 +440,7 @@ impl YDoc {
     /// ```
     #[wasm_bindgen(js_name=roots)]
     pub fn roots(&self, txn: &ImplicitTransaction) -> js_sys::Array {
-        let mut res = js_sys::Array::new();
+        let res = js_sys::Array::new();
         if let Some(txn) = get_txn(txn) {
             for (k, v) in txn.root_refs() {
                 let pair = js_sys::Array::new_with_length(2);

@@ -2043,7 +2043,7 @@ mod test {
         }
 
         let d2 = Doc::with_client_id(2);
-        let arr2 = d2.get_or_insert_array("array");
+        let _ = d2.get_or_insert_array("array");
         let txt2 = d2.get_or_insert_text("text");
 
         exchange_updates(&[&d1, &d2]);
@@ -2109,7 +2109,7 @@ mod test {
         }
 
         let d2 = Doc::with_client_id(2);
-        let arr2 = d2.get_or_insert_array("array");
+        let _ = d2.get_or_insert_array("array");
         let txt2 = d2.get_or_insert_text("text");
 
         exchange_updates(&[&d1, &d2]);

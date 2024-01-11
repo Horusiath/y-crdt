@@ -1,5 +1,5 @@
 use crate::block::{ItemPtr, BLOCK_GC_REF_NUMBER, GC, HAS_ORIGIN, HAS_RIGHT_ORIGIN};
-use crate::types::TypePtr;
+use crate::branch::TypePtr;
 use crate::updates::encoder::Encoder;
 use crate::{Store, ID};
 use std::ops::Deref;

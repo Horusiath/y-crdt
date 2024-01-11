@@ -1,6 +1,6 @@
 use crate::block::{BlockCell, BlockRange, ClientID, Item, ItemPtr, GC, ID};
+use crate::branch::TypePtr;
 use crate::slice::ItemSlice;
-use crate::types::TypePtr;
 use crate::utils::client_hasher::ClientHasher;
 use crate::*;
 use std::collections::hash_map::Entry;
@@ -190,7 +190,7 @@ impl BlockStore {
                 let list = e.get_mut();
                 list.push(block.into());
             }
-            Entry::Vacant(mut e) => {
+            Entry::Vacant(e) => {
                 let list = e.insert(ClientBlockList::default());
                 list.push(block.into());
             }
@@ -205,7 +205,7 @@ impl BlockStore {
                 let list = e.get_mut();
                 list.push(gc);
             }
-            Entry::Vacant(mut e) => {
+            Entry::Vacant(e) => {
                 let list = e.insert(ClientBlockList::default());
                 list.push(gc);
             }

@@ -1,9 +1,9 @@
 use crate::block::ItemPtr;
+use crate::branch::{Branch, BranchPtr};
 use crate::doc::{AfterTransactionSubscription, TransactionAcqError};
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::transaction::Origin;
-use crate::types::{Branch, BranchPtr};
 use crate::{
     DeleteSet, DestroySubscription, Doc, Observer, Subscription, SubscriptionId, Transact,
     TransactionMut, ID,

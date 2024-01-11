@@ -1,3 +1,4 @@
+use crate::branch::{Branch, BranchPtr, TypePtr};
 use crate::doc::{DocAddr, OffsetKind};
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
@@ -6,7 +7,7 @@ use crate::slice::{BlockSlice, GCSlice, ItemSlice};
 use crate::store::{Store, WeakStoreRef};
 use crate::transaction::TransactionMut;
 use crate::types::text::update_current_attributes;
-use crate::types::{Attrs, Branch, BranchPtr, TypePtr, TypeRef, Value};
+use crate::types::{Attrs, TypeRef, Value};
 use crate::undo::UndoStack;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
@@ -907,7 +908,7 @@ impl Item {
 /// relation to its neighbors and parent.
 #[derive(Debug)]
 pub(crate) struct ItemPosition {
-    pub parent: types::TypePtr,
+    pub parent: TypePtr,
     pub left: Option<ItemPtr>,
     pub right: Option<ItemPtr>,
     pub index: u32,

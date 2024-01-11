@@ -663,7 +663,7 @@ fn find_position(this: BranchPtr, txn: &mut TransactionMut, index: u32) -> Optio
     let store = txn.store_mut();
     let encoding = store.options.offset_kind;
     let mut remaining = index;
-    while let Some(mut right) = pos.right {
+    while let Some(right) = pos.right {
         if remaining == 0 {
             break;
         }

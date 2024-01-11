@@ -1,7 +1,8 @@
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
+use crate::branch::{BranchPtr, TypePtr};
 use crate::moving::{Move, StickyIndex};
 use crate::transaction::{ReadTxn, TransactionMut};
-use crate::types::{BranchPtr, TypePtr, Value};
+use crate::types::Value;
 use crate::{Assoc, ID};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
@@ -426,9 +427,7 @@ impl BlockIter {
             }
         }
         self.next_item = next_item;
-        if len < 0 {
-            self.index -= len;
-        }
+        self.index -= len;
         read
     }
 
