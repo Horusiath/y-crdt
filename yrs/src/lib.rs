@@ -574,6 +574,7 @@ pub use crate::types::xml::XmlTextRef;
 pub use crate::types::DeepObservable;
 pub use crate::types::GetString;
 pub use crate::types::Observable;
+pub use crate::types::RootRef;
 pub use crate::types::Value;
 pub use crate::update::Update;
 use rand::RngCore;

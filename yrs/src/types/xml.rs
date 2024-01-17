@@ -1,11 +1,11 @@
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::block_iter::BlockIter;
-use crate::branch::TypePtr;
+use crate::branch::{Nested, TypePtr};
 use crate::transaction::TransactionMut;
 use crate::types::text::{diff_between, TextEvent, YChange};
 use crate::types::{
     event_change_set, event_keys, Branch, BranchPtr, Change, ChangeSet, Delta, Entries,
-    EntryChange, EventHandler, MapRef, Observers, Path, SharedRef, ToJson, TypeRef, Value,
+    EntryChange, EventHandler, MapRef, Observers, Path, RootRef, SharedRef, ToJson, TypeRef, Value,
 };
 use crate::{
     Any, ArrayRef, GetString, IndexedSequence, Map, Observable, ReadTxn, StickyIndex, Text,
@@ -294,7 +294,7 @@ where
     I: IntoIterator<Item = T>,
     T: XmlPrelim,
 {
-    type Return = XmlElementRef;
+    type Return = Nested<XmlElementRef>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::XmlElement(self.0.clone()));
@@ -528,7 +528,7 @@ impl<T: Borrow<str>> XmlTextPrelim<T> {
 impl<T: Borrow<str>> XmlPrelim for XmlTextPrelim<T> {}
 
 impl<T: Borrow<str>> Prelim for XmlTextPrelim<T> {
-    type Return = XmlTextRef;
+    type Return = Nested<XmlTextRef>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::XmlText);
@@ -556,6 +556,11 @@ impl<T: Borrow<str>> Into<EmbedPrelim<XmlTextPrelim<T>>> for XmlTextPrelim<T> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct XmlFragmentRef(BranchPtr);
 
+impl RootRef for XmlFragmentRef {
+    fn type_ref() -> TypeRef {
+        TypeRef::XmlFragment
+    }
+}
 impl SharedRef for XmlFragmentRef {}
 impl XmlFragment for XmlFragmentRef {}
 impl IndexedSequence for XmlFragmentRef {}
@@ -680,7 +685,7 @@ where
     T: XmlPrelim,
     <T as Prelim>::Return: TryFrom<ItemPtr>,
 {
-    type Return = XmlFragmentRef;
+    type Return = Nested<XmlFragmentRef>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::XmlFragment);

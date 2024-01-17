@@ -13,7 +13,7 @@ pub use text::Text;
 pub use text::TextRef;
 
 use crate::block::{Item, ItemContent, ItemPtr};
-use crate::branch::{Branch, BranchPtr};
+use crate::branch::{Branch, BranchPtr, Root};
 use crate::encoding::read::Error;
 use crate::transaction::TransactionMut;
 use crate::types::array::{ArrayEvent, ArrayRef};
@@ -239,6 +239,14 @@ pub trait GetString {
 }
 
 pub trait SharedRef: From<BranchPtr> + AsRef<Branch> {}
+
+/// This type can serve as root-type element.
+pub trait RootRef: SharedRef {
+    fn root<S: Into<Arc<str>>>(name: S) -> Root<Self> {
+        Root::new(name)
+    }
+    fn type_ref() -> TypeRef;
+}
 
 pub type DeepEventsSubscription = crate::Subscription<Arc<dyn Fn(&TransactionMut, &Events) -> ()>>;
 

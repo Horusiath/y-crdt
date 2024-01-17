@@ -1,7 +1,9 @@
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::branch::Nested;
 use crate::transaction::TransactionMut;
 use crate::types::{
-    Attrs, Branch, BranchPtr, Delta, EventHandler, Observers, Path, SharedRef, TypeRef, Value,
+    Attrs, Branch, BranchPtr, Delta, EventHandler, Observers, Path, RootRef, SharedRef, TypeRef,
+    Value,
 };
 use crate::utils::OptionExt;
 use crate::*;
@@ -90,6 +92,11 @@ use std::ops::{Deref, DerefMut};
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TextRef(BranchPtr);
 
+impl RootRef for TextRef {
+    fn type_ref() -> TypeRef {
+        TypeRef::Text
+    }
+}
 impl SharedRef for TextRef {}
 impl Text for TextRef {}
 impl IndexedSequence for TextRef {}
@@ -1327,7 +1334,7 @@ impl<T: Borrow<str>> TextPrelim<T> {
 }
 
 impl<T: Borrow<str>> Prelim for TextPrelim<T> {
-    type Return = TextRef;
+    type Return = Nested<TextRef>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::Text);

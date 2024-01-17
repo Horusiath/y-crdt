@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::event::SubdocsEvent;
 use crate::id_set::DeleteSet;
 use crate::slice::ItemSlice;
-use crate::types::{Path, PathSegment, TypeRef};
+use crate::types::{Path, PathSegment, SharedRef, TypeRef};
 use crate::update::PendingUpdate;
 use crate::updates::encoder::{Encode, Encoder};
 use crate::StateVector;
@@ -32,9 +32,6 @@ pub struct Store {
     /// they have their own unique names and represent core shared types that expose operations
     /// which can be called concurrently by remote peers in a conflict-free manner.
     pub(crate) types: HashMap<Arc<str>, Box<Branch>>,
-
-    /// Registry of all alive nodes in the document store.
-    pub(crate) node_registry: HashSet<BranchPtr>,
 
     /// A block store of a current document. It represent all blocks (inserted or tombstoned
     /// operations) integrated - and therefore visible - into a current document.
@@ -68,7 +65,6 @@ impl Store {
         Store {
             options,
             types: HashMap::default(),
-            node_registry: HashSet::default(),
             blocks: BlockStore::default(),
             subdocs: HashMap::default(),
             linked_by: HashMap::default(),
@@ -93,8 +89,8 @@ impl Store {
 
     /// Returns a branch reference to a complex type identified by its pointer. Returns `None` if
     /// no such type could be found or was ever defined.
-    pub(crate) fn get_type<K: Into<Arc<str>>>(&self, key: K) -> Option<BranchPtr> {
-        let ptr = BranchPtr::from(self.types.get(&key.into())?);
+    pub(crate) fn get_root<K: AsRef<str>>(&self, key: K) -> Option<BranchPtr> {
+        let ptr = BranchPtr::from(self.types.get(key.as_ref())?);
         Some(ptr)
     }
 
@@ -115,7 +111,6 @@ impl Store {
             Entry::Vacant(e) => {
                 let mut branch = Branch::new(type_ref);
                 let branch_ref = BranchPtr::from(&mut branch);
-                self.node_registry.insert(branch_ref);
                 e.insert(branch);
                 branch_ref
             }
@@ -248,7 +243,7 @@ impl Store {
     pub fn get_type_from_path(&self, path: &Path) -> Option<BranchPtr> {
         let mut i = path.iter();
         if let Some(PathSegment::Key(root_name)) = i.next() {
-            let mut current = self.get_type(root_name.clone())?;
+            let mut current = self.get_root(root_name.clone())?;
             while let Some(segment) = i.next() {
                 match segment {
                     PathSegment::Key(key) => {
@@ -362,21 +357,6 @@ impl Store {
             }
         } {}
         (ptr, diff)
-    }
-
-    pub fn is_alive(&self, branch_ptr: &BranchPtr) -> bool {
-        self.node_registry.contains(branch_ptr)
-    }
-
-    pub(crate) fn register(&mut self, branch: &mut Box<Branch>) -> BranchPtr {
-        let ptr = BranchPtr::from(branch);
-        self.node_registry.insert(ptr);
-        ptr
-    }
-
-    pub(crate) fn deregister(&mut self, branch: &mut Box<Branch>) {
-        let ptr = BranchPtr::from(branch);
-        self.node_registry.remove(&ptr);
     }
 }
 

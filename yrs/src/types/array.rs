@@ -1,9 +1,10 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use crate::block_iter::BlockIter;
+use crate::branch::Nested;
 use crate::moving::StickyIndex;
 use crate::transaction::TransactionMut;
 use crate::types::{
-    event_change_set, Branch, BranchPtr, Change, ChangeSet, EventHandler, Observers, Path,
+    event_change_set, Branch, BranchPtr, Change, ChangeSet, EventHandler, Observers, Path, RootRef,
     SharedRef, ToJson, TypeRef, Value,
 };
 use crate::{Any, Assoc, IndexedSequence, Observable, ReadTxn, ID};
@@ -73,6 +74,11 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ArrayRef(BranchPtr);
 
+impl RootRef for ArrayRef {
+    fn type_ref() -> TypeRef {
+        TypeRef::Array
+    }
+}
 impl SharedRef for ArrayRef {}
 impl Array for ArrayRef {}
 impl IndexedSequence for ArrayRef {}
@@ -423,7 +429,7 @@ where
     V: Prelim,
     T: IntoIterator<Item = V>,
 {
-    type Return = ArrayRef;
+    type Return = Nested<ArrayRef>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::Array);

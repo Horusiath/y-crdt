@@ -1,8 +1,9 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::branch::Nested;
 use crate::transaction::TransactionMut;
 use crate::types::{
-    event_keys, Branch, BranchPtr, Entries, EntryChange, EventHandler, Observers, Path, SharedRef,
-    ToJson, TypeRef, Value,
+    event_keys, Branch, BranchPtr, Entries, EntryChange, EventHandler, Observers, Path, RootRef,
+    SharedRef, ToJson, TypeRef, Value,
 };
 use crate::*;
 use std::borrow::Borrow;
@@ -57,6 +58,11 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MapRef(BranchPtr);
 
+impl RootRef for MapRef {
+    fn type_ref() -> TypeRef {
+        TypeRef::Map
+    }
+}
 impl SharedRef for MapRef {}
 impl Map for MapRef {}
 
@@ -366,7 +372,7 @@ where
 }
 
 impl<T: Prelim> Prelim for MapPrelim<T> {
-    type Return = MapRef;
+    type Return = Nested<MapRef>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::Map);

@@ -1,5 +1,5 @@
 use crate::block::{ClientID, ItemContent, ItemPtr, Prelim};
-use crate::branch::{Branch, BranchPtr};
+use crate::branch::{Branch, BranchPtr, Root};
 use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
 use crate::store::{Store, StoreRef};
@@ -8,11 +8,11 @@ use crate::types::{ToJson, TypeRef, Value};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
-use crate::Any;
 use crate::{
     uuid_v4, ArrayRef, MapRef, ReadTxn, SubscriptionId, TextRef, Uuid, WriteTxn, XmlElementRef,
     XmlFragmentRef, XmlTextRef,
 };
+use crate::{Any, RootRef};
 use atomic_refcell::{AtomicRef, AtomicRefMut, BorrowError, BorrowMutError};
 use rand::Rng;
 use std::collections::HashMap;
@@ -114,6 +114,18 @@ impl Doc {
     /// Returns config options of this [Doc] instance.
     pub fn options(&self) -> &Options {
         self.store.options()
+    }
+
+    pub fn get_or_insert<S>(&self, root: Root<S>) -> S
+    where
+        S: RootRef,
+    {
+        let mut r = self.store.try_borrow_mut().expect(
+            "tried to get a root level type while another transaction on the document is open",
+        );
+        let mut branch_ptr = r.get_or_create_type(root.name, S::type_ref());
+        branch_ptr.store = Some(self.store.weak_ref());
+        S::from(branch_ptr)
     }
 
     /// Returns a [TextRef] data structure stored under a given `name`. Text structures are used for

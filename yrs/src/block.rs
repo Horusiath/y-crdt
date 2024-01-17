@@ -79,6 +79,7 @@ pub type ClientID = u64;
 ///
 /// [ID] corresponds to a [Lamport timestamp](https://en.wikipedia.org/wiki/Lamport_timestamp) in
 /// terms of its properties and guarantees.
+#[repr(C)]
 #[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct ID {
     /// Unique identifier of a client.
@@ -717,12 +718,7 @@ impl ItemPtr {
                 }
                 ItemContent::Type(branch) => {
                     branch.store = this.parent.as_branch().and_then(|b| b.store.clone());
-                    let ptr = if this.info.is_deleted() {
-                        BranchPtr::from(branch)
-                    } else {
-                        // if current node is alive register is as such
-                        txn.store.register(branch)
-                    };
+                    let ptr = BranchPtr::from(branch);
                     #[cfg(feature = "weak")]
                     if let TypeRef::WeakLink(source) = &ptr.type_ref {
                         source.materialize(txn, ptr);

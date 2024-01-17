@@ -1,5 +1,6 @@
 use crate::atomic::AtomicRef;
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim};
+use crate::branch::Nested;
 use crate::iter::{
     AsIter, BlockIterator, BlockSliceIterator, IntoBlockIter, MoveIter, RangeIter, TxnIterator,
     Values,
@@ -419,7 +420,7 @@ impl<P: AsRef<Branch>> From<WeakRef<P>> for WeakPrelim<P> {
 }
 
 impl<P: TryFrom<ItemPtr>> Prelim for WeakPrelim<P> {
-    type Return = WeakRef<P>;
+    type Return = Nested<WeakRef<P>>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::WeakLink(self.source.clone()));

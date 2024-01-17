@@ -6,14 +6,17 @@ use crate::types::text::TextEvent;
 use crate::types::weak::WeakEvent;
 use crate::types::xml::{XmlEvent, XmlTextEvent};
 use crate::types::{
-    DeepEventsSubscription, Entries, Event, Events, Observers, Path, PathSegment, TypeRef,
+    DeepEventsSubscription, Entries, Event, Events, Observers, Path, PathSegment, SharedRef,
+    TypeRef,
 };
 use crate::{
     ArrayRef, MapRef, Observer, Origin, ReadTxn, SubscriptionId, TextRef, TransactionMut, Value,
-    WeakRef, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
+    WeakRef, WriteTxn, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::TryFrom;
 use std::fmt::Formatter;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -590,4 +593,107 @@ impl std::fmt::Display for TypePtr {
             TypePtr::Named(name) => write!(f, "{}", name),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialOrd, PartialEq, Eq, Hash)]
+pub struct Root<S> {
+    pub(crate) name: Arc<str>,
+    _marker: PhantomData<S>,
+}
+
+impl<S> Root<S>
+where
+    BranchPtr: Into<S>,
+{
+    pub fn new<N: Into<Arc<str>>>(name: N) -> Self {
+        Root {
+            name: name.into(),
+            _marker: PhantomData::default(),
+        }
+    }
+
+    pub fn name(&self) -> &Arc<str> {
+        &self.name
+    }
+
+    pub fn materialize<T: ReadTxn>(&self, txn: &T) -> Option<S> {
+        let branch_ptr = txn.store().get_root(&self.name)?;
+        Some(branch_ptr.into())
+    }
+}
+
+impl<S> NodeRef for Root<S> {
+    type Ref = S;
+
+    fn unpack<'txn, T: ReadTxn>(&self, txn: &'txn T) -> Option<&'txn S> {
+        todo!()
+    }
+
+    fn unpack_mut<'txn, T: WriteTxn>(&self, txn: &'txn T) -> Option<&'txn mut S> {
+        todo!()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Eq, Hash)]
+pub struct Nested<S> {
+    id: ID,
+    _marker: PhantomData<S>,
+}
+
+impl<S> Nested<S>
+where
+    S: From<BranchPtr>,
+{
+    pub(crate) fn new(id: ID) -> Self {
+        Nested {
+            id,
+            _marker: PhantomData::default(),
+        }
+    }
+
+    pub fn materialize<T: ReadTxn>(&self, txn: &T) -> Option<S> {
+        let item = txn.store().blocks.get_block(&self.id)?.as_item()?;
+        if item.is_deleted() {
+            return None;
+        }
+        if let ItemContent::Type(branch) = &item.content {
+            let branch_ptr = BranchPtr::from(branch);
+            Some(branch_ptr.into())
+        } else {
+            None
+        }
+    }
+}
+
+impl<S> NodeRef for Nested<S> {
+    type Ref = S;
+
+    fn unpack<'txn, T: ReadTxn>(&self, txn: &'txn T) -> Option<&'txn S> {
+        todo!()
+    }
+
+    fn unpack_mut<'txn, T: WriteTxn>(&self, txn: &'txn T) -> Option<&'txn mut S> {
+        todo!()
+    }
+}
+
+impl<S> TryFrom<ItemPtr> for Nested<S>
+where
+    S: From<BranchPtr>,
+{
+    type Error = ItemPtr;
+
+    fn try_from(item: ItemPtr) -> Result<Self, Self::Error> {
+        if let ItemContent::Type(branch) = &item.content {
+            Ok(Self::new(item.id))
+        } else {
+            Err(item)
+        }
+    }
+}
+
+pub trait NodeRef {
+    type Ref;
+    fn unpack<'txn, T: ReadTxn>(&self, txn: &'txn T) -> Option<&'txn Self::Ref>;
+    fn unpack_mut<'txn, T: WriteTxn>(&self, txn: &'txn T) -> Option<&'txn mut Self::Ref>;
 }

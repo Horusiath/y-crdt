@@ -528,7 +528,7 @@ impl StickyIndex {
                 } // else - branch remains null
             }
             IndexScope::Root(name) => {
-                branch = txn.store().get_type(name.clone());
+                branch = txn.store().get_root(name.clone());
                 if let Some(ptr) = branch.as_ref() {
                     index = if self.assoc == Assoc::After {
                         ptr.content_len

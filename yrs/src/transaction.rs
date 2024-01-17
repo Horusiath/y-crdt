@@ -8,7 +8,7 @@ use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::store::{Store, SubdocGuids, SubdocsIter};
-use crate::types::{Event, Events, SharedRef, TypeRef, Value};
+use crate::types::{Event, Events, TypeRef, Value};
 use crate::update::Update;
 use crate::utils::OptionExt;
 use crate::*;
@@ -83,15 +83,6 @@ pub trait ReadTxn: Sized {
         encoder.to_vec()
     }
 
-    /// Check if given node is alive. Returns false if node has been deleted.
-    fn is_alive<B>(&self, node: &B) -> bool
-    where
-        B: SharedRef,
-    {
-        let ptr = BranchPtr::from(node.as_ref());
-        self.store().is_alive(&ptr)
-    }
-
     /// Returns an iterator over top level (root) shared types available in current [Doc].
     fn root_refs(&self) -> RootRefs {
         let store = self.store();
@@ -122,7 +113,7 @@ pub trait ReadTxn: Sized {
     /// interpreted as a list of text chunks).
     fn get_text(&self, name: &str) -> Option<TextRef> {
         let store = self.store();
-        let branch = store.get_type(name)?;
+        let branch = store.get_root(name)?;
         Some(TextRef::from(branch))
     }
 
@@ -137,7 +128,7 @@ pub trait ReadTxn: Sized {
     /// interpreted as a list of inserted values).
     fn get_array(&self, name: &str) -> Option<ArrayRef> {
         let store = self.store();
-        let branch = store.get_type(name)?;
+        let branch = store.get_root(name)?;
         Some(ArrayRef::from(branch))
     }
 
@@ -153,7 +144,7 @@ pub trait ReadTxn: Sized {
     /// interpreted as native map).
     fn get_map(&self, name: &str) -> Option<MapRef> {
         let store = self.store();
-        let branch = store.get_type(name)?;
+        let branch = store.get_root(name)?;
         Some(MapRef::from(branch))
     }
 
@@ -170,7 +161,7 @@ pub trait ReadTxn: Sized {
     /// XML nodes).
     fn get_xml_fragment(&self, name: &str) -> Option<XmlFragmentRef> {
         let store = self.store();
-        let branch = store.get_type(name)?;
+        let branch = store.get_root(name)?;
         Some(XmlFragmentRef::from(branch))
     }
 
@@ -187,7 +178,7 @@ pub trait ReadTxn: Sized {
     /// XML nodes).
     fn get_xml_element(&self, name: &str) -> Option<XmlElementRef> {
         let store = self.store();
-        let branch = store.get_type(name)?;
+        let branch = store.get_root(name)?;
         Some(XmlElementRef::from(branch))
     }
 
@@ -202,7 +193,7 @@ pub trait ReadTxn: Sized {
     /// interpreted as a list of text chunks).
     fn get_xml_text(&self, name: &str) -> Option<XmlTextRef> {
         let store = self.store();
-        let branch = store.get_type(name)?;
+        let branch = store.get_root(name)?;
         Some(XmlTextRef::from(branch))
     }
 }
@@ -529,7 +520,6 @@ impl<'doc> TransactionMut<'doc> {
                     }
                 }
                 ItemContent::Type(inner) => {
-                    self.store.deregister(inner);
                     let branch_ptr = BranchPtr::from(inner);
                     #[cfg(feature = "weak")]
                     if let TypeRef::WeakLink(source) = &branch_ptr.type_ref {
