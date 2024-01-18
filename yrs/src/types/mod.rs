@@ -13,7 +13,7 @@ pub use text::Text;
 pub use text::TextRef;
 
 use crate::block::{Item, ItemContent, ItemPtr};
-use crate::branch::{Branch, BranchPtr, Root};
+use crate::branch::{Branch, BranchPtr, Nested, Root};
 use crate::encoding::read::Error;
 use crate::transaction::TransactionMut;
 use crate::types::array::{ArrayEvent, ArrayRef};
@@ -295,22 +295,22 @@ pub enum Value {
     /// Any value that it treated as a single element in it's entirety.
     Any(Any),
     /// Instance of a [TextRef].
-    YText(TextRef),
+    YText(Nested<TextRef>),
     /// Instance of an [ArrayRef].
-    YArray(ArrayRef),
+    YArray(Nested<ArrayRef>),
     /// Instance of a [MapRef].
-    YMap(MapRef),
+    YMap(Nested<MapRef>),
     /// Instance of a [XmlElementRef].
-    YXmlElement(XmlElementRef),
+    YXmlElement(Nested<XmlElementRef>),
     /// Instance of a [XmlFragmentRef].
-    YXmlFragment(XmlFragmentRef),
+    YXmlFragment(Nested<XmlFragmentRef>),
     /// Instance of a [XmlTextRef].
-    YXmlText(XmlTextRef),
+    YXmlText(Nested<XmlTextRef>),
     /// Subdocument.
     YDoc(Doc),
     /// Instance of a [WeakRef] or unspecified type (requires manual casting).
     #[cfg(feature = "weak")]
-    YWeakLink(WeakRef<BranchPtr>),
+    YWeakLink(Nested<WeakRef<BranchPtr>>),
     /// Instance of a shared collection of undefined type. Usually happens when it refers to a root
     /// type that has not been defined locally. Can also refer to a [WeakRef] if "weak" feature flag
     /// was not set.

@@ -11,7 +11,7 @@ use crate::types::{
 };
 use crate::{
     ArrayRef, MapRef, Observer, Origin, ReadTxn, SubscriptionId, TextRef, TransactionMut, Value,
-    WeakRef, WriteTxn, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
+    WeakRef, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryFrom;
@@ -376,6 +376,14 @@ impl Branch {
         }
         false
     }
+
+    pub fn as_nested<S: SharedRef>(&self) -> Option<Nested<S>> {
+        if let Some(item) = &self.item {
+            Some(Nested::new(item.id))
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct Iter<'a, T> {
@@ -516,7 +524,7 @@ impl Into<Value> for BranchPtr {
             //TYPE_REFS_XML_HOOK => Value::YXmlHook(XmlHookRef::from(self)),
             #[cfg(feature = "weak")]
             TypeRef::WeakLink(_) => Value::YWeakLink(WeakRef::from(self)),
-            _ => Value::UndefinedRef(self),
+            TypeRef::XmlHook | TypeRef::SubDoc | TypeRef::Undefined => Value::UndefinedRef(self),
         }
     }
 }
@@ -628,10 +636,6 @@ impl<S> NodeRef for Root<S> {
     fn unpack<'txn, T: ReadTxn>(&self, txn: &'txn T) -> Option<&'txn S> {
         todo!()
     }
-
-    fn unpack_mut<'txn, T: WriteTxn>(&self, txn: &'txn T) -> Option<&'txn mut S> {
-        todo!()
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Eq, Hash)]
@@ -671,10 +675,6 @@ impl<S> NodeRef for Nested<S> {
     fn unpack<'txn, T: ReadTxn>(&self, txn: &'txn T) -> Option<&'txn S> {
         todo!()
     }
-
-    fn unpack_mut<'txn, T: WriteTxn>(&self, txn: &'txn T) -> Option<&'txn mut S> {
-        todo!()
-    }
 }
 
 impl<S> TryFrom<ItemPtr> for Nested<S>
@@ -695,5 +695,4 @@ where
 pub trait NodeRef {
     type Ref;
     fn unpack<'txn, T: ReadTxn>(&self, txn: &'txn T) -> Option<&'txn Self::Ref>;
-    fn unpack_mut<'txn, T: WriteTxn>(&self, txn: &'txn T) -> Option<&'txn mut Self::Ref>;
 }

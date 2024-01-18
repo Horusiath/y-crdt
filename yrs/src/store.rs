@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::event::SubdocsEvent;
 use crate::id_set::DeleteSet;
 use crate::slice::ItemSlice;
-use crate::types::{Path, PathSegment, SharedRef, TypeRef};
+use crate::types::{Path, PathSegment, TypeRef};
 use crate::update::PendingUpdate;
 use crate::updates::encoder::{Encode, Encoder};
 use crate::StateVector;
