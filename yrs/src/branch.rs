@@ -872,6 +872,7 @@ impl BranchID {
         let block = txn.store().blocks.get_block(id)?;
         if let BlockCell::Block(block) = block {
             if let ItemContent::Type(branch) = &block.content {
+                //TODO: txn.store.follow_redone(id) ?
                 return Some(BranchPtr::from(&*branch));
             }
         }

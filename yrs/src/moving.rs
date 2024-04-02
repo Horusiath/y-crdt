@@ -1,8 +1,9 @@
 use crate::block::{ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
 use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
+use crate::slice::ItemSlice;
 use crate::transaction::TransactionMut;
+use crate::types::cursor::CursorError;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::{BranchID, ReadTxn, WriteTxn, ID};
@@ -10,7 +11,6 @@ use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 use std::fmt::Formatter;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Move {
@@ -39,7 +39,7 @@ impl Move {
 
     pub fn is_collapsed(&self) -> bool {
         match (&self.start.scope, &self.end.scope) {
-            (IndexScope::Relative(id1), IndexScope::Relative(id2)) => id1.eq(id2),
+            (IndexScope::Bounded(id1), IndexScope::Bounded(id2)) => id1.eq(id2),
             _ => false,
         }
     }
@@ -326,8 +326,8 @@ impl Decode for Move {
         } else {
             ID::new(decoder.read_var()?, decoder.read_var()?)
         };
-        let start = StickyIndex::new(IndexScope::Relative(start_id), start_assoc);
-        let end = StickyIndex::new(IndexScope::Relative(end_id), end_assoc);
+        let start = StickyIndex::new(IndexScope::Bounded(start_id), start_assoc);
+        let end = StickyIndex::new(IndexScope::Bounded(end_id), end_assoc);
         Ok(Move::new(start, end, priority))
     }
 }
@@ -412,7 +412,7 @@ impl StickyIndex {
     }
 
     pub fn from_id(id: ID, assoc: Assoc) -> Self {
-        Self::new(IndexScope::Relative(id), assoc)
+        Self::new(IndexScope::Bounded(id), assoc)
     }
 
     pub fn from_type<T, B>(_txn: &T, branch: &B, assoc: Assoc) -> Self
@@ -423,9 +423,9 @@ impl StickyIndex {
         let branch = branch.as_ref();
         if let Some(ptr) = branch.item {
             let id = ptr.id().clone();
-            Self::new(IndexScope::Nested(id), assoc)
+            Self::new(IndexScope::Unbounded(BranchID::Nested(id)), assoc)
         } else if let Some(name) = &branch.name {
-            Self::new(IndexScope::Root(name.clone()), assoc)
+            Self::new(IndexScope::Unbounded(BranchID::Root(name.clone())), assoc)
         } else {
             unreachable!()
         }
@@ -442,7 +442,7 @@ impl StickyIndex {
     /// Returns `None` if current [StickyIndex] has been created on an empty shared collection (in
     /// that case there's no block that we can refer to).
     pub fn id(&self) -> Option<&ID> {
-        if let IndexScope::Relative(id) = &self.scope {
+        if let IndexScope::Bounded(id) = &self.scope {
             Some(id)
         } else {
             None
@@ -485,7 +485,7 @@ impl StickyIndex {
         let mut index = 0;
 
         match &self.scope {
-            IndexScope::Relative(right_id) => {
+            IndexScope::Bounded(right_id) => {
                 let store = txn.store();
                 if store.blocks.get_clock(&right_id.client) <= right_id.clock {
                     // type does not exist yet
@@ -519,7 +519,7 @@ impl StickyIndex {
                     }
                 }
             }
-            IndexScope::Nested(id) => {
+            IndexScope::Unbounded(BranchID::Nested(id)) => {
                 let store = txn.store();
                 if store.blocks.get_clock(&id.client) <= id.clock {
                     // type does not exist yet
@@ -531,7 +531,7 @@ impl StickyIndex {
                     branch = Some(BranchPtr::from(b.as_ref()));
                 } // else - branch remains null
             }
-            IndexScope::Root(name) => {
+            IndexScope::Unbounded(BranchID::Root(name)) => {
                 branch = txn.store().get_type(name.clone());
                 if let Some(ptr) = branch.as_ref() {
                     index = if self.assoc == Assoc::After {
@@ -556,39 +556,21 @@ impl StickyIndex {
         mut index: u32,
         assoc: Assoc,
     ) -> Option<Self> {
-        if assoc == Assoc::Before {
-            if index == 0 {
-                let context = IndexScope::from_branch(branch);
-                return Some(StickyIndex::new(context, assoc));
-            }
-            index -= 1;
-        }
-
-        let mut walker = BlockIter::new(branch);
-        if !walker.try_forward(txn, index) {
+        let mut cursor = branch.cursor();
+        if let Err(CursorError::EndOfCollection) = cursor.seek(txn, index) {
             return None;
         }
-        if walker.finished() {
-            if assoc == Assoc::Before {
-                let context = if let Some(ptr) = walker.next_item() {
-                    IndexScope::Relative(ptr.last_id())
-                } else {
-                    IndexScope::from_branch(branch)
-                };
-                Some(Self::new(context, assoc))
-            } else {
-                None
-            }
-        } else {
-            let context = if let Some(ptr) = walker.next_item() {
-                let mut id = ptr.id().clone();
-                id.clock += walker.rel();
-                IndexScope::Relative(id)
-            } else {
-                IndexScope::from_branch(branch)
-            };
-            Some(Self::new(context, assoc))
-        }
+
+        let slice = match assoc {
+            Assoc::After => cursor.left(),
+            Assoc::Before => cursor.right(),
+        };
+
+        let scope = match slice {
+            None => IndexScope::Unbounded(branch.id()),
+            Some(slice) => IndexScope::Bounded(slice.id()),
+        };
+        Some(StickyIndex { scope, assoc })
     }
 
     pub(crate) fn within_range(&self, ptr: Option<ItemPtr>) -> bool {
@@ -649,40 +631,34 @@ impl std::fmt::Display for StickyIndex {
 /// concurrent updates.
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum IndexScope {
-    /// [StickyIndex] is relative to a given block [ID]. This happens whenever we set [StickyIndex]
-    /// somewhere inside the non-empty shared collection.
-    Relative(ID),
-    /// If a containing collection is a nested y-type, which is empty, this case allows us to
-    /// identify that nested type.
-    Nested(ID),
-    /// If a containing collection is a root-level y-type, which is empty, this case allows us to
-    /// identify that nested type.
-    Root(Arc<str>),
+    /// Index points to a relative position between two elements existing within a specific branch.
+    Bounded(ID),
+    /// Index is relative to a given branch, but it's not bound to a specific position within that
+    /// branch.
+    Unbounded(BranchID),
 }
 
 impl IndexScope {
+    #[inline]
     pub fn from_branch(branch: BranchPtr) -> Self {
-        match branch.id() {
-            BranchID::Nested(id) => IndexScope::Nested(id),
-            BranchID::Root(name) => IndexScope::Root(name),
-        }
+        IndexScope::Unbounded(branch.id())
     }
 }
 
 impl Encode for IndexScope {
     fn encode<E: Encoder>(&self, encoder: &mut E) {
         match self {
-            IndexScope::Relative(id) => {
+            IndexScope::Bounded(id) => {
                 encoder.write_var(0);
                 encoder.write_var(id.client);
                 encoder.write_var(id.clock);
             }
-            IndexScope::Nested(id) => {
+            IndexScope::Unbounded(BranchID::Nested(id)) => {
                 encoder.write_var(2);
                 encoder.write_var(id.client);
                 encoder.write_var(id.clock);
             }
-            IndexScope::Root(type_name) => {
+            IndexScope::Unbounded(BranchID::Root(type_name)) => {
                 encoder.write_var(1);
                 encoder.write_string(&type_name);
             }
@@ -697,16 +673,18 @@ impl Decode for IndexScope {
             0 => {
                 let client = decoder.read_var()?;
                 let clock = decoder.read_var()?;
-                Ok(IndexScope::Relative(ID::new(client, clock)))
+                Ok(IndexScope::Bounded(ID::new(client, clock)))
             }
             1 => {
                 let type_name = decoder.read_string()?;
-                Ok(IndexScope::Root(type_name.into()))
+                Ok(IndexScope::Unbounded(BranchID::Root(type_name.into())))
             }
             2 => {
                 let client = decoder.read_var()?;
                 let clock = decoder.read_var()?;
-                Ok(IndexScope::Nested(ID::new(client, clock)))
+                Ok(IndexScope::Unbounded(BranchID::Nested(ID::new(
+                    client, clock,
+                ))))
             }
             _ => Err(Error::UnexpectedValue),
         }

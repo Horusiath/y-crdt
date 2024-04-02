@@ -25,20 +25,30 @@ impl RawCursor {
         self.index
     }
 
-    pub fn forward<T: ReadTxn>(&mut self, txn: &T, offset: u32) {
+    pub fn left(&self) -> Option<&ItemSlice> {
         todo!()
     }
 
-    pub fn backward<T: ReadTxn>(&mut self, txn: &T, offset: u32) {
+    pub fn right(&self) -> Option<&ItemSlice> {
         todo!()
     }
 
-    pub fn seek<T: ReadTxn>(&mut self, txn: &T, index: u32) {
+    pub fn forward<T: ReadTxn>(&mut self, txn: &T, offset: u32) -> Result<(), CursorError> {
+        todo!()
+    }
+
+    pub fn backward<T: ReadTxn>(&mut self, txn: &T, offset: u32) -> Result<(), CursorError> {
+        todo!()
+    }
+
+    pub fn seek<T: ReadTxn>(&mut self, txn: &T, index: u32) -> Result<(), CursorError> {
         let diff: i32 = index as i32 - self.index as i32;
         if diff > 0 {
             self.forward(txn, diff as u32)
         } else if diff < 0 {
             self.backward(txn, (-diff) as u32)
+        } else {
+            Ok(())
         }
     }
 
@@ -53,4 +63,10 @@ impl RawCursor {
     pub fn read_values<T: ReadTxn>(&mut self, t: &T, buf: &mut [Value]) -> u32 {
         todo!()
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CursorError {
+    #[error("cursor reached end of collection")]
+    EndOfCollection,
 }

@@ -1,5 +1,4 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
 use crate::moving::{Move, StickyIndex};
 use crate::transaction::TransactionMut;
 use crate::types::cursor::RawCursor;
@@ -11,7 +10,7 @@ use crate::{Any, Assoc, DeepObservable, IndexedSequence, Observable, ReadTxn, ID
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -87,19 +86,12 @@ impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
     fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
-        let mut walker = BlockIter::new(self.0);
         let len = self.0.len();
+        let mut cursor = self.as_ref().cursor();
         let mut buf = vec![Value::default(); len as usize];
-        let read = walker.slice(txn, &mut buf);
-        if read == len {
-            let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
-            Any::Array(res)
-        } else {
-            panic!(
-                "Defect: Array::to_json didn't read all elements ({}/{})",
-                read, len
-            )
-        }
+        let read = cursor.read_values(txn, buf.as_mut_slice());
+        assert_eq!(read, len);
+        Any::Array(buf.into_iter().map(|v| v.to_json(txn)).collect())
     }
 }
 
@@ -164,7 +156,7 @@ pub trait Array: AsRef<Branch> + Sized {
         V: Prelim,
     {
         let mut cursor = self.as_ref().cursor();
-        cursor.seek(txn, index);
+        cursor.seek(txn, index).unwrap();
         cursor.insert(txn, value)
     }
 
@@ -215,7 +207,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
         let mut cursor = self.as_ref().cursor();
-        cursor.seek(txn, index);
+        cursor.seek(txn, index).unwrap();
         cursor.remove_range(txn, len)
     }
 
@@ -224,7 +216,7 @@ pub trait Array: AsRef<Branch> + Sized {
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
         let mut buf = [Value::default(); 1];
         let mut cursor = self.as_ref().cursor();
-        cursor.seek(txn, index);
+        cursor.seek(txn, index).unwrap();
         if cursor.read_values(txn, buf.as_mut_slice()) == 1 {
             Some(std::mem::take(&mut buf[0]))
         } else {
@@ -251,7 +243,7 @@ pub trait Array: AsRef<Branch> + Sized {
         right.assoc = Assoc::Before;
 
         let mut cursor = self.as_ref().cursor();
-        cursor.seek(txn, target);
+        cursor.seek(txn, target).unwrap();
         cursor.insert(txn, Move::new(left, right, -1));
     }
 
@@ -298,7 +290,7 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`end` index parameter is beyond the range of an y-array");
 
         let mut cursor = self.as_ref().cursor();
-        cursor.seek(txn, target);
+        cursor.seek(txn, target).unwrap();
         cursor.insert(txn, Move::new(left, right, -1));
     }
 
