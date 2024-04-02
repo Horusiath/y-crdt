@@ -1,4 +1,5 @@
 pub mod array;
+pub(crate) mod cursor;
 pub mod map;
 pub mod text;
 #[cfg(feature = "weak")]

@@ -1,7 +1,8 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use crate::block_iter::BlockIter;
-use crate::moving::StickyIndex;
+use crate::moving::{Move, StickyIndex};
 use crate::transaction::TransactionMut;
+use crate::types::cursor::RawCursor;
 use crate::types::{
     event_change_set, Branch, BranchPtr, Change, ChangeSet, Path, RootRef, SharedRef, ToJson,
     TypeRef, Value,
@@ -162,17 +163,9 @@ pub trait Array: AsRef<Branch> + Sized {
     where
         V: Prelim,
     {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            let ptr = walker.insert_contents(txn, value);
-            if let Ok(integrated) = ptr.try_into() {
-                integrated
-            } else {
-                panic!("Defect: unexpected integrated type")
-            }
-        } else {
-            panic!("Index {} is outside of the range of an array", index);
-        }
+        let mut cursor = self.as_ref().cursor();
+        cursor.seek(txn, index);
+        cursor.insert(txn, value)
     }
 
     /// Inserts multiple `values` at the given `index`. Inserting at index `0` is equivalent to
@@ -221,20 +214,19 @@ pub trait Array: AsRef<Branch> + Sized {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.delete(txn, len)
-        } else {
-            panic!("Index {} is outside of the range of an array", index);
-        }
+        let mut cursor = self.as_ref().cursor();
+        cursor.seek(txn, index);
+        cursor.remove_range(txn, len)
     }
 
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.read_value(txn)
+        let mut buf = [Value::default(); 1];
+        let mut cursor = self.as_ref().cursor();
+        cursor.seek(txn, index);
+        if cursor.read_values(txn, buf.as_mut_slice()) == 1 {
+            Some(std::mem::take(&mut buf[0]))
         } else {
             None
         }
@@ -257,15 +249,10 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`source` index parameter is beyond the range of an y-array");
         let mut right = left.clone();
         right.assoc = Assoc::Before;
-        let mut walker = BlockIter::new(this);
-        if walker.try_forward(txn, target) {
-            walker.insert_move(txn, left, right);
-        } else {
-            panic!(
-                "`target` index parameter {} is outside of the range of an array",
-                target
-            );
-        }
+
+        let mut cursor = self.as_ref().cursor();
+        cursor.seek(txn, target);
+        cursor.insert(txn, Move::new(left, right, -1));
     }
 
     /// Moves all elements found within `start`..`end` indexes range (both side inclusive) into
@@ -309,15 +296,10 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`start` index parameter is beyond the range of an y-array");
         let right = StickyIndex::at(txn, this, end + 1, assoc_end)
             .expect("`end` index parameter is beyond the range of an y-array");
-        let mut walker = BlockIter::new(this);
-        if walker.try_forward(txn, target) {
-            walker.insert_move(txn, left, right);
-        } else {
-            panic!(
-                "`target` index parameter {} is outside of the range of an array",
-                target
-            );
-        }
+
+        let mut cursor = self.as_ref().cursor();
+        cursor.seek(txn, target);
+        cursor.insert(txn, Move::new(left, right, -1));
     }
 
     /// Returns an iterator, that can be used to lazely traverse over all values stored in a current
@@ -332,7 +314,8 @@ where
     B: Borrow<T>,
     T: ReadTxn,
 {
-    inner: BlockIter,
+    inner: RawCursor,
+    buf: [Value; 1],
     txn: B,
     _marker: PhantomData<T>,
 }
@@ -343,7 +326,8 @@ where
 {
     pub fn from(array: &ArrayRef, txn: T) -> Self {
         ArrayIter {
-            inner: BlockIter::new(array.0),
+            inner: array.as_ref().cursor(),
+            buf: [Value::default(); 1],
             txn,
             _marker: PhantomData::default(),
         }
@@ -356,7 +340,8 @@ where
 {
     pub fn from_ref(array: &Branch, txn: &'a T) -> Self {
         ArrayIter {
-            inner: BlockIter::new(BranchPtr::from(array)),
+            inner: array.cursor(),
+            buf: [Value::default(); 1],
             txn,
             _marker: PhantomData::default(),
         }
@@ -371,16 +356,11 @@ where
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.inner.finished() {
-            None
+        let txn = self.txn.borrow();
+        if self.inner.read_values(txn, self.buf.as_mut_slice()) == 1 {
+            Some(std::mem::take(&mut self.buf[0]))
         } else {
-            let mut buf = [Value::default(); 1];
-            let txn = self.txn.borrow();
-            if self.inner.slice(txn, &mut buf) != 0 {
-                Some(std::mem::replace(&mut buf[0], Value::default()))
-            } else {
-                None
-            }
+            None
         }
     }
 }

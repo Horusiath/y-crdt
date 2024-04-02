@@ -1,5 +1,6 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::types::array::ArrayEvent;
+use crate::types::cursor::RawCursor;
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
 use crate::types::xml::{XmlEvent, XmlTextEvent};
@@ -275,6 +276,11 @@ impl Branch {
         if self.type_ref == TypeRef::Undefined {
             self.type_ref = type_ref;
         }
+    }
+
+    #[inline]
+    pub(crate) fn cursor(&self) -> RawCursor {
+        RawCursor::new(BranchPtr::from(self))
     }
 
     /// Returns a length of an indexed sequence component of a current branch node.
