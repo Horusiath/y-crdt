@@ -1,7 +1,6 @@
 use crate::block::{ItemContent, ItemPtr, Prelim, Unused};
 use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
-use crate::slice::ItemSlice;
 use crate::transaction::TransactionMut;
 use crate::types::cursor::CursorError;
 use crate::updates::decoder::{Decode, Decoder};

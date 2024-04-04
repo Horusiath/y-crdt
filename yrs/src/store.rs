@@ -1,5 +1,5 @@
 use crate::block::{BlockCell, ClientID, ItemContent, ItemPtr};
-use crate::block_store::BlockStore;
+use crate::block_store::{BlockStore, ClientBlockList};
 use crate::branch::{Branch, BranchPtr};
 use crate::doc::{DocAddr, Options};
 use crate::error::Error;
@@ -273,6 +273,12 @@ impl Store {
         } else {
             None
         }
+    }
+
+    pub fn next_id(&self) -> ID {
+        let client = self.options.client_id;
+        let clock = self.blocks.get_clock(&client);
+        ID::new(client, clock)
     }
 
     /// Consumes current block slice view, materializing it into actual block representation equivalent,

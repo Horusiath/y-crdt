@@ -47,7 +47,7 @@ pub struct BlockIter(Option<ItemPtr>);
 
 impl BlockIter {
     #[inline]
-    pub fn new(ptr: Option<ItemPtr>) -> Self {
+    fn new(ptr: Option<ItemPtr>) -> Self {
         BlockIter(ptr)
     }
 
