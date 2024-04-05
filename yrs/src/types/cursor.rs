@@ -9,7 +9,7 @@ use std::convert::{TryFrom, TryInto};
 /// Raw unregistered cursor.
 pub(crate) struct RawCursor {
     index: u32,
-    offset: u32,
+    offset: i32,
     parent: BranchPtr, //TODO: eventually this should be a &'txn Branch
     iter: MoveIter,
     current: Option<ItemPtr>,
@@ -20,7 +20,7 @@ impl RawCursor {
         let iter = branch.start.to_iter().moved();
         RawCursor {
             index: 0,
-            offset: 0,
+            offset: -1,
             iter,
             parent: branch,
             current: branch.start,
@@ -36,73 +36,93 @@ impl RawCursor {
             None => (None, None),
             Some(ptr) => {
                 if self.offset == 0 {
+                    // we're at the beginning of the block
                     let left = ptr.left.map(|ptr| ptr.last_id());
                     let right = Some(ptr.id);
                     (left, right)
+                } else if self.reached_end() {
+                    // we're at the end of the block
+                    let left = ptr.last_id();
+                    (Some(ptr.last_id()), None)
                 } else {
-                    let left = ID::new(ptr.id.client, ptr.id.clock + self.offset);
-                    let right = ID::new(ptr.id.client, ptr.id.clock + self.offset - 1);
+                    // we're in the middle of the block
+                    let left = ID::new(ptr.id.client, ptr.id.clock + self.offset as u32 - 1);
+                    let right = ID::new(ptr.id.client, ptr.id.clock + self.offset as u32);
                     (Some(left), Some(right))
                 }
             }
         }
     }
 
+    #[inline]
+    pub fn reached_end(&self) -> bool {
+        self.offset == i32::MAX
+    }
+
     pub fn left(&self) -> Option<ItemSlice> {
-        if self.offset == 0 {
+        if self.offset > 0 {
+            Some(ItemSlice::new(self.current?, 0, self.offset as u32))
+        } else {
             let ptr = self.current?;
             ptr.left.map(ItemSlice::from)
-        } else {
-            Some(ItemSlice::new(self.current?, 0, self.offset))
         }
     }
 
     pub fn right(&self) -> Option<ItemSlice> {
-        if self.offset == 0 {
-            self.current.map(ItemSlice::from)
-        } else {
+        if self.offset > 0 {
             let ptr = self.current?;
-            Some(ItemSlice::new(ptr, self.offset, ptr.len - 1))
+            Some(ItemSlice::new(ptr, self.offset as u32, ptr.len - 1))
+        } else {
+            self.current.map(ItemSlice::from)
         }
     }
 
     pub fn forward<T: ReadTxn>(&mut self, txn: &T, mut offset: u32) -> Result<(), CursorError> {
         let encoding = txn.store().options.offset_kind;
-        if self.offset > 0 {
+        if self.reached_end() && offset > 0 {
+            return Err(CursorError::EndOfCollection);
+        }
+        if self.offset >= 0 {
             // we're in the middle of an existing item
             let item = match self.current {
                 None => return Err(CursorError::EndOfCollection),
                 Some(item) => item,
             };
             let len = item.content_len(encoding);
-            offset += self.offset;
-            if offset < len - 1 {
+            let new_offset = self.offset as u32 + offset;
+            if new_offset < len {
                 // offset param is still within the current item
                 self.index += offset;
-                self.offset = offset;
+                self.offset = new_offset as i32;
                 return Ok(());
-            } else if offset >= len {
+            } else if new_offset >= len {
                 // we will jump to next item shortly, adjust the length of the current offset
-                offset -= len;
-                self.offset = 0;
-                self.index += len;
+                self.index += len - self.offset as u32;
+                offset = new_offset - len;
+                self.offset = len as i32;
             }
         }
-        while let Some(item) = self.iter.next(txn) {
-            self.current = Some(item);
-            if !item.is_deleted() && item.is_countable() {
-                let len = item.content_len(encoding);
-                if offset < len - 1 {
-                    // the offset we're looking for is within current item
-                    self.offset = offset;
-                    self.index += offset;
-                    offset = 0;
-                    break;
-                } else {
-                    // adjust length and offset and jump to next item
-                    self.index += len;
-                    offset -= len;
+        loop {
+            if let Some(item) = self.iter.next(txn) {
+                self.current = Some(item);
+                if !item.is_deleted() && item.is_countable() {
+                    let len = item.content_len(encoding);
+                    if offset < len {
+                        // the offset we're looking for is within current item
+                        self.offset = offset as i32;
+                        self.index += offset;
+                        offset = 0;
+                        break;
+                    } else {
+                        // adjust length and offset and jump to next item
+                        self.index += len;
+                        offset -= len;
+                    }
                 }
+            } else {
+                // reached end of cursor
+                self.offset = i32::MAX;
+                break;
             }
         }
         if offset == 0 {
@@ -114,15 +134,15 @@ impl RawCursor {
 
     pub fn backward<T: ReadTxn>(&mut self, txn: &T, mut offset: u32) -> Result<(), CursorError> {
         let encoding = txn.store().options.offset_kind;
-        if self.offset >= offset {
+        if self.offset >= offset as i32 {
             // offset we're looking for is within the range of current item
             self.index -= offset;
-            self.offset -= offset;
+            self.offset -= offset as i32;
             return Ok(());
-        } else {
+        } else if self.offset > 0 {
             // we'll move to next item shortly, trim searched offset by the current item
-            offset -= self.offset;
-            self.index -= self.offset;
+            offset -= self.offset as u32;
+            self.index -= self.offset as u32;
             self.offset = 0;
         }
 
@@ -132,7 +152,7 @@ impl RawCursor {
                 let len = item.content_len(encoding);
                 if offset < len - 1 {
                     // the offset we're looking for is within current item
-                    self.offset = len - offset - 1;
+                    self.offset = (len - offset - 1) as i32;
                     self.index -= offset;
                     offset = 0;
                     break;
@@ -233,7 +253,7 @@ mod test {
         let array = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
 
-        // block slicing: [1,2][3][4,5][6,7,8][9]
+        // blocks: [1,2][3][4,5][6,7,8][9]
 
         array.insert_range(&mut txn, 0, [9]); // id: <1#0>
         array.insert_range(&mut txn, 0, [6, 7, 8]); // id: <1#1..3>
@@ -241,6 +261,7 @@ mod test {
         array.insert_range(&mut txn, 0, [3]); // id: <1#6>
         array.insert_range(&mut txn, 0, [1, 2]); // id: <1#7..8>
 
+        println!("{:#?}", txn.store);
         let mut c = array.as_ref().cursor();
 
         c.forward(&txn, 0).unwrap();
