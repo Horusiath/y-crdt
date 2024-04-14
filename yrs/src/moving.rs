@@ -1,6 +1,6 @@
 use crate::block::{ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
 use crate::branch::{Branch, BranchPtr};
+use crate::cursor::RawCursor;
 use crate::encoding::read::Error;
 use crate::transaction::TransactionMut;
 use crate::updates::decoder::{Decode, Decoder};
@@ -564,13 +564,13 @@ impl StickyIndex {
             index -= 1;
         }
 
-        let mut walker = BlockIter::new(branch);
+        let mut walker = RawCursor::new(branch);
         if !walker.try_forward(txn, index) {
             return None;
         }
         if walker.finished() {
             if assoc == Assoc::Before {
-                let context = if let Some(ptr) = walker.next_item() {
+                let context = if let Some(ptr) = walker.current_item() {
                     IndexScope::Relative(ptr.last_id())
                 } else {
                     IndexScope::from_branch(branch)
@@ -580,9 +580,9 @@ impl StickyIndex {
                 None
             }
         } else {
-            let context = if let Some(ptr) = walker.next_item() {
+            let context = if let Some(ptr) = walker.current_item() {
                 let mut id = ptr.id().clone();
-                id.clock += walker.rel();
+                id.clock += walker.block_offset();
                 IndexScope::Relative(id)
             } else {
                 IndexScope::from_branch(branch)

@@ -579,8 +579,8 @@ mod utils;
 
 pub mod any;
 pub mod atomic;
-mod block_iter;
 pub mod branch;
+mod cursor;
 pub mod encoding;
 mod error;
 mod gc;

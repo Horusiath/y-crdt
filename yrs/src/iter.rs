@@ -228,14 +228,14 @@ impl TxnDoubleEndedIterator for MoveIter {
 }
 
 #[derive(Debug, Default)]
-struct MoveStack(Option<Vec<MoveScope>>);
+pub(crate) struct MoveStack(Option<Vec<MoveScope>>);
 
 impl MoveStack {
     /// Returns a current scope of move operation.
     /// If `None`, it means that currently iterated elements were not moved anywhere.
     /// Otherwise, we are iterating over consecutive range of elements that have been
     /// relocated.
-    fn current_scope(&self) -> Option<&MoveScope> {
+    pub fn current_scope(&self) -> Option<&MoveScope> {
         if let Some(stack) = &self.0 {
             stack.last()
         } else {
@@ -245,7 +245,7 @@ impl MoveStack {
 
     /// Pushes a new scope on top of current move stack. This happens when we touched
     /// a new block that contains a move content.
-    fn push(&mut self, scope: MoveScope) {
+    pub fn push(&mut self, scope: MoveScope) {
         let stack = self.0.get_or_insert_with(Vec::default);
         stack.push(scope);
     }
@@ -253,7 +253,7 @@ impl MoveStack {
     /// Removes the latest scope from the move stack. Usually done when we detected that
     /// iterator reached the boundary of a move scope and we need to go back to the
     /// original destination.
-    fn pop(&mut self) -> Option<MoveScope> {
+    pub fn pop(&mut self) -> Option<MoveScope> {
         if let Some(stack) = &mut self.0 {
             stack.pop()
         } else {
@@ -263,14 +263,14 @@ impl MoveStack {
 }
 
 #[derive(Debug)]
-struct MoveScope {
+pub struct MoveScope {
     /// First block moved in this scope.
-    start: Option<ItemPtr>,
+    pub start: Option<ItemPtr>,
     /// Last block moved in this scope.
-    end: Option<ItemPtr>,
+    pub end: Option<ItemPtr>,
     /// A.k.a. return address for the move range. Block pointer where the (start, end)
     /// range has been moved. It always contains an item with move content.
-    dest: ItemPtr,
+    pub dest: ItemPtr,
 }
 
 impl MoveScope {

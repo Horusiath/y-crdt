@@ -8,38 +8,43 @@ use crate::{Assoc, ID};
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
 #[derive(Debug, Clone)]
-pub(crate) struct BlockIter {
+pub(crate) struct RawCursor {
+    /// Current shared collection scope.
     branch: BranchPtr,
+    /// Current human-readable index within the shared collection scope.
     index: u32,
-    rel: u32,
-    next_item: Option<ItemPtr>,
+    /// Position of cursor within the current block.
+    block_offset: u32,
+    /// A block where a cursor is located.
+    current_item: Option<ItemPtr>,
+    /// Flag to indicate if cursor has reached the end of the block list.
+    reached_end: bool,
     curr_move: Option<ItemPtr>,
     curr_move_start: Option<ItemPtr>,
     curr_move_end: Option<ItemPtr>,
     moved_stack: Vec<StackItem>,
-    reached_end: bool,
 }
 
-impl BlockIter {
+impl RawCursor {
     pub fn new(branch: BranchPtr) -> Self {
-        let next_item = branch.start;
+        let current_item = branch.start;
         let reached_end = branch.start.is_none();
-        BlockIter {
+        RawCursor {
             branch,
-            next_item,
+            current_item,
             reached_end,
             curr_move: None,
             curr_move_start: None,
             curr_move_end: None,
             index: 0,
-            rel: 0,
+            block_offset: 0,
             moved_stack: Vec::default(),
         }
     }
 
     #[inline]
-    pub fn rel(&self) -> u32 {
-        self.rel
+    pub fn block_offset(&self) -> u32 {
+        self.block_offset
     }
 
     #[inline]
@@ -48,14 +53,14 @@ impl BlockIter {
     }
 
     #[inline]
-    pub fn next_item(&self) -> Option<ItemPtr> {
-        self.next_item
+    pub fn current_item(&self) -> Option<ItemPtr> {
+        self.current_item
     }
 
     pub fn left(&self) -> Option<ItemPtr> {
         if self.reached_end {
-            self.next_item
-        } else if let Some(item) = self.next_item.as_deref() {
+            self.current_item
+        } else if let Some(item) = self.current_item.as_deref() {
             item.left
         } else {
             None
@@ -66,7 +71,7 @@ impl BlockIter {
         if self.reached_end {
             None
         } else {
-            self.next_item
+            self.current_item
         }
     }
 
@@ -103,19 +108,19 @@ impl BlockIter {
     }
 
     pub fn try_forward<T: ReadTxn>(&mut self, txn: &T, mut len: u32) -> bool {
-        if len == 0 && self.next_item.is_none() {
+        if len == 0 && self.current_item.is_none() {
             return true;
         }
 
-        if self.index + len > self.branch.content_len() || self.next_item.is_none() {
+        if self.index + len > self.branch.content_len() || self.current_item.is_none() {
             return false;
         }
 
-        let mut item = self.next_item;
+        let mut item = self.current_item;
         self.index += len;
-        if self.rel != 0 {
-            len += self.rel;
-            self.rel = 0;
+        if self.block_offset != 0 {
+            len += self.block_offset;
+            self.block_offset = 0;
         }
 
         let encoding = txn.store().options.offset_kind;
@@ -131,7 +136,7 @@ impl BlockIter {
                 if i.is_countable() && !i.is_deleted() && i.moved == self.curr_move && len > 0 {
                     let item_len = i.content_len(encoding);
                     if item_len > len {
-                        self.rel = len;
+                        self.block_offset = len;
                         len = 0;
                         break;
                     } else {
@@ -168,18 +173,18 @@ impl BlockIter {
         }
 
         self.index -= len;
-        self.next_item = item;
+        self.current_item = item;
         true
     }
 
     fn reduce_moves(&mut self, txn: &mut TransactionMut) {
-        let mut item = self.next_item;
+        let mut item = self.current_item;
         if item.is_some() {
             while item == self.curr_move_start {
                 item = self.curr_move;
                 self.pop(txn);
             }
-            self.next_item = item;
+            self.current_item = item;
         }
     }
 
@@ -190,19 +195,19 @@ impl BlockIter {
         self.index -= len;
         let encoding = txn.store().options.offset_kind;
         if self.reached_end {
-            if let Some(next_item) = self.next_item.as_deref() {
-                self.rel = if next_item.is_countable() && !next_item.is_deleted() {
+            if let Some(next_item) = self.current_item.as_deref() {
+                self.block_offset = if next_item.is_countable() && !next_item.is_deleted() {
                     next_item.content_len(encoding)
                 } else {
                     0
                 };
             }
         }
-        if self.rel >= len {
-            self.rel -= len;
+        if self.block_offset >= len {
+            self.block_offset -= len;
             return;
         }
-        let mut item = self.next_item;
+        let mut item = self.current_item;
         if let Some(i) = item.as_deref() {
             if let ItemContent::Move(_) = &i.content {
                 item = i.left;
@@ -212,10 +217,10 @@ impl BlockIter {
                 } else {
                     0
                 };
-                len -= self.rel;
+                len -= self.block_offset;
             }
         }
-        self.rel = 0;
+        self.block_offset = 0;
         while let Some(i) = item.as_deref() {
             if len == 0 {
                 break;
@@ -224,7 +229,7 @@ impl BlockIter {
             if i.is_countable() && !i.is_deleted() && i.moved == self.curr_move {
                 let item_len = i.content_len(encoding);
                 if len < item_len {
-                    self.rel = item_len - len;
+                    self.block_offset = item_len - len;
                     len = 0;
                 } else {
                     len -= item_len;
@@ -261,7 +266,7 @@ impl BlockIter {
                 None
             };
         }
-        self.next_item = item;
+        self.current_item = item;
     }
 
     /// We keep the moved-stack across several transactions. Local or remote changes can invalidate
@@ -298,7 +303,7 @@ impl BlockIter {
     }
 
     pub fn delete(&mut self, txn: &mut TransactionMut, mut len: u32) {
-        let mut item = self.next_item;
+        let mut item = self.current_item;
         if self.index + len > self.branch.content_len() {
             panic!("Length exceeded");
         }
@@ -315,16 +320,16 @@ impl BlockIter {
                     && i.moved == self.curr_move
                     && item != self.curr_move_end
                 {
-                    if self.rel > 0 {
+                    if self.block_offset > 0 {
                         let mut id = i.id.clone();
-                        id.clock += self.rel;
+                        id.clock += self.block_offset;
                         let store = txn.store_mut();
                         item = store
                             .blocks
                             .get_item_clean_start(&id)
                             .map(|s| store.materialize(s));
                         i = item.as_deref().unwrap();
-                        self.rel = 0;
+                        self.block_offset = 0;
                     }
                     if len < i.content_len(encoding) {
                         let mut id = i.id.clone();
@@ -347,15 +352,15 @@ impl BlockIter {
                 }
             }
             if len > 0 {
-                self.next_item = item;
+                self.current_item = item;
                 if self.try_forward(txn, 0) {
-                    item = self.next_item;
+                    item = self.current_item;
                 } else {
                     panic!("Block iter couldn't move forward");
                 }
             }
         }
-        self.next_item = item;
+        self.current_item = item;
     }
 
     pub(crate) fn slice<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Value]) -> u32 {
@@ -364,7 +369,7 @@ impl BlockIter {
             return 0;
         }
         self.index += len;
-        let mut next_item = self.next_item;
+        let mut next_item = self.current_item;
         let encoding = txn.store().options.offset_kind;
         let mut read = 0u32;
         while len > 0 {
@@ -379,14 +384,14 @@ impl BlockIter {
                             // we're iterating inside of a block
                             let r = item
                                 .content
-                                .read(self.rel as usize, &mut buf[read as usize..])
+                                .read(self.block_offset as usize, &mut buf[read as usize..])
                                 as u32;
                             read += r;
                             len -= r;
-                            if self.rel + r == item.content_len(encoding) {
-                                self.rel = 0;
+                            if self.block_offset + r == item.content_len(encoding) {
+                                self.block_offset = 0;
                             } else {
-                                self.rel += r;
+                                self.block_offset += r;
                                 continue; // do not iterate to item.right
                             }
                         }
@@ -402,11 +407,11 @@ impl BlockIter {
                 }
                 if (!self.reached_end || self.curr_move.is_some()) && len > 0 {
                     // always set nextItem before any method call
-                    self.next_item = next_item;
-                    if !self.try_forward(txn, 0) || self.next_item.is_none() {
+                    self.current_item = next_item;
+                    if !self.try_forward(txn, 0) || self.current_item.is_none() {
                         return read;
                     }
-                    next_item = self.next_item;
+                    next_item = self.current_item;
                 }
             } else if self.curr_move.is_some() {
                 // reached end but move stack still has some items,
@@ -426,7 +431,7 @@ impl BlockIter {
                 break;
             }
         }
-        self.next_item = next_item;
+        self.current_item = next_item;
         if len < 0 {
             self.index -= len;
         }
@@ -434,16 +439,16 @@ impl BlockIter {
     }
 
     fn split_rel(&mut self, txn: &mut TransactionMut) {
-        if self.rel > 0 {
-            if let Some(ptr) = self.next_item {
+        if self.block_offset > 0 {
+            if let Some(ptr) = self.current_item {
                 let mut item_id = ptr.id().clone();
-                item_id.clock += self.rel;
+                item_id.clock += self.block_offset;
                 let store = txn.store_mut();
-                self.next_item = store
+                self.current_item = store
                     .blocks
                     .get_item_clean_start(&item_id)
                     .map(|s| store.materialize(s));
-                self.rel = 0;
+                self.block_offset = 0;
             }
         }
     }
@@ -496,9 +501,9 @@ impl BlockIter {
         }
 
         if let Some(item) = right.as_deref() {
-            self.next_item = item.right;
+            self.current_item = item.right;
         } else {
-            self.next_item = left;
+            self.current_item = left;
             self.reached_end = true;
         }
 
@@ -518,12 +523,12 @@ impl BlockIter {
 }
 
 pub struct Values<'a, 'txn> {
-    iter: &'a mut BlockIter,
+    iter: &'a mut RawCursor,
     txn: &'txn mut TransactionMut<'txn>,
 }
 
 impl<'a, 'txn> Values<'a, 'txn> {
-    fn new(iter: &'a mut BlockIter, txn: &'txn mut TransactionMut<'txn>) -> Self {
+    fn new(iter: &'a mut RawCursor, txn: &'txn mut TransactionMut<'txn>) -> Self {
         Values { iter, txn }
     }
 }

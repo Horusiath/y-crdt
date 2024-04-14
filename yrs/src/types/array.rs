@@ -1,5 +1,5 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
+use crate::cursor::RawCursor;
 use crate::moving::StickyIndex;
 use crate::transaction::TransactionMut;
 use crate::types::{
@@ -86,7 +86,7 @@ impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
     fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
-        let mut walker = BlockIter::new(self.0);
+        let mut walker = RawCursor::new(self.0);
         let len = self.0.len();
         let mut buf = vec![Value::default(); len as usize];
         let read = walker.slice(txn, &mut buf);
@@ -162,7 +162,7 @@ pub trait Array: AsRef<Branch> + Sized {
     where
         V: Prelim,
     {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
+        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             let ptr = walker.insert_contents(txn, value);
             if let Ok(integrated) = ptr.try_into() {
@@ -221,7 +221,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
+        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             walker.delete(txn, len)
         } else {
@@ -232,7 +232,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
+        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             walker.read_value(txn)
         } else {
@@ -257,7 +257,7 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`source` index parameter is beyond the range of an y-array");
         let mut right = left.clone();
         right.assoc = Assoc::Before;
-        let mut walker = BlockIter::new(this);
+        let mut walker = RawCursor::new(this);
         if walker.try_forward(txn, target) {
             walker.insert_move(txn, left, right);
         } else {
@@ -309,7 +309,7 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`start` index parameter is beyond the range of an y-array");
         let right = StickyIndex::at(txn, this, end + 1, assoc_end)
             .expect("`end` index parameter is beyond the range of an y-array");
-        let mut walker = BlockIter::new(this);
+        let mut walker = RawCursor::new(this);
         if walker.try_forward(txn, target) {
             walker.insert_move(txn, left, right);
         } else {
@@ -332,7 +332,7 @@ where
     B: Borrow<T>,
     T: ReadTxn,
 {
-    inner: BlockIter,
+    inner: RawCursor,
     txn: B,
     _marker: PhantomData<T>,
 }
@@ -343,7 +343,7 @@ where
 {
     pub fn from(array: &ArrayRef, txn: T) -> Self {
         ArrayIter {
-            inner: BlockIter::new(array.0),
+            inner: RawCursor::new(array.0),
             txn,
             _marker: PhantomData::default(),
         }
@@ -356,7 +356,7 @@ where
 {
     pub fn from_ref(array: &Branch, txn: &'a T) -> Self {
         ArrayIter {
-            inner: BlockIter::new(BranchPtr::from(array)),
+            inner: RawCursor::new(BranchPtr::from(array)),
             txn,
             _marker: PhantomData::default(),
         }
