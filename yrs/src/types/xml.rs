@@ -859,10 +859,16 @@ pub trait XmlFragment: AsRef<Branch> {
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
         let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.delete(txn, len)
-        } else {
-            panic!("Index {} is outside of the range of an array", index);
+        let mut removed = 0;
+        if walker.forward(txn, index) {
+            removed = walker.delete(txn, len)
+        }
+        if removed != len {
+            panic!(
+                "Range {}..{} is outside of the range of a collection",
+                index,
+                index + len
+            );
         }
     }
 

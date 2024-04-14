@@ -1,9 +1,11 @@
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
 use crate::moving::{Move, StickyIndex};
+use crate::slice::ItemSlice;
 use crate::transaction::{ReadTxn, TransactionMut};
 use crate::types::{TypePtr, Value};
 use crate::{Assoc, ID};
+use std::cmp::Ordering;
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -42,46 +44,26 @@ impl RawCursor {
         }
     }
 
-    #[inline]
-    pub fn block_offset(&self) -> u32 {
-        self.block_offset
-    }
-
+    /// Returns true if current cursor reached the end of collection.
     #[inline]
     pub fn finished(&self) -> bool {
         (self.reached_end && self.curr_move.is_none()) || self.index == self.branch.content_len
     }
 
+    /// Returns an item slice pointing to the current position of a cursor within the block list.
     #[inline]
-    pub fn current_item(&self) -> Option<ItemPtr> {
-        self.current_item
+    pub fn current(&self) -> Option<ItemSlice> {
+        let item = self.current_item?;
+        Some(ItemSlice::new(item, self.block_offset, item.len - 1))
     }
 
-    pub fn left(&self) -> Option<ItemPtr> {
-        if self.reached_end {
-            self.current_item
-        } else if let Some(item) = self.current_item.as_deref() {
-            item.left
-        } else {
-            None
-        }
-    }
-
-    pub fn right(&self) -> Option<ItemPtr> {
-        if self.reached_end {
-            None
-        } else {
-            self.current_item
-        }
-    }
-
-    pub fn move_to(&mut self, index: u32, txn: &mut TransactionMut) {
-        if index > self.index {
-            if !self.try_forward(txn, index - self.index) {
-                panic!("Block iter couldn't move forward");
-            }
-        } else if index < self.index {
-            self.backward(txn, self.index - index)
+    /// Moves cursor position to a given index.
+    /// Returns false if index was outside the collection boundaries.
+    pub fn seek<T: ReadTxn>(&mut self, txn: &T, index: u32) -> bool {
+        match index.cmp(&self.index) {
+            Ordering::Less => self.backward(txn, self.index - index),
+            Ordering::Equal => true,
+            Ordering::Greater => self.forward(txn, index - self.index),
         }
     }
 
@@ -101,13 +83,8 @@ impl RawCursor {
         false
     }
 
-    pub fn forward<T: ReadTxn>(&mut self, txn: &T, len: u32) {
-        if !self.try_forward(txn, len) {
-            panic!("Length exceeded")
-        }
-    }
-
-    pub fn try_forward<T: ReadTxn>(&mut self, txn: &T, mut len: u32) -> bool {
+    /// Moves cursor by given number of elements to the right.
+    pub fn forward<T: ReadTxn>(&mut self, txn: &T, mut len: u32) -> bool {
         if len == 0 && self.current_item.is_none() {
             return true;
         }
@@ -188,9 +165,10 @@ impl RawCursor {
         }
     }
 
-    pub fn backward<T: ReadTxn>(&mut self, txn: &mut T, mut len: u32) {
+    /// Moves cursor by given number of elements to the left.
+    pub fn backward<T: ReadTxn>(&mut self, txn: &T, mut len: u32) -> bool {
         if self.index < len {
-            panic!("Length exceeded");
+            return false;
         }
         self.index -= len;
         let encoding = txn.store().options.offset_kind;
@@ -205,7 +183,7 @@ impl RawCursor {
         }
         if self.block_offset >= len {
             self.block_offset -= len;
-            return;
+            return true;
         }
         let mut item = self.current_item;
         if let Some(i) = item.as_deref() {
@@ -267,6 +245,7 @@ impl RawCursor {
             };
         }
         self.current_item = item;
+        true
     }
 
     /// We keep the moved-stack across several transactions. Local or remote changes can invalidate
@@ -302,21 +281,24 @@ impl RawCursor {
         self.reached_end = false;
     }
 
-    pub fn delete(&mut self, txn: &mut TransactionMut, mut len: u32) {
+    /// Deletes given number of elements, starting from current cursor position.
+    /// Returns a number of elements deleted.
+    pub fn delete(&mut self, txn: &mut TransactionMut, len: u32) -> u32 {
+        let mut remaining = len;
         let mut item = self.current_item;
-        if self.index + len > self.branch.content_len() {
-            panic!("Length exceeded");
+        if self.index + remaining > self.branch.content_len() {
+            return len - remaining;
         }
 
         let encoding = txn.store().options.offset_kind;
         let mut i: &Item;
-        while len > 0 {
+        while remaining > 0 {
             while let Some(block) = item.as_deref() {
                 i = block;
                 if !i.is_deleted()
                     && i.is_countable()
                     && !self.reached_end
-                    && len > 0
+                    && remaining > 0
                     && i.moved == self.curr_move
                     && item != self.curr_move_end
                 {
@@ -331,16 +313,17 @@ impl RawCursor {
                         i = item.as_deref().unwrap();
                         self.block_offset = 0;
                     }
-                    if len < i.content_len(encoding) {
+                    if remaining < i.content_len(encoding) {
                         let mut id = i.id.clone();
-                        id.clock += len;
+                        id.clock += remaining;
                         let store = txn.store_mut();
                         store
                             .blocks
                             .get_item_clean_start(&id)
                             .map(|s| store.materialize(s));
                     }
-                    len -= i.content_len(encoding);
+                    let content_len = i.content_len(encoding);
+                    remaining -= content_len;
                     txn.delete(item.unwrap());
                     if i.right.is_some() {
                         item = i.right;
@@ -351,9 +334,9 @@ impl RawCursor {
                     break;
                 }
             }
-            if len > 0 {
+            if remaining > 0 {
                 self.current_item = item;
-                if self.try_forward(txn, 0) {
+                if self.forward(txn, 0) {
                     item = self.current_item;
                 } else {
                     panic!("Block iter couldn't move forward");
@@ -361,6 +344,7 @@ impl RawCursor {
             }
         }
         self.current_item = item;
+        len - remaining
     }
 
     pub(crate) fn slice<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Value]) -> u32 {
@@ -408,7 +392,7 @@ impl RawCursor {
                 if (!self.reached_end || self.curr_move.is_some()) && len > 0 {
                     // always set nextItem before any method call
                     self.current_item = next_item;
-                    if !self.try_forward(txn, 0) || self.current_item.is_none() {
+                    if !self.forward(txn, 0) || self.current_item.is_none() {
                         return read;
                     }
                     next_item = self.current_item;
@@ -438,7 +422,9 @@ impl RawCursor {
         read
     }
 
-    fn split_rel(&mut self, txn: &mut TransactionMut) {
+    /// Returns items to the left and right side of the current cursor. If cursor points in
+    /// the middle of an item, that item will be split and new left and right items will be returned
+    pub fn try_split(&mut self, txn: &mut TransactionMut) -> (Option<ItemPtr>, Option<ItemPtr>) {
         if self.block_offset > 0 {
             if let Some(ptr) = self.current_item {
                 let mut item_id = ptr.id().clone();
@@ -451,6 +437,13 @@ impl RawCursor {
                 self.block_offset = 0;
             }
         }
+        if self.reached_end {
+            (self.current_item, None)
+        } else {
+            let right = self.current_item;
+            let left = right.and_then(|ptr| ptr.left);
+            (left, right)
+        }
     }
 
     pub(crate) fn read_value<T: ReadTxn>(&mut self, txn: &T) -> Option<Value> {
@@ -462,9 +455,9 @@ impl RawCursor {
         }
     }
 
-    pub fn insert_contents<V: Prelim>(&mut self, txn: &mut TransactionMut, value: V) -> ItemPtr {
+    pub fn insert<V: Prelim>(&mut self, txn: &mut TransactionMut, value: V) -> ItemPtr {
         self.reduce_moves(txn);
-        self.split_rel(txn);
+        let (left, right) = self.try_split(txn);
         let id = {
             let store = txn.store();
             let client_id = store.options.client_id;
@@ -472,8 +465,6 @@ impl RawCursor {
             ID::new(client_id, clock)
         };
         let parent = TypePtr::Branch(self.branch);
-        let right = self.right();
-        let left = self.left();
         let (mut content, remainder) = value.into_content(txn);
         let inner_ref = if let ItemContent::Type(inner_ref) = &mut content {
             Some(BranchPtr::from(inner_ref))
@@ -511,7 +502,7 @@ impl RawCursor {
     }
 
     pub fn insert_move(&mut self, txn: &mut TransactionMut, start: StickyIndex, end: StickyIndex) {
-        self.insert_contents(txn, Move::new(start, end, -1));
+        self.insert(txn, Move::new(start, end, -1));
     }
 
     pub fn values<'a, 'txn, T: ReadTxn>(

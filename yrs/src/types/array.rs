@@ -163,8 +163,8 @@ pub trait Array: AsRef<Branch> + Sized {
         V: Prelim,
     {
         let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            let ptr = walker.insert_contents(txn, value);
+        if walker.forward(txn, index) {
+            let ptr = walker.insert(txn, value);
             if let Ok(integrated) = ptr.try_into() {
                 integrated
             } else {
@@ -222,10 +222,16 @@ pub trait Array: AsRef<Branch> + Sized {
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
         let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.delete(txn, len)
-        } else {
-            panic!("Index {} is outside of the range of an array", index);
+        let mut removed = 0;
+        if walker.forward(txn, index) {
+            removed = walker.delete(txn, len);
+        }
+        if removed != len {
+            panic!(
+                "Range {}..{} is outside of the range of a collection",
+                index,
+                index + len
+            );
         }
     }
 
@@ -233,7 +239,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// of the range of a current array.
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
         let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.forward(txn, index) {
             walker.read_value(txn)
         } else {
             None
@@ -258,7 +264,7 @@ pub trait Array: AsRef<Branch> + Sized {
         let mut right = left.clone();
         right.assoc = Assoc::Before;
         let mut walker = RawCursor::new(this);
-        if walker.try_forward(txn, target) {
+        if walker.forward(txn, target) {
             walker.insert_move(txn, left, right);
         } else {
             panic!(
@@ -310,7 +316,7 @@ pub trait Array: AsRef<Branch> + Sized {
         let right = StickyIndex::at(txn, this, end + 1, assoc_end)
             .expect("`end` index parameter is beyond the range of an y-array");
         let mut walker = RawCursor::new(this);
-        if walker.try_forward(txn, target) {
+        if walker.forward(txn, target) {
             walker.insert_move(txn, left, right);
         } else {
             panic!(

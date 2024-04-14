@@ -565,12 +565,12 @@ impl StickyIndex {
         }
 
         let mut walker = RawCursor::new(branch);
-        if !walker.try_forward(txn, index) {
+        if !walker.forward(txn, index) {
             return None;
         }
         if walker.finished() {
             if assoc == Assoc::Before {
-                let context = if let Some(ptr) = walker.current_item() {
+                let context = if let Some(ptr) = walker.current() {
                     IndexScope::Relative(ptr.last_id())
                 } else {
                     IndexScope::from_branch(branch)
@@ -580,10 +580,8 @@ impl StickyIndex {
                 None
             }
         } else {
-            let context = if let Some(ptr) = walker.current_item() {
-                let mut id = ptr.id().clone();
-                id.clock += walker.block_offset();
-                IndexScope::Relative(id)
+            let context = if let Some(slice) = walker.current() {
+                IndexScope::Relative(slice.id())
             } else {
                 IndexScope::from_branch(branch)
             };
