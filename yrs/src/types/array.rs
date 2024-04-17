@@ -164,12 +164,8 @@ pub trait Array: AsRef<Branch> + Sized {
     {
         let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
         if cursor.forward(txn, index) {
-            let ptr = cursor.insert(txn, value);
-            if let Ok(integrated) = ptr.try_into() {
-                integrated
-            } else {
-                panic!("Defect: unexpected integrated type")
-            }
+            let result = cursor.insert(txn, value);
+            result
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }

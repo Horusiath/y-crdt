@@ -1,9 +1,9 @@
 use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::convert::TryFrom;
 
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
-use crate::moving::Move;
 use crate::slice::ItemSlice;
 use crate::transaction::{ReadTxn, TransactionMut};
 use crate::types::{TypePtr, Value};
@@ -428,7 +428,7 @@ impl RawCursor {
         }
     }
 
-    pub fn insert<V: Prelim>(&mut self, txn: &mut TransactionMut, value: V) -> ItemPtr {
+    pub fn insert<V: Prelim>(&mut self, txn: &mut TransactionMut, value: V) -> V::Return {
         self.reduce_moves(txn);
         let (left, right) = self.try_split(txn);
         let id = {
@@ -471,7 +471,8 @@ impl RawCursor {
             self.reached_end = true;
         }
 
-        block_ptr
+        let result = V::Return::try_from(block_ptr);
+        result.ok().unwrap()
     }
 
     pub fn values<'a, 'txn, T: ReadTxn>(
