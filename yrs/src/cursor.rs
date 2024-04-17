@@ -1,13 +1,13 @@
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
-use crate::iter::{MoveScope, MoveStack};
-use crate::moving::{Move, StickyIndex};
+use crate::moving::Move;
 use crate::slice::ItemSlice;
 use crate::transaction::{ReadTxn, TransactionMut};
 use crate::types::{TypePtr, Value};
-use crate::ID;
+use crate::{Assoc, ID};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -507,5 +507,84 @@ impl<'a, 'txn> Iterator for Values<'a, 'txn> {
                 None
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MoveStack(Option<Box<SmallVec<[MoveScope; 1]>>>);
+
+impl MoveStack {
+    /// Returns a current scope of move operation.
+    /// If `None`, it means that currently iterated elements were not moved anywhere.
+    /// Otherwise, we are iterating over consecutive range of elements that have been
+    /// relocated.
+    pub fn current_scope(&self) -> Option<&MoveScope> {
+        if let Some(stack) = &self.0 {
+            stack.last()
+        } else {
+            None
+        }
+    }
+
+    /// Pushes a new scope on top of current move stack. This happens when we touched
+    /// a new block that contains a move content.
+    pub fn push(&mut self, scope: MoveScope) {
+        let stack = self.0.get_or_insert_with(Default::default);
+        stack.push(scope)
+    }
+
+    /// Removes the latest scope from the move stack. Usually done when we detected that
+    /// iterator reached the boundary of a move scope and we need to go back to the
+    /// original destination.
+    ///
+    /// This method DOES NOT check if the next scope item on a stack was not changed due to
+    /// corresponding items being shrunk/enlarged as part of another transaction operation.
+    pub fn pop_unchecked(&mut self) -> Option<MoveScope> {
+        if let Some(stack) = &mut self.0 {
+            stack.pop()
+        } else {
+            None
+        }
+    }
+
+    /// Removes the latest scope from the move stack. Returns a new move scope item at the top of
+    /// the stack.
+    pub fn descent<T: ReadTxn>(&mut self, txn: &T) -> Option<&MoveScope> {
+        if let Some(stack) = &mut self.0 {
+            stack.pop();
+            if let Some(next) = stack.last_mut() {
+                // We need to check if Move scope start/end item pointers haven't changed i.e.
+                // because corresponding items have been split or squashed. If so, we need to
+                // recompute the new start/end item pointers based on Move content data.
+                if let ItemContent::Move(m) = &next.dest.content {
+                    if (m.start.assoc == Assoc::Before && (m.start.within_range(next.start)))
+                        || (m.end.assoc == Assoc::Before && m.end.within_range(next.end))
+                    {
+                        let (start, end) = m.get_moved_coords(txn);
+                        next.start = start;
+                        next.end = end;
+                    }
+                }
+                return Some(next);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveScope {
+    /// First block moved in this scope.
+    pub start: Option<ItemPtr>,
+    /// Last block moved in this scope.
+    pub end: Option<ItemPtr>,
+    /// A.k.a. return address for the move range. Block pointer where the (start, end)
+    /// range has been moved. It always contains an item with move content.
+    pub dest: ItemPtr,
+}
+
+impl MoveScope {
+    pub fn new(start: Option<ItemPtr>, end: Option<ItemPtr>, dest: ItemPtr) -> Self {
+        MoveScope { start, end, dest }
     }
 }
