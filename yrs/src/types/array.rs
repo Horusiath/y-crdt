@@ -1,6 +1,6 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use crate::cursor::RawCursor;
-use crate::moving::StickyIndex;
+use crate::moving::{Move, StickyIndex};
 use crate::transaction::TransactionMut;
 use crate::types::{
     event_change_set, Branch, BranchPtr, Change, ChangeSet, Path, RootRef, SharedRef, ToJson,
@@ -86,10 +86,10 @@ impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
     fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
-        let mut walker = RawCursor::new(self.0);
+        let mut cursor = RawCursor::new(self.0);
         let len = self.0.len();
         let mut buf = vec![Value::default(); len as usize];
-        let read = walker.slice(txn, &mut buf);
+        let read = cursor.slice(txn, &mut buf);
         if read == len {
             let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
             Any::Array(res)
@@ -162,9 +162,9 @@ pub trait Array: AsRef<Branch> + Sized {
     where
         V: Prelim,
     {
-        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
-        if walker.forward(txn, index) {
-            let ptr = walker.insert(txn, value);
+        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
+        if cursor.forward(txn, index) {
+            let ptr = cursor.insert(txn, value);
             if let Ok(integrated) = ptr.try_into() {
                 integrated
             } else {
@@ -221,10 +221,10 @@ pub trait Array: AsRef<Branch> + Sized {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
+        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
         let mut removed = 0;
-        if walker.forward(txn, index) {
-            removed = walker.delete(txn, len);
+        if cursor.forward(txn, index) {
+            removed = cursor.delete(txn, len);
         }
         if removed != len {
             panic!(
@@ -238,9 +238,9 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
-        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
-        if walker.forward(txn, index) {
-            walker.read_value(txn)
+        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
+        if cursor.forward(txn, index) {
+            cursor.read_value(txn)
         } else {
             None
         }
@@ -263,9 +263,9 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`source` index parameter is beyond the range of an y-array");
         let mut right = left.clone();
         right.assoc = Assoc::Before;
-        let mut walker = RawCursor::new(this);
-        if walker.forward(txn, target) {
-            walker.insert_move(txn, left, right);
+        let mut cursor = RawCursor::new(this);
+        if cursor.forward(txn, target) {
+            cursor.insert(txn, Move::new(left, right, -1));
         } else {
             panic!(
                 "`target` index parameter {} is outside of the range of an array",
@@ -315,9 +315,9 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`start` index parameter is beyond the range of an y-array");
         let right = StickyIndex::at(txn, this, end + 1, assoc_end)
             .expect("`end` index parameter is beyond the range of an y-array");
-        let mut walker = RawCursor::new(this);
-        if walker.forward(txn, target) {
-            walker.insert_move(txn, left, right);
+        let mut cursor = RawCursor::new(this);
+        if cursor.forward(txn, target) {
+            cursor.insert(txn, Move::new(left, right, -1));
         } else {
             panic!(
                 "`target` index parameter {} is outside of the range of an array",

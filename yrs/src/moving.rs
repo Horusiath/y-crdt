@@ -564,13 +564,13 @@ impl StickyIndex {
             index -= 1;
         }
 
-        let mut walker = RawCursor::new(branch);
-        if !walker.forward(txn, index) {
+        let mut cursor = RawCursor::new(branch);
+        if !cursor.forward(txn, index) {
             return None;
         }
-        if walker.finished() {
+        if cursor.finished() {
             if assoc == Assoc::Before {
-                let context = if let Some(ptr) = walker.current() {
+                let context = if let Some(ptr) = cursor.current() {
                     IndexScope::Relative(ptr.last_id())
                 } else {
                     IndexScope::from_branch(branch)
@@ -580,7 +580,7 @@ impl StickyIndex {
                 None
             }
         } else {
-            let context = if let Some(slice) = walker.current() {
+            let context = if let Some(slice) = cursor.current() {
                 IndexScope::Relative(slice.id())
             } else {
                 IndexScope::from_branch(branch)

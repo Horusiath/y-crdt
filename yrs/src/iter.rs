@@ -266,7 +266,7 @@ impl MoveStack {
 
     /// Removes the latest scope from the move stack. Returns a new move scope item at the top of
     /// the stack.
-    pub fn pop_next<T: ReadTxn>(&mut self, txn: &T) -> Option<&MoveScope> {
+    pub fn descent<T: ReadTxn>(&mut self, txn: &T) -> Option<&MoveScope> {
         if let Some(stack) = &mut self.0 {
             stack.pop();
             if let Some(next) = stack.last_mut() {

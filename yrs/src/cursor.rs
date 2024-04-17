@@ -113,7 +113,7 @@ impl RawCursor {
                 || (self.reached_end && curr_move_end.is_none() && curr_move.is_some())
             {
                 item = curr_move; // we iterate to the right after the current condition
-                self.move_stack.pop_next(txn);
+                self.move_stack.descent(txn);
                 self.reached_end = false;
             } else if item.is_none() {
                 return false;
@@ -160,7 +160,7 @@ impl RawCursor {
             let mut scope = self.move_stack.current_scope();
             while item == scope.and_then(|s| s.start) {
                 item = scope.map(|s| s.dest);
-                scope = self.move_stack.pop_next(txn);
+                scope = self.move_stack.descent(txn);
                 self.reached_end = false;
             }
             self.current_item = item;
@@ -237,7 +237,7 @@ impl RawCursor {
 
             if item == curr_move_start {
                 item = curr_move; // we iterate to the left after the current condition
-                move_scope = self.move_stack.pop_next(txn);
+                move_scope = self.move_stack.descent(txn);
                 self.reached_end = false;
             }
 
@@ -375,7 +375,7 @@ impl RawCursor {
                 // first non-null right neighbor of the popped move block
                 while let Some(scope) = move_scope {
                     next_item = scope.dest.right;
-                    move_scope = self.move_stack.pop_next(txn);
+                    move_scope = self.move_stack.descent(txn);
                     self.reached_end = false;
                     if next_item.is_some() {
                         self.reached_end = false;
@@ -472,10 +472,6 @@ impl RawCursor {
         }
 
         block_ptr
-    }
-
-    pub fn insert_move(&mut self, txn: &mut TransactionMut, start: StickyIndex, end: StickyIndex) {
-        self.insert(txn, Move::new(start, end, -1));
     }
 
     pub fn values<'a, 'txn, T: ReadTxn>(

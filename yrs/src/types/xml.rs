@@ -858,10 +858,10 @@ pub trait XmlFragment: AsRef<Branch> {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = RawCursor::new(BranchPtr::from(self.as_ref()));
+        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
         let mut removed = 0;
-        if walker.forward(txn, index) {
-            removed = walker.delete(txn, len)
+        if cursor.forward(txn, index) {
+            removed = cursor.delete(txn, len)
         }
         if removed != len {
             panic!(
