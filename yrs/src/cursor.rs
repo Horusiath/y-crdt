@@ -318,7 +318,7 @@ impl RawCursor {
         len - remaining
     }
 
-    pub(crate) fn slice<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Value]) -> u32 {
+    pub(crate) fn read<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Value]) -> u32 {
         let mut len = buf.len() as u32;
         if self.index + len > self.branch.content_len() {
             return 0;
@@ -421,7 +421,7 @@ impl RawCursor {
 
     pub(crate) fn read_value<T: ReadTxn>(&mut self, txn: &T) -> Option<Value> {
         let mut buf = [Value::default()];
-        if self.slice(txn, &mut buf) != 0 {
+        if self.read(txn, &mut buf) != 0 {
             Some(std::mem::replace(&mut buf[0], Value::default()))
         } else {
             None
@@ -502,7 +502,7 @@ impl<'a, 'txn> Iterator for Values<'a, 'txn> {
             None
         } else {
             let mut buf = [Value::default()];
-            if self.iter.slice(self.txn, &mut buf) != 0 {
+            if self.iter.read(self.txn, &mut buf) != 0 {
                 Some(std::mem::replace(&mut buf[0], Value::default()))
             } else {
                 None

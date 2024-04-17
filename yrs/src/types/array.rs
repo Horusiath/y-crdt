@@ -10,7 +10,7 @@ use crate::{Any, Assoc, DeepObservable, IndexedSequence, Observable, ReadTxn, ID
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -86,10 +86,10 @@ impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
     fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
-        let mut cursor = RawCursor::new(self.0);
+        let mut cursor = self.0.cursor();
         let len = self.0.len();
         let mut buf = vec![Value::default(); len as usize];
-        let read = cursor.slice(txn, &mut buf);
+        let read = cursor.read(txn, &mut buf);
         if read == len {
             let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
             Any::Array(res)
@@ -167,7 +167,7 @@ pub trait Array: AsRef<Branch> + Sized {
             let result = cursor.insert(txn, value);
             result
         } else {
-            panic!("Index {} is outside of the range of an array", index);
+            panic!("Index {} is outside of the range of an sequence", index);
         }
     }
 
@@ -378,7 +378,7 @@ where
         } else {
             let mut buf = [Value::default(); 1];
             let txn = self.txn.borrow();
-            if self.inner.slice(txn, &mut buf) != 0 {
+            if self.inner.read(txn, &mut buf) != 0 {
                 Some(std::mem::replace(&mut buf[0], Value::default()))
             } else {
                 None

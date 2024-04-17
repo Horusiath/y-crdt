@@ -1,4 +1,5 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::cursor::RawCursor;
 use crate::types::array::ArrayEvent;
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
@@ -240,6 +241,10 @@ impl Branch {
         })
     }
 
+    pub fn cursor(&self) -> RawCursor {
+        RawCursor::new(BranchPtr::from(self))
+    }
+
     pub fn is_deleted(&self) -> bool {
         match self.item {
             Some(ptr) => ptr.is_deleted(),
@@ -404,84 +409,6 @@ impl Branch {
             ptr = item.right.clone();
         }
         (None, None)
-    }
-    /// Removes up to a `len` of countable elements from current branch sequence, starting at the
-    /// given `index`. Returns number of removed elements.
-    pub(crate) fn remove_at(&self, txn: &mut TransactionMut, index: u32, len: u32) -> u32 {
-        let mut remaining = len;
-        let start = { self.start };
-        let (_, mut ptr) = if index == 0 {
-            (None, start)
-        } else {
-            Branch::index_to_ptr(txn, start, index)
-        };
-        while remaining > 0 {
-            if let Some(item) = ptr {
-                let encoding = txn.store().options.offset_kind;
-                if !item.is_deleted() {
-                    let content_len = item.content_len(encoding);
-                    let (l, r) = if remaining < content_len {
-                        let offset = if let ItemContent::String(s) = &item.content {
-                            s.block_offset(remaining, encoding)
-                        } else {
-                            remaining
-                        };
-                        remaining = 0;
-                        let new_right = txn.store.blocks.split_block(item, offset, encoding);
-                        if let Some(_) = item.moved {
-                            if let Some(src) = new_right {
-                                if let Some(&prev_dst) = txn.prev_moved.get(&item) {
-                                    txn.prev_moved.insert(src, prev_dst);
-                                }
-                            }
-                        }
-                        (item, new_right)
-                    } else {
-                        remaining -= content_len;
-                        (item, item.right.clone())
-                    };
-                    txn.delete(l);
-                    ptr = r;
-                } else {
-                    ptr = item.right.clone();
-                }
-            } else {
-                break;
-            }
-        }
-
-        len - remaining
-    }
-
-    /// Inserts a preliminary `value` into a current branch indexed sequence component at the given
-    /// `index`. Returns an item reference created as a result of this operation.
-    pub(crate) fn insert_at<V: Prelim>(
-        &self,
-        txn: &mut TransactionMut,
-        index: u32,
-        value: V,
-    ) -> ItemPtr {
-        let (start, parent) = {
-            if index <= self.len() {
-                (self.start, BranchPtr::from(self))
-            } else {
-                panic!("Cannot insert item at index over the length of an array")
-            }
-        };
-        let (left, right) = if index == 0 {
-            (None, None)
-        } else {
-            Branch::index_to_ptr(txn, start, index)
-        };
-        let pos = ItemPosition {
-            parent: parent.into(),
-            left,
-            right,
-            index: 0,
-            current_attrs: None,
-        };
-
-        txn.create_item(&pos, value, None)
     }
 
     pub(crate) fn path(from: BranchPtr, to: BranchPtr) -> Path {

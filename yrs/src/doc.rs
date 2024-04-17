@@ -725,7 +725,6 @@ mod test {
     };
     use std::cell::{Cell, RefCell, RefMut};
     use std::collections::BTreeSet;
-    use std::convert::TryInto;
 
     use std::rc::Rc;
 
@@ -1918,7 +1917,7 @@ mod test {
 
     #[test]
     fn out_of_order_updates() {
-        let mut updates = Rc::new(RefCell::new(vec![]));
+        let updates = Rc::new(RefCell::new(vec![]));
 
         let d1 = Doc::new();
         let sub = {

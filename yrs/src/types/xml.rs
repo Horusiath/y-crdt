@@ -823,11 +823,12 @@ pub trait XmlFragment: AsRef<Branch> {
     where
         V: XmlPrelim,
     {
-        let ptr = self.as_ref().insert_at(txn, index, xml_node);
-        if let Ok(integrated) = V::Return::try_from(ptr) {
-            integrated
+        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
+        if cursor.forward(txn, index) {
+            let result = cursor.insert(txn, xml_node);
+            result
         } else {
-            panic!("Defect: inserted XML element returned primitive value block")
+            panic!("Index {} is outside of the range of an sequence", index);
         }
     }
 
@@ -858,7 +859,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
+        let mut cursor = self.as_ref().cursor();
         let mut removed = 0;
         if cursor.forward(txn, index) {
             removed = cursor.delete(txn, len)
@@ -1509,8 +1510,8 @@ mod test {
             nodes.borrow_mut().take(),
             Some(vec![
                 Change::Retain(1),
-                Change::Added(vec![Value::YXmlElement(nested_xml2.clone())]),
                 Change::Removed(1),
+                Change::Added(vec![Value::YXmlElement(nested_xml2.clone())]),
             ])
         );
         assert_eq!(attributes.borrow_mut().take(), Some(HashMap::new()));
