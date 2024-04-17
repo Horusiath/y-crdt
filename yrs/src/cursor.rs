@@ -1,11 +1,13 @@
+use std::cmp::Ordering;
+
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
+use crate::iter::{MoveScope, MoveStack};
 use crate::moving::{Move, StickyIndex};
 use crate::slice::ItemSlice;
 use crate::transaction::{ReadTxn, TransactionMut};
 use crate::types::{TypePtr, Value};
-use crate::{Assoc, ID};
-use std::cmp::Ordering;
+use crate::ID;
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -21,10 +23,7 @@ pub(crate) struct RawCursor {
     current_item: Option<ItemPtr>,
     /// Flag to indicate if cursor has reached the end of the block list.
     reached_end: bool,
-    curr_move: Option<ItemPtr>,
-    curr_move_start: Option<ItemPtr>,
-    curr_move_end: Option<ItemPtr>,
-    moved_stack: Vec<StackItem>,
+    move_stack: MoveStack,
 }
 
 impl RawCursor {
@@ -35,19 +34,17 @@ impl RawCursor {
             branch,
             current_item,
             reached_end,
-            curr_move: None,
-            curr_move_start: None,
-            curr_move_end: None,
             index: 0,
             block_offset: 0,
-            moved_stack: Vec::default(),
+            move_stack: MoveStack::default(),
         }
     }
 
     /// Returns true if current cursor reached the end of collection.
     #[inline]
     pub fn finished(&self) -> bool {
-        (self.reached_end && self.curr_move.is_none()) || self.index == self.branch.content_len
+        (self.reached_end && self.move_stack.current_scope().is_none())
+            || self.index == self.branch.content_len
     }
 
     /// Returns an item slice pointing to the current position of a cursor within the block list.
@@ -68,15 +65,20 @@ impl RawCursor {
     }
 
     fn can_forward(&self, ptr: Option<ItemPtr>, len: u32) -> bool {
-        if !self.reached_end || self.curr_move.is_some() {
+        let move_scope = self.move_stack.current_scope();
+        if !self.reached_end || move_scope.is_some() {
             if len > 0 {
                 return true;
             } else if let Some(item) = ptr.as_deref() {
+                let (curr_move, curr_move_end) = match move_scope {
+                    None => (None, None),
+                    Some(scope) => (Some(scope.dest), scope.end),
+                };
                 return !item.is_countable()
                     || item.is_deleted()
-                    || ptr == self.curr_move_end
-                    || (self.reached_end && self.curr_move_end.is_none())
-                    || item.moved != self.curr_move;
+                    || ptr == curr_move_end
+                    || (self.reached_end && curr_move_end.is_none())
+                    || item.moved != curr_move;
             }
         }
 
@@ -102,15 +104,21 @@ impl RawCursor {
 
         let encoding = txn.store().options.offset_kind;
         while self.can_forward(item, len) {
-            if item == self.curr_move_end
-                || (self.reached_end && self.curr_move_end.is_none() && self.curr_move.is_some())
+            let move_scope = self.move_stack.current_scope();
+            let (curr_move, curr_move_end) = match move_scope {
+                None => (None, None),
+                Some(scope) => (Some(scope.dest), scope.end),
+            };
+            if item == curr_move_end
+                || (self.reached_end && curr_move_end.is_none() && curr_move.is_some())
             {
-                item = self.curr_move; // we iterate to the right after the current condition
-                self.pop(txn);
+                item = curr_move; // we iterate to the right after the current condition
+                self.move_stack.pop_next(txn);
+                self.reached_end = false;
             } else if item.is_none() {
                 return false;
             } else if let Some(i) = item.as_deref() {
-                if i.is_countable() && !i.is_deleted() && i.moved == self.curr_move && len > 0 {
+                if i.is_countable() && !i.is_deleted() && i.moved == curr_move && len > 0 {
                     let item_len = i.content_len(encoding);
                     if item_len > len {
                         self.block_offset = len;
@@ -120,19 +128,11 @@ impl RawCursor {
                         len -= item_len;
                     }
                 } else if let ItemContent::Move(m) = &i.content {
-                    if i.moved == self.curr_move {
-                        if let Some(ptr) = self.curr_move {
-                            self.moved_stack.push(StackItem::new(
-                                self.curr_move_start,
-                                self.curr_move_end,
-                                ptr,
-                            ));
-                        }
-
+                    if i.moved == curr_move {
                         let (start, end) = m.get_moved_coords(txn);
-                        self.curr_move = item;
-                        self.curr_move_start = start;
-                        self.curr_move_end = end;
+                        self.move_stack
+                            .push(MoveScope::new(start, end, item.unwrap()));
+                        self.move_stack.current_scope();
                         item = start;
                         continue;
                     }
@@ -157,9 +157,11 @@ impl RawCursor {
     fn reduce_moves(&mut self, txn: &mut TransactionMut) {
         let mut item = self.current_item;
         if item.is_some() {
-            while item == self.curr_move_start {
-                item = self.curr_move;
-                self.pop(txn);
+            let mut scope = self.move_stack.current_scope();
+            while item == scope.and_then(|s| s.start) {
+                item = scope.map(|s| s.dest);
+                scope = self.move_stack.pop_next(txn);
+                self.reached_end = false;
             }
             self.current_item = item;
         }
@@ -186,15 +188,18 @@ impl RawCursor {
             return true;
         }
         let mut item = self.current_item;
+        let mut move_scope = self.move_stack.current_scope();
         if let Some(i) = item.as_deref() {
             if let ItemContent::Move(_) = &i.content {
                 item = i.left;
             } else {
-                len += if i.is_countable() && !i.is_deleted() && i.moved == self.curr_move {
-                    i.content_len(encoding)
-                } else {
-                    0
-                };
+                len +=
+                    if i.is_countable() && !i.is_deleted() && i.moved == move_scope.map(|s| s.dest)
+                    {
+                        i.content_len(encoding)
+                    } else {
+                        0
+                    };
                 len -= self.block_offset;
             }
         }
@@ -203,8 +208,12 @@ impl RawCursor {
             if len == 0 {
                 break;
             }
+            let (curr_move, curr_move_start) = match move_scope {
+                None => (None, None),
+                Some(scope) => (Some(scope.dest), scope.start),
+            };
 
-            if i.is_countable() && !i.is_deleted() && i.moved == self.curr_move {
+            if i.is_countable() && !i.is_deleted() && i.moved == curr_move {
                 let item_len = i.content_len(encoding);
                 if len < item_len {
                     self.block_offset = item_len - len;
@@ -216,26 +225,20 @@ impl RawCursor {
                     break;
                 }
             } else if let ItemContent::Move(m) = &i.content {
-                if i.moved == self.curr_move {
-                    if let Some(curr_move) = self.curr_move {
-                        self.moved_stack.push(StackItem::new(
-                            self.curr_move_start,
-                            self.curr_move_end,
-                            curr_move,
-                        ));
-                    }
+                if i.moved == curr_move {
                     let (start, end) = m.get_moved_coords(txn);
-                    self.curr_move = item;
-                    self.curr_move_start = start;
-                    self.curr_move_end = end;
+                    self.move_stack
+                        .push(MoveScope::new(start, end, item.unwrap()));
+                    move_scope = self.move_stack.current_scope();
                     item = start;
                     continue;
                 }
             }
 
-            if item == self.curr_move_start {
-                item = self.curr_move; // we iterate to the left after the current condition
-                self.pop(txn);
+            if item == curr_move_start {
+                item = curr_move; // we iterate to the left after the current condition
+                move_scope = self.move_stack.pop_next(txn);
+                self.reached_end = false;
             }
 
             item = if let Some(i) = item.as_deref() {
@@ -246,39 +249,6 @@ impl RawCursor {
         }
         self.current_item = item;
         true
-    }
-
-    /// We keep the moved-stack across several transactions. Local or remote changes can invalidate
-    /// "moved coords" on the moved-stack.
-    ///
-    /// The reason for this is that if assoc < 0, then getMovedCoords will return the target.right
-    /// item. While the computed item is on the stack, it is possible that a user inserts something
-    /// between target and the item on the stack. Then we expect that the newly inserted item
-    /// is supposed to be on the new computed item.
-    fn pop<T: ReadTxn>(&mut self, txn: &T) {
-        let mut start = None;
-        let mut end = None;
-        let mut moved = None;
-        if let Some(stack_item) = self.moved_stack.pop() {
-            moved = Some(stack_item.moved_to);
-            start = stack_item.start;
-            end = stack_item.end;
-
-            let moved_item = stack_item.moved_to;
-            if let ItemContent::Move(m) = &moved_item.content {
-                if m.start.assoc == Assoc::Before && (m.start.within_range(start))
-                    || (m.end.within_range(end))
-                {
-                    let (s, e) = m.get_moved_coords(txn);
-                    start = s;
-                    end = e;
-                }
-            }
-        }
-        self.curr_move = moved;
-        self.curr_move_start = start;
-        self.curr_move_end = end;
-        self.reached_end = false;
     }
 
     /// Deletes given number of elements, starting from current cursor position.
@@ -293,14 +263,15 @@ impl RawCursor {
         let encoding = txn.store().options.offset_kind;
         let mut i: &Item;
         while remaining > 0 {
+            let move_scope = self.move_stack.current_scope();
             while let Some(block) = item.as_deref() {
                 i = block;
                 if !i.is_deleted()
                     && i.is_countable()
                     && !self.reached_end
                     && remaining > 0
-                    && i.moved == self.curr_move
-                    && item != self.curr_move_end
+                    && i.moved == move_scope.map(|s| s.dest)
+                    && item != move_scope.and_then(|s| s.end)
                 {
                     if self.block_offset > 0 {
                         let mut id = i.id.clone();
@@ -357,15 +328,16 @@ impl RawCursor {
         let encoding = txn.store().options.offset_kind;
         let mut read = 0u32;
         while len > 0 {
+            let mut move_scope = self.move_stack.current_scope();
             if !self.reached_end {
                 while let Some(item) = next_item {
-                    if Some(item) != self.curr_move_end
+                    if Some(item) != move_scope.and_then(|s| s.end)
                         && item.is_countable()
                         && !self.reached_end
                         && len > 0
                     {
-                        if !item.is_deleted() && item.moved == self.curr_move {
-                            // we're iterating inside of a block
+                        if !item.is_deleted() && item.moved == move_scope.map(|s| s.dest) {
+                            // we're iterating inside a block
                             let r = item
                                 .content
                                 .read(self.block_offset as usize, &mut buf[read as usize..])
@@ -389,7 +361,7 @@ impl RawCursor {
                         break;
                     }
                 }
-                if (!self.reached_end || self.curr_move.is_some()) && len > 0 {
+                if (!self.reached_end || move_scope.is_some()) && len > 0 {
                     // always set nextItem before any method call
                     self.current_item = next_item;
                     if !self.forward(txn, 0) || self.current_item.is_none() {
@@ -397,13 +369,14 @@ impl RawCursor {
                     }
                     next_item = self.current_item;
                 }
-            } else if self.curr_move.is_some() {
+            } else if move_scope.is_some() {
                 // reached end but move stack still has some items,
                 // so we try to pop move frames and move on the
                 // first non-null right neighbor of the popped move block
-                while let Some(mov) = self.curr_move.as_deref() {
-                    next_item = mov.right;
-                    self.pop(txn);
+                while let Some(scope) = move_scope {
+                    next_item = scope.dest.right;
+                    move_scope = self.move_stack.pop_next(txn);
+                    self.reached_end = false;
                     if next_item.is_some() {
                         self.reached_end = false;
                         break;
@@ -537,23 +510,6 @@ impl<'a, 'txn> Iterator for Values<'a, 'txn> {
             } else {
                 None
             }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct StackItem {
-    start: Option<ItemPtr>,
-    end: Option<ItemPtr>,
-    moved_to: ItemPtr,
-}
-
-impl StackItem {
-    fn new(start: Option<ItemPtr>, end: Option<ItemPtr>, moved_to: ItemPtr) -> Self {
-        StackItem {
-            start,
-            end,
-            moved_to,
         }
     }
 }

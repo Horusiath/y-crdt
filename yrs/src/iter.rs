@@ -131,7 +131,7 @@ impl MoveIter {
     /// to a scope destination (return address).
     /// Returns `true` if this method call had any effect.
     fn escape_current_scope(&mut self) -> bool {
-        if let Some(scope) = self.stack.pop() {
+        if let Some(scope) = self.stack.pop_unchecked() {
             self.iter = scope.dest.into_iter();
             true
         } else {
@@ -227,7 +227,7 @@ impl TxnDoubleEndedIterator for MoveIter {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct MoveStack(Option<Vec<MoveScope>>);
 
 impl MoveStack {
@@ -247,22 +247,49 @@ impl MoveStack {
     /// a new block that contains a move content.
     pub fn push(&mut self, scope: MoveScope) {
         let stack = self.0.get_or_insert_with(Vec::default);
-        stack.push(scope);
+        stack.push(scope)
     }
 
     /// Removes the latest scope from the move stack. Usually done when we detected that
     /// iterator reached the boundary of a move scope and we need to go back to the
     /// original destination.
-    pub fn pop(&mut self) -> Option<MoveScope> {
+    ///
+    /// This method DOES NOT check if the next scope item on a stack was not changed due to
+    /// corresponding items being shrunk/enlarged as part of another transaction operation.
+    pub fn pop_unchecked(&mut self) -> Option<MoveScope> {
         if let Some(stack) = &mut self.0 {
             stack.pop()
         } else {
             None
         }
     }
+
+    /// Removes the latest scope from the move stack. Returns a new move scope item at the top of
+    /// the stack.
+    pub fn pop_next<T: ReadTxn>(&mut self, txn: &T) -> Option<&MoveScope> {
+        if let Some(stack) = &mut self.0 {
+            stack.pop();
+            if let Some(next) = stack.last_mut() {
+                // We need to check if Move scope start/end item pointers haven't changed i.e.
+                // because corresponding items have been split or squashed. If so, we need to
+                // recompute the new start/end item pointers based on Move content data.
+                if let ItemContent::Move(m) = &next.dest.content {
+                    if (m.start.assoc == Assoc::Before && (m.start.within_range(next.start)))
+                        || (m.end.assoc == Assoc::Before && m.end.within_range(next.end))
+                    {
+                        let (start, end) = m.get_moved_coords(txn);
+                        next.start = start;
+                        next.end = end;
+                    }
+                }
+                return Some(next);
+            }
+        }
+        None
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MoveScope {
     /// First block moved in this scope.
     pub start: Option<ItemPtr>,
@@ -274,7 +301,7 @@ pub struct MoveScope {
 }
 
 impl MoveScope {
-    fn new(start: Option<ItemPtr>, end: Option<ItemPtr>, dest: ItemPtr) -> Self {
+    pub fn new(start: Option<ItemPtr>, end: Option<ItemPtr>, dest: ItemPtr) -> Self {
         MoveScope { start, end, dest }
     }
 }
