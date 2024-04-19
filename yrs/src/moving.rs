@@ -401,7 +401,7 @@ impl std::fmt::Display for Move {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct StickyIndex {
-    scope: IndexScope,
+    pub scope: IndexScope,
     /// If true - associate to the right block. Otherwise, associate to the left one.
     pub assoc: Assoc,
 }
@@ -570,8 +570,8 @@ impl StickyIndex {
         }
         if cursor.finished() {
             if assoc == Assoc::Before {
-                let context = if let Some(ptr) = cursor.current() {
-                    IndexScope::Relative(ptr.last_id())
+                let context = if let Some(id) = cursor.right() {
+                    IndexScope::Relative(id)
                 } else {
                     IndexScope::from_branch(branch)
                 };

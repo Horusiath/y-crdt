@@ -1,7 +1,6 @@
 use crate::block::{ClientID, ID};
 use crate::block_store::BlockStore;
 use crate::encoding::read::Error;
-use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::store::Store;
 use crate::updates::decoder::{Decode, Decoder};
@@ -624,12 +623,8 @@ impl<'ds> DeletedBlocks<'ds> {
             current_index: None,
         }
     }
-}
 
-impl<'ds> TxnIterator for DeletedBlocks<'ds> {
-    type Item = BlockSlice;
-
-    fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
+    pub fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<BlockSlice> {
         if let Some(r) = self.current_range {
             let mut block = if let Some(idx) = self.current_index.as_mut() {
                 if let Some(block) = txn
@@ -722,7 +717,6 @@ impl<'ds> TxnIterator for DeletedBlocks<'ds> {
 mod test {
     use crate::block::ItemContent;
     use crate::id_set::{IdRange, IdSet};
-    use crate::iter::TxnIterator;
     use crate::slice::BlockSlice;
     use crate::test_utils::exchange_updates;
     use crate::updates::decoder::{Decode, DecoderV1};

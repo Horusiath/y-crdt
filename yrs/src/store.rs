@@ -109,6 +109,15 @@ impl Store {
         Some(ptr)
     }
 
+    /// Returns a block with a
+    #[inline]
+    pub fn get_item(&self, id: &ID) -> Option<ItemPtr> {
+        match self.blocks.get_block(id)? {
+            BlockCell::GC(_) => None,
+            BlockCell::Block(item) => Some(ItemPtr::from(item)),
+        }
+    }
+
     /// Returns a branch reference to a complex type identified by its pointer. Returns `None` if
     /// no such type could be found or was ever defined.
     pub(crate) fn get_or_create_type<K: Into<Arc<str>>>(

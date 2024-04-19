@@ -162,7 +162,7 @@ pub trait Array: AsRef<Branch> + Sized {
     where
         V: Prelim,
     {
-        let mut cursor = RawCursor::new(BranchPtr::from(self.as_ref()));
+        let mut cursor = self.as_ref().cursor();
         if cursor.forward(txn, index) {
             let result = cursor.insert(txn, value);
             result

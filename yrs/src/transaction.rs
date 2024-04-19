@@ -5,7 +5,6 @@ use crate::error::Error;
 use crate::event::SubdocsEvent;
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
-use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::store::{Store, SubdocGuids, SubdocsIter};
 use crate::types::{Event, Events, RootRef, SharedRef, TypePtr, Value};

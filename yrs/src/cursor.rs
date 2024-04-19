@@ -7,7 +7,7 @@ use crate::branch::BranchPtr;
 use crate::slice::ItemSlice;
 use crate::transaction::{ReadTxn, TransactionMut};
 use crate::types::{TypePtr, Value};
-use crate::{Assoc, ID};
+use crate::{Assoc, BranchID, IndexScope, StickyIndex, ID};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -40,6 +40,65 @@ impl RawCursor {
         }
     }
 
+    /// Moves cursor forward until it reaches position defined by [StickyIndex].
+    /// Returns true if index position has been found. Otherwise, it will reach
+    /// the end of collection and return false.
+    pub fn from_index<T: ReadTxn>(txn: &T, index: &StickyIndex) -> Option<Self> {
+        let (branch, id) = match &index.scope {
+            IndexScope::Relative(id) => {
+                let store = txn.store();
+                let block = store.get_item(id)?;
+                let branch = *block.parent.as_branch()?;
+                (branch, Some(id))
+            }
+            IndexScope::Nested(id) => {
+                let branch = BranchID::Nested(*id).get_branch(txn)?;
+                (branch, None)
+            }
+            IndexScope::Root(name) => {
+                let branch = BranchID::Root(name.clone()).get_branch(txn)?;
+                (branch, None)
+            }
+        };
+        let mut cursor = Self::new(branch);
+        if let Some(id) = id {
+            if !cursor.forward_to(txn, id, index.assoc) {
+                return None; // cursor didn't reach the desired index
+            }
+        }
+
+        Some(cursor)
+    }
+
+    pub fn forward_to<T: ReadTxn>(&mut self, txn: &T, id: &ID, assoc: Assoc) -> bool {
+        while let Some(item) = self.current_item {
+            if item.contains(id) {
+                let mut offset = item.len - id.clock;
+                if assoc == Assoc::After {
+                    offset += 1;
+                };
+                self.block_offset = offset;
+                return true;
+            }
+
+            self.next_item(txn);
+        }
+        false
+    }
+
+    /// Moves cursor to the beginning of the next item in a collection.
+    pub fn next_item<T: ReadTxn>(&mut self, txn: &T) {
+        let encoding = txn.store().options.offset_kind;
+        if !self.finished() {
+            if let Some(item) = self.current_item {
+                self.block_offset = 0;
+                if !self.forward(txn, item.content_len(encoding)) {
+                    return;
+                }
+            }
+        }
+    }
+
     /// Returns true if current cursor reached the end of collection.
     #[inline]
     pub fn finished(&self) -> bool {
@@ -47,11 +106,35 @@ impl RawCursor {
             || self.index == self.branch.content_len
     }
 
-    /// Returns an item slice pointing to the current position of a cursor within the block list.
-    #[inline]
-    pub fn current(&self) -> Option<ItemSlice> {
+    pub fn current_item(&self) -> Option<ItemPtr> {
+        self.current_item
+    }
+
+    pub fn left(&self) -> Option<ID> {
         let item = self.current_item?;
-        Some(ItemSlice::new(item, self.block_offset, item.len - 1))
+        if self.reached_end {
+            Some(item.last_id())
+        } else if self.block_offset == 0 {
+            let left = item.left?;
+            Some(left.last_id())
+        } else {
+            let mut id = item.id;
+            id.clock += self.block_offset;
+            Some(id)
+        }
+    }
+
+    pub fn right(&self) -> Option<ID> {
+        let item = self.current_item?;
+        if self.reached_end {
+            None
+        } else if self.block_offset == item.len {
+            item.right.as_ref().map(|r| r.id)
+        } else {
+            let mut id = item.id;
+            id.clock += self.block_offset + 1;
+            Some(id)
+        }
     }
 
     /// Moves cursor position to a given index.
@@ -120,7 +203,7 @@ impl RawCursor {
             } else if let Some(i) = item.as_deref() {
                 if i.is_countable() && !i.is_deleted() && i.moved == curr_move && len > 0 {
                     let item_len = i.content_len(encoding);
-                    if item_len > len {
+                    if len < item_len {
                         self.block_offset = len;
                         len = 0;
                         break;
@@ -152,19 +235,6 @@ impl RawCursor {
         self.index -= len;
         self.current_item = item;
         true
-    }
-
-    fn reduce_moves(&mut self, txn: &mut TransactionMut) {
-        let mut item = self.current_item;
-        if item.is_some() {
-            let mut scope = self.move_stack.current_scope();
-            while item == scope.and_then(|s| s.start) {
-                item = scope.map(|s| s.dest);
-                scope = self.move_stack.descent(txn);
-                self.reached_end = false;
-            }
-            self.current_item = item;
-        }
     }
 
     /// Moves cursor by given number of elements to the left.
@@ -397,7 +467,7 @@ impl RawCursor {
 
     /// Returns items to the left and right side of the current cursor. If cursor points in
     /// the middle of an item, that item will be split and new left and right items will be returned
-    pub fn try_split(&mut self, txn: &mut TransactionMut) -> (Option<ItemPtr>, Option<ItemPtr>) {
+    pub fn split(&mut self, txn: &mut TransactionMut) -> (Option<ItemPtr>, Option<ItemPtr>) {
         if self.block_offset > 0 {
             if let Some(ptr) = self.current_item {
                 let mut item_id = ptr.id().clone();
@@ -430,7 +500,7 @@ impl RawCursor {
 
     pub fn insert<V: Prelim>(&mut self, txn: &mut TransactionMut, value: V) -> V::Return {
         self.reduce_moves(txn);
-        let (left, right) = self.try_split(txn);
+        let (left, right) = self.split(txn);
         let id = {
             let store = txn.store();
             let client_id = store.options.client_id;
@@ -475,38 +545,16 @@ impl RawCursor {
         result.ok().unwrap()
     }
 
-    pub fn values<'a, 'txn, T: ReadTxn>(
-        &'a mut self,
-        txn: &'txn mut TransactionMut<'txn>,
-    ) -> Values<'a, 'txn> {
-        Values::new(self, txn)
-    }
-}
-
-pub struct Values<'a, 'txn> {
-    iter: &'a mut RawCursor,
-    txn: &'txn mut TransactionMut<'txn>,
-}
-
-impl<'a, 'txn> Values<'a, 'txn> {
-    fn new(iter: &'a mut RawCursor, txn: &'txn mut TransactionMut<'txn>) -> Self {
-        Values { iter, txn }
-    }
-}
-
-impl<'a, 'txn> Iterator for Values<'a, 'txn> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.iter.reached_end || self.iter.index == self.iter.branch.content_len() {
-            None
-        } else {
-            let mut buf = [Value::default()];
-            if self.iter.read(self.txn, &mut buf) != 0 {
-                Some(std::mem::replace(&mut buf[0], Value::default()))
-            } else {
-                None
+    fn reduce_moves(&mut self, txn: &mut TransactionMut) {
+        let mut item = self.current_item;
+        if item.is_some() {
+            let mut scope = self.move_stack.current_scope();
+            while item == scope.and_then(|s| s.start) {
+                item = scope.map(|s| s.dest);
+                scope = self.move_stack.descent(txn);
+                self.reached_end = false;
             }
+            self.current_item = item;
         }
     }
 }

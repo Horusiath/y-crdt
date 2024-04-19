@@ -1,9 +1,7 @@
 use crate::atomic::AtomicRef;
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim};
-use crate::iter::{
-    AsIter, BlockIterator, BlockSliceIterator, IntoBlockIter, MoveIter, RangeIter, TxnIterator,
-    Values,
-};
+use crate::cursor::RawCursor;
+use crate::slice::ItemSlice;
 use crate::types::{Branch, BranchPtr, Path, SharedRef, TypeRef, Value};
 use crate::{
     Array, Assoc, DeepObservable, GetString, Map, Observable, ReadTxn, StickyIndex, TextRef,
@@ -283,12 +281,14 @@ where
     /// ```
     pub fn try_deref_value<T: ReadTxn>(&self, _txn: &T) -> Option<Value> {
         let source = self.try_source()?;
-        let last = source.first_item.get_owned().to_iter().last()?;
-        if last.is_deleted() {
-            None
-        } else {
-            last.content.get_last()
+        let mut item = source.first_item.get_owned();
+        while let Some(i) = item {
+            if i.right.is_none() {
+                return i.content.get_last();
+            }
+            item = i.right;
         }
+        None
     }
 }
 
@@ -487,46 +487,37 @@ impl LinkSource {
 
     /// Remove reference to current weak link from all items it quotes.
     pub(crate) fn unlink_all(&self, txn: &mut TransactionMut, branch_ptr: BranchPtr) {
-        let mut i = self.first_item.take().map(|arc| *arc).to_iter().moved();
-        while let Some(item) = i.next(txn) {
-            if item.info.is_linked() {
-                txn.unlink(item, branch_ptr);
+        if let Some(mut i) = RawCursor::from_index(txn, &self.quote_start) {
+            while let Some(item) = i.current_item() {
+                if item.info.is_linked() {
+                    txn.unlink(item, branch_ptr);
+                }
+                if let Some(end) = self.quote_end.id() {
+                    if item.contains(end) {
+                        break;
+                    }
+                }
+                i.next_item(txn);
             }
         }
     }
 
     pub(crate) fn unquote<'a, T: ReadTxn>(&self, txn: &'a T) -> Unquote<'a, T> {
-        let mut current = self.first_item.get_owned();
-        if let Some(ptr) = &mut current {
-            if Self::try_right_most(ptr) {
-                self.first_item.swap(*ptr);
-                current = Some(*ptr);
-            }
-        }
-        if let Some(item) = current.as_deref() {
-            let parent = *item.parent.as_branch().unwrap();
-            Unquote::new(
-                txn,
-                parent,
-                self.quote_start.clone(),
-                self.quote_end.clone(),
-            )
-        } else {
-            Unquote::empty()
-        }
+        Unquote::new(txn, &self.quote_start, &self.quote_end)
     }
 
     /// If provided ref is pointing to map type which has been updated, we may want to invalidate
     /// current pointer to point to its right most neighbor.
     fn try_right_most(item: &mut ItemPtr) -> bool {
+        let mut moved = false;
         if item.parent_sub.is_some() {
             // for map types go to the most recent one
-            if let Some(curr_block) = item.right.to_iter().last() {
-                *item = curr_block;
-                return true;
+            while let Some(right) = item.right {
+                *item = right;
+                moved = true;
             }
         }
-        false
+        moved
     }
 
     pub(crate) fn materialize(&self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
@@ -547,30 +538,36 @@ impl LinkSource {
         };
         if curr.parent_sub.is_some() {
             // for maps, advance to most recent item
-            if let Some(mut last) = Some(curr).to_iter().last() {
+            let mut last = curr;
+            if Self::try_right_most(&mut last) {
                 self.first_item.swap(last);
                 last.info.set_linked();
                 let linked_by = txn.store.linked_by.entry(last).or_default();
                 linked_by.insert(inner_ref);
             }
         } else {
-            let mut first = true;
-            let from = self.quote_start.clone();
-            let to = self.quote_end.clone();
-            let mut i = Some(curr).to_iter().moved().within_range(from, to);
-            while let Some(slice) = i.next(txn) {
-                let mut item = if !slice.adjacent() {
-                    txn.store.materialize(slice)
-                } else {
-                    slice.ptr
-                };
-                if first {
+            let end = self.quote_end.id();
+            if let Some(mut cursor) = RawCursor::from_index(txn, &self.quote_start) {
+                let (_, mut ptr) = cursor.split(txn);
+                if let Some(item) = ptr {
                     self.first_item.swap(item);
-                    first = false;
                 }
-                item.info.set_linked();
-                let linked_by = txn.store.linked_by.entry(item).or_default();
-                linked_by.insert(inner_ref);
+                while let Some(mut item) = ptr {
+                    item.info.set_linked();
+                    let linked_by = txn.store.linked_by.entry(item).or_default();
+                    linked_by.insert(inner_ref);
+
+                    if let Some(end) = end {
+                        if item.contains(end) {
+                            let slice =
+                                ItemSlice::new(item, 0, item.id.clock + item.len - end.clock);
+                            item = txn.store.materialize(slice);
+                            break;
+                        }
+                    }
+                    cursor.next_item(txn);
+                    ptr = cursor.current_item();
+                }
             }
         }
     }
@@ -614,21 +611,27 @@ impl LinkSource {
 }
 
 /// Iterator over non-deleted items, bounded by the given ID range.
-pub struct Unquote<'a, T>(Option<AsIter<'a, T, Values<RangeIter<MoveIter>>>>);
+pub enum Unquote<'a, T: ReadTxn> {
+    Empty,
+    Iterator {
+        txn: &'a T,
+        cursor: RawCursor,
+        end: Option<ID>,
+    },
+}
 
 impl<'a, T: ReadTxn> Unquote<'a, T> {
-    fn new(txn: &'a T, parent: BranchPtr, from: StickyIndex, to: StickyIndex) -> Self {
-        let iter = parent
-            .start
-            .to_iter()
-            .moved()
-            .within_range(from, to)
-            .values();
-        Unquote(Some(AsIter::new(iter, txn)))
+    fn new(txn: &'a T, from: &StickyIndex, to: &StickyIndex) -> Self {
+        if let Some(cursor) = RawCursor::from_index(txn, &from) {
+            let end = to.id().cloned();
+            Unquote::Iterator { txn, cursor, end }
+        } else {
+            Unquote::Empty
+        }
     }
 
     fn empty() -> Self {
-        Unquote(None)
+        Unquote::Empty
     }
 }
 
@@ -636,8 +639,15 @@ impl<'a, T: ReadTxn> Iterator for Unquote<'a, T> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let iter = self.0.as_mut()?;
-        iter.next()
+        match self {
+            Unquote::Empty => None,
+            Unquote::Iterator { txn, cursor, end } => {
+                if &cursor.right() == end {
+                    return None;
+                }
+                cursor.read_value(*txn)
+            }
+        }
     }
 }
 
@@ -694,58 +704,11 @@ pub trait Quotable: AsRef<Branch> + Sized {
             Bound::Excluded(&i) => (i, Assoc::Before),
             Bound::Unbounded => return Err(QuoteError::UnboundedRange),
         };
-        let mut remaining = start;
-        let encoding = txn.store().options.offset_kind;
-        let mut i = this.start.to_iter().moved();
-        // figure out the first ID
-        let mut curr = i.next(txn);
-        while let Some(item) = curr.as_deref() {
-            if remaining == 0 {
-                break;
-            }
-            if !item.is_deleted() && item.is_countable() {
-                let len = item.content_len(encoding);
-                if remaining < len {
-                    break;
-                }
-                remaining -= len;
-            }
-            curr = i.next(txn);
-        }
-        let start_id = if let Some(item) = curr.as_deref() {
-            let mut id = item.id.clone();
-            id.clock += if let ItemContent::String(s) = &item.content {
-                s.block_offset(remaining, encoding)
-            } else {
-                remaining
-            };
-            id
-        } else {
-            return Err(QuoteError::OutOfBounds);
-        };
-        // figure out the last ID
-        remaining = end - start + remaining;
-        while let Some(item) = curr.as_deref() {
-            if !item.is_deleted() && item.is_countable() {
-                let len = item.content_len(encoding);
-                if remaining < len {
-                    break;
-                }
-                remaining -= len;
-            }
-            curr = i.next(txn);
-        }
-        let end_id = if let Some(item) = curr.as_deref() {
-            let mut id = item.id.clone();
-            id.clock += if let ItemContent::String(s) = &item.content {
-                s.block_offset(remaining, encoding)
-            } else {
-                remaining
-            };
-            id
-        } else {
-            return Err(QuoteError::OutOfBounds);
-        };
+        let mut i = this.cursor();
+        i.seek(txn, start);
+        let start_id = i.current().ok_or(QuoteError::OutOfBounds)?.id();
+        i.seek(txn, end);
+        let end_id = i.current().ok_or(QuoteError::OutOfBounds)?.id();
 
         let start = StickyIndex::from_id(start_id, assoc_start);
         let end = StickyIndex::from_id(end_id, assoc_end);

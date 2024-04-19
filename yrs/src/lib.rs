@@ -584,7 +584,6 @@ mod cursor;
 pub mod encoding;
 mod error;
 mod gc;
-pub mod iter;
 mod moving;
 pub mod observer;
 mod slice;

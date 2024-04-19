@@ -1,7 +1,6 @@
 use crate::block::ItemPtr;
 use crate::branch::{Branch, BranchPtr};
 use crate::doc::TransactionAcqError;
-use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::transaction::Origin;
 use crate::{DeleteSet, Doc, ObserverMut, Subscription, Transact, TransactionMut, ID};
@@ -441,8 +440,8 @@ where
             let mut to_delete = Vec::<ItemPtr>::new();
             let mut change_performed = false;
 
-            let deleted: Vec<_> = item.insertions.deleted_blocks().collect(txn);
-            for slice in deleted {
+            let mut deleted = item.insertions.deleted_blocks();
+            while let Some(slice) = deleted.next(txn) {
                 if let BlockSlice::Item(slice) = slice {
                     let mut item = txn.store.materialize(slice);
                     if item.redone.is_some() {
