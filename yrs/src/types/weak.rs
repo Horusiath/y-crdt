@@ -539,12 +539,11 @@ impl LinkSource {
         if curr.parent_sub.is_some() {
             // for maps, advance to most recent item
             let mut last = curr;
-            if Self::try_right_most(&mut last) {
-                self.first_item.swap(last);
-                last.info.set_linked();
-                let linked_by = txn.store.linked_by.entry(last).or_default();
-                linked_by.insert(inner_ref);
-            }
+            Self::try_right_most(&mut last);
+            self.first_item.swap(last);
+            last.info.set_linked();
+            let linked_by = txn.store.linked_by.entry(last).or_default();
+            linked_by.insert(inner_ref);
         } else {
             let end = self.quote_end.id();
             if let Some(mut cursor) = RawCursor::from_index(txn, &self.quote_start) {
@@ -723,27 +722,17 @@ pub trait Quotable: AsRef<Branch> + Sized {
         };
         let (end, assoc_end) = match range.end_bound() {
             Bound::Included(&i) => (i, Assoc::After),
-            Bound::Excluded(&i) => (i, Assoc::Before),
+            Bound::Excluded(&i) => (i - 1, Assoc::Before),
             Bound::Unbounded => return Err(QuoteError::UnboundedRange),
         };
         let mut cursor = this.cursor();
 
         cursor.seek(txn, start);
-        let start_id = match assoc_start {
-            Assoc::After => cursor.right(),
-            Assoc::Before => cursor.left(),
-        }
-        .ok_or(QuoteError::OutOfBounds)?;
+        let start = cursor.as_index(assoc_start);
 
         cursor.seek(txn, end);
-        let end_id = match assoc_end {
-            Assoc::After => cursor.right(),
-            Assoc::Before => cursor.left(),
-        }
-        .ok_or(QuoteError::OutOfBounds)?;
+        let end = cursor.as_index(assoc_end);
 
-        let start = StickyIndex::from_id(start_id, assoc_start);
-        let end = StickyIndex::from_id(end_id, assoc_end);
         let source = LinkSource::new(start, end);
         Ok(WeakPrelim::with_source(Arc::new(source)))
     }

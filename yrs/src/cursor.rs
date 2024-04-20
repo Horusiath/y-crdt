@@ -72,16 +72,17 @@ impl RawCursor {
 
     /// Convert a current cursor position into a serializable [StickyIndex].
     pub fn as_index(&self, assoc: Assoc) -> StickyIndex {
-        let id = match assoc {
-            Assoc::After => self.right(),
-            Assoc::Before => self.left(),
+        let id = if self.finished() {
+            match assoc {
+                Assoc::After => None,
+                Assoc::Before => self.left(),
+            }
+        } else {
+            self.right()
         };
         let scope = match id {
+            None => IndexScope::from_branch(self.branch),
             Some(id) => IndexScope::Relative(id),
-            None => match self.branch.id() {
-                BranchID::Nested(id) => IndexScope::Nested(id),
-                BranchID::Root(name) => IndexScope::Root(name),
-            },
         };
         StickyIndex::new(scope, assoc)
     }

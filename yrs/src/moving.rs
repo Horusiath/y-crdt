@@ -552,8 +552,12 @@ impl StickyIndex {
     }
 
     pub fn at<T: ReadTxn>(txn: &T, branch: BranchPtr, index: u32, assoc: Assoc) -> Option<Self> {
+        let mut i = index;
+        if Assoc::Before == assoc && i > 0 {
+            i -= 1;
+        }
         let mut cursor = branch.cursor();
-        if cursor.forward(txn, index) {
+        if cursor.forward(txn, i) {
             Some(cursor.as_index(assoc))
         } else {
             None
