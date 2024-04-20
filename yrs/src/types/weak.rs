@@ -552,18 +552,21 @@ impl LinkSource {
                 if let Some(item) = ptr {
                     self.first_item.swap(item);
                 }
+                let mut done = false;
                 while let Some(mut item) = ptr {
+                    if let Some(end) = end {
+                        if item.contains(end) {
+                            let slice = ItemSlice::new(item, 0, end.clock - item.id.clock);
+                            item = txn.store.materialize(slice);
+                            done = true;
+                        }
+                    }
                     item.info.set_linked();
                     let linked_by = txn.store.linked_by.entry(item).or_default();
                     linked_by.insert(inner_ref);
 
-                    if let Some(end) = end {
-                        if item.contains(end) {
-                            let slice =
-                                ItemSlice::new(item, 0, item.id.clock + item.len - end.clock);
-                            item = txn.store.materialize(slice);
-                            break;
-                        }
+                    if done {
+                        break;
                     }
                     cursor.next_item(txn);
                     ptr = cursor.current_item();
@@ -612,11 +615,12 @@ impl LinkSource {
 
 /// Iterator over non-deleted items, bounded by the given ID range.
 pub enum Unquote<'a, T: ReadTxn> {
-    Empty,
+    Finished,
     Iterator {
         txn: &'a T,
         cursor: RawCursor,
         end: Option<ID>,
+        assoc: Assoc,
     },
 }
 
@@ -624,14 +628,20 @@ impl<'a, T: ReadTxn> Unquote<'a, T> {
     fn new(txn: &'a T, from: &StickyIndex, to: &StickyIndex) -> Self {
         if let Some(cursor) = RawCursor::from_index(txn, &from) {
             let end = to.id().cloned();
-            Unquote::Iterator { txn, cursor, end }
+            let assoc = to.assoc;
+            Unquote::Iterator {
+                txn,
+                cursor,
+                end,
+                assoc,
+            }
         } else {
-            Unquote::Empty
+            Unquote::Finished
         }
     }
 
     fn empty() -> Self {
-        Unquote::Empty
+        Unquote::Finished
     }
 }
 
@@ -640,12 +650,24 @@ impl<'a, T: ReadTxn> Iterator for Unquote<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Unquote::Empty => None,
-            Unquote::Iterator { txn, cursor, end } => {
+            Unquote::Finished => None,
+            Unquote::Iterator {
+                txn,
+                cursor,
+                end,
+                assoc,
+            } => {
                 if &cursor.right() == end {
-                    return None;
+                    let result = match assoc {
+                        Assoc::After => cursor.read_value(*txn),
+                        Assoc::Before => None,
+                    };
+
+                    *self = Unquote::Finished;
+                    result
+                } else {
+                    cursor.read_value(*txn)
                 }
-                cursor.read_value(*txn)
             }
         }
     }
@@ -704,11 +726,21 @@ pub trait Quotable: AsRef<Branch> + Sized {
             Bound::Excluded(&i) => (i, Assoc::Before),
             Bound::Unbounded => return Err(QuoteError::UnboundedRange),
         };
-        let mut i = this.cursor();
-        i.seek(txn, start);
-        let start_id = i.current().ok_or(QuoteError::OutOfBounds)?.id();
-        i.seek(txn, end);
-        let end_id = i.current().ok_or(QuoteError::OutOfBounds)?.id();
+        let mut cursor = this.cursor();
+
+        cursor.seek(txn, start);
+        let start_id = match assoc_start {
+            Assoc::After => cursor.right(),
+            Assoc::Before => cursor.left(),
+        }
+        .ok_or(QuoteError::OutOfBounds)?;
+
+        cursor.seek(txn, end);
+        let end_id = match assoc_end {
+            Assoc::After => cursor.right(),
+            Assoc::Before => cursor.left(),
+        }
+        .ok_or(QuoteError::OutOfBounds)?;
 
         let start = StickyIndex::from_id(start_id, assoc_start);
         let end = StickyIndex::from_id(end_id, assoc_end);
@@ -814,7 +846,7 @@ mod test {
     use crate::Assoc::{After, Before};
     use crate::{
         Array, ArrayRef, DeepObservable, Doc, GetString, Map, MapPrelim, MapRef, Observable,
-        Quotable, Text, TextRef, Transact, XmlTextRef,
+        Quotable, ReadTxn, Text, TextRef, Transact, XmlTextRef,
     };
     use std::cell::RefCell;
     use std::collections::{Bound, HashMap};

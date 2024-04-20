@@ -1,10 +1,10 @@
-use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::convert::TryFrom;
 
+use smallvec::SmallVec;
+
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
-use crate::slice::ItemSlice;
 use crate::transaction::{ReadTxn, TransactionMut};
 use crate::types::{TypePtr, Value};
 use crate::{Assoc, BranchID, IndexScope, StickyIndex, ID};
@@ -70,10 +70,26 @@ impl RawCursor {
         Some(cursor)
     }
 
+    /// Convert a current cursor position into a serializable [StickyIndex].
+    pub fn as_index(&self, assoc: Assoc) -> StickyIndex {
+        let id = match assoc {
+            Assoc::After => self.right(),
+            Assoc::Before => self.left(),
+        };
+        let scope = match id {
+            Some(id) => IndexScope::Relative(id),
+            None => match self.branch.id() {
+                BranchID::Nested(id) => IndexScope::Nested(id),
+                BranchID::Root(name) => IndexScope::Root(name),
+            },
+        };
+        StickyIndex::new(scope, assoc)
+    }
+
     pub fn forward_to<T: ReadTxn>(&mut self, txn: &T, id: &ID, assoc: Assoc) -> bool {
         while let Some(item) = self.current_item {
             if item.contains(id) {
-                let mut offset = item.len - id.clock;
+                let mut offset = id.clock - item.id.clock;
                 if assoc == Assoc::After {
                     offset += 1;
                 };
@@ -132,7 +148,7 @@ impl RawCursor {
             item.right.as_ref().map(|r| r.id)
         } else {
             let mut id = item.id;
-            id.clock += self.block_offset + 1;
+            id.clock += self.block_offset;
             Some(id)
         }
     }

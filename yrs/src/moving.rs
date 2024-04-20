@@ -1,16 +1,17 @@
+use std::collections::HashSet;
+use std::fmt::Formatter;
+use std::sync::Arc;
+
+use serde::de::Visitor;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::block::{ItemContent, ItemPtr, Prelim, Unused};
 use crate::branch::{Branch, BranchPtr};
-use crate::cursor::RawCursor;
 use crate::encoding::read::Error;
 use crate::transaction::TransactionMut;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::{BranchID, ReadTxn, WriteTxn, ID};
-use serde::de::Visitor;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashSet;
-use std::fmt::Formatter;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Move {
@@ -550,42 +551,12 @@ impl StickyIndex {
         }
     }
 
-    pub fn at<T: ReadTxn>(
-        txn: &T,
-        branch: BranchPtr,
-        mut index: u32,
-        assoc: Assoc,
-    ) -> Option<Self> {
-        if assoc == Assoc::Before {
-            if index == 0 {
-                let context = IndexScope::from_branch(branch);
-                return Some(StickyIndex::new(context, assoc));
-            }
-            index -= 1;
-        }
-
-        let mut cursor = RawCursor::new(branch);
-        if !cursor.forward(txn, index) {
-            return None;
-        }
-        if cursor.finished() {
-            if assoc == Assoc::Before {
-                let context = if let Some(id) = cursor.right() {
-                    IndexScope::Relative(id)
-                } else {
-                    IndexScope::from_branch(branch)
-                };
-                Some(Self::new(context, assoc))
-            } else {
-                None
-            }
+    pub fn at<T: ReadTxn>(txn: &T, branch: BranchPtr, index: u32, assoc: Assoc) -> Option<Self> {
+        let mut cursor = branch.cursor();
+        if cursor.forward(txn, index) {
+            Some(cursor.as_index(assoc))
         } else {
-            let context = if let Some(slice) = cursor.current() {
-                IndexScope::Relative(slice.id())
-            } else {
-                IndexScope::from_branch(branch)
-            };
-            Some(Self::new(context, assoc))
+            None
         }
     }
 
