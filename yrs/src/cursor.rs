@@ -91,8 +91,8 @@ impl RawCursor {
         while let Some(item) = self.current_item {
             if item.contains(id) {
                 let mut offset = id.clock - item.id.clock;
-                if assoc == Assoc::After {
-                    offset += 1;
+                if assoc == Assoc::Before && offset > 0 {
+                    offset -= 1;
                 };
                 self.block_offset = offset;
                 return true;

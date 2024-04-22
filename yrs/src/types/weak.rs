@@ -715,22 +715,22 @@ pub trait Quotable: AsRef<Branch> + Sized {
         R: RangeBounds<u32>,
     {
         let this = BranchPtr::from(self.as_ref());
-        let (start, assoc_start) = match range.start_bound() {
-            Bound::Included(&i) => (i, Assoc::Before),
-            Bound::Excluded(&i) => (i, Assoc::After),
+        let (start_index, assoc_start) = match range.start_bound() {
+            Bound::Included(&i) => (i, Assoc::After),
+            Bound::Excluded(&i) => (i, Assoc::Before),
             Bound::Unbounded => return Err(QuoteError::UnboundedRange),
         };
-        let (end, assoc_end) = match range.end_bound() {
+        let (end_index, assoc_end) = match range.end_bound() {
             Bound::Included(&i) => (i, Assoc::After),
-            Bound::Excluded(&i) => (i - 1, Assoc::Before),
+            Bound::Excluded(&i) => (i, Assoc::Before),
             Bound::Unbounded => return Err(QuoteError::UnboundedRange),
         };
         let mut cursor = this.cursor();
 
-        cursor.seek(txn, start);
+        cursor.seek(txn, start_index);
         let start = cursor.as_index(assoc_start);
 
-        cursor.seek(txn, end);
+        cursor.forward(txn, end_index - start_index);
         let end = cursor.as_index(assoc_end);
 
         let source = LinkSource::new(start, end);
