@@ -105,15 +105,53 @@ impl RawCursor {
 
     /// Moves cursor to the beginning of the next item in a collection.
     pub fn next_item<T: ReadTxn>(&mut self, txn: &T) {
-        let encoding = txn.store().options.offset_kind;
-        if !self.finished() {
-            if let Some(item) = self.current_item {
-                self.block_offset = 0;
-                if !self.forward(txn, item.content_len(encoding)) {
-                    return;
+        while {
+            if let Some(curr) = self.current_item {
+                let move_scope = self.move_stack.current_scope();
+                let moved = move_scope.map(|s| s.dest);
+                if curr.moved == moved {
+                    // current item exists in the right (possibly none) move scope
+                    if let Some(scope) = move_scope {
+                        if scope.end == Some(curr) {
+                            // we're at the end of the current scope
+                            // while we still need to return current block ptr
+                            // we can already descent in the move stack
+                            if let Some(scope) = self.move_stack.descent(txn) {
+                                // we just returned to last active moved block ptr, we need to
+                                // skip over it
+                                self.current_item = scope.dest.right;
+                                self.block_offset = 0;
+                                return;
+                            }
+                        }
+                    }
+                    if let ItemContent::Move(m) = &curr.content {
+                        // we need to move to a new scope and reposition iterator at the start of it
+                        let (start, end) = m.get_moved_coords(txn);
+                        self.move_stack.push(MoveScope::new(start, end, curr));
+                        self.current_item = start;
+                        self.block_offset = 0;
+                        return;
+                    } else {
+                        self.current_item = curr.right;
+                        self.block_offset = 0;
+                        return;
+                    }
+                }
+                true // continue to the next loop iteration
+            } else {
+                // if current iterator reached the end of the block sequence,
+                // check if there are any remaining scopes on move stack and
+                // if so, reposition iterator to their return address and retry
+                if let Some(scope) = self.move_stack.descent(txn) {
+                    self.current_item = Some(scope.dest);
+                    self.block_offset = 0;
+                    true
+                } else {
+                    false
                 }
             }
-        }
+        } {}
     }
 
     /// Returns true if current cursor reached the end of collection.
