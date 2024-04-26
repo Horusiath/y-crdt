@@ -1,4 +1,5 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::cursor::RawCursor;
 use crate::types::array::ArrayEvent;
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
@@ -255,6 +256,11 @@ impl Branch {
             observers: Observer::default(),
             deep_observers: Observer::default(),
         })
+    }
+
+    #[inline]
+    pub fn cursor(&self) -> RawCursor {
+        RawCursor::new(self)
     }
 
     pub fn is_deleted(&self) -> bool {

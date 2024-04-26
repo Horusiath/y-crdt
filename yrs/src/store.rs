@@ -109,6 +109,12 @@ impl Store {
         Some(ptr)
     }
 
+    pub fn next_id(&self) -> ID {
+        let client_id = self.options.client_id;
+        let clock = self.blocks.get_clock(&client_id);
+        ID::new(client_id, clock)
+    }
+
     /// Returns a branch reference to a complex type identified by its pointer. Returns `None` if
     /// no such type could be found or was ever defined.
     pub(crate) fn get_or_create_type<K: Into<Arc<str>>>(
