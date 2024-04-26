@@ -34,7 +34,7 @@ pub trait IntoBlockIter {
 impl IntoBlockIter for Option<ItemPtr> {
     #[inline]
     fn to_iter(self) -> BlockIter {
-        BlockIter(self)
+        BlockIter::new(self)
     }
 }
 
@@ -43,12 +43,14 @@ impl IntoBlockIter for Option<ItemPtr> {
 /// When reversed it iterates to the left side.
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct BlockIter(Option<ItemPtr>);
+pub struct BlockIter {
+    pub(crate) next: Option<ItemPtr>,
+}
 
 impl BlockIter {
     #[inline]
     fn new(ptr: Option<ItemPtr>) -> Self {
-        BlockIter(ptr)
+        BlockIter { next: ptr }
     }
 
     pub fn moved(self) -> MoveIter {
@@ -60,9 +62,9 @@ impl Iterator for BlockIter {
     type Item = ItemPtr;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let curr = self.0.take();
+        let curr = self.next.take();
         if let Some(item) = curr.as_deref() {
-            self.0 = item.right;
+            self.next = item.right;
         }
         curr
     }
@@ -70,9 +72,9 @@ impl Iterator for BlockIter {
 
 impl DoubleEndedIterator for BlockIter {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let curr = self.0.take();
+        let curr = self.next.take();
         if let Some(item) = curr.as_deref() {
-            self.0 = item.left;
+            self.next = item.left;
         }
         curr
     }
@@ -112,17 +114,17 @@ pub trait TxnDoubleEndedIterator: TxnIterator {
 
 /// Block iterator which acknowledges context of move operation and iterates
 /// over blocks as they appear after move. It skips over the presence of move destination blocks.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MoveIter {
-    iter: BlockIter,
-    stack: MoveStack,
+    pub(crate) block_iter: BlockIter,
+    pub(crate) move_stack: MoveStack,
 }
 
 impl MoveIter {
     pub(crate) fn new(iter: BlockIter) -> Self {
         MoveIter {
-            iter,
-            stack: MoveStack::default(),
+            block_iter: iter,
+            move_stack: MoveStack::default(),
         }
     }
 
@@ -131,8 +133,8 @@ impl MoveIter {
     /// to a scope destination (return address).
     /// Returns `true` if this method call had any effect.
     fn escape_current_scope(&mut self) -> bool {
-        if let Some(scope) = self.stack.pop() {
-            self.iter = scope.dest.into_iter();
+        if let Some(scope) = self.move_stack.pop() {
+            self.block_iter = scope.dest.into_iter();
             true
         } else {
             false
@@ -145,8 +147,8 @@ impl TxnIterator for MoveIter {
 
     fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
         while {
-            if let Some(curr) = self.iter.next() {
-                let scope = self.stack.current_scope();
+            if let Some(curr) = self.block_iter.next() {
+                let scope = self.move_stack.current_scope();
                 let ctx = scope.map(|s| s.dest);
                 if curr.moved == ctx {
                     // current item exists in the right (possibly none) move scope
@@ -158,14 +160,14 @@ impl TxnIterator for MoveIter {
                             self.escape_current_scope();
                             // we just returned to last active moved block ptr, we need to
                             // skip over it
-                            self.iter.next();
+                            self.block_iter.next();
                         }
                     }
                     if let ItemContent::Move(m) = &curr.content {
                         // we need to move to a new scope and reposition iterator at the start of it
                         let (start, end) = m.get_moved_coords(txn);
-                        self.stack.push(MoveScope::new(start, end, curr));
-                        self.iter = BlockIter(start);
+                        self.move_stack.push(MoveScope::new(start, end, curr));
+                        self.block_iter = BlockIter::new(start);
                     } else {
                         return Some(curr);
                     }
@@ -177,7 +179,7 @@ impl TxnIterator for MoveIter {
                 // check if there are any remaining scopes on move stack and
                 // if so, reposition iterator to their return address and retry
                 let escaped = self.escape_current_scope();
-                self.iter.next();
+                self.block_iter.next();
                 escaped
             }
         } {}
@@ -188,8 +190,8 @@ impl TxnIterator for MoveIter {
 impl TxnDoubleEndedIterator for MoveIter {
     fn next_back<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
         while {
-            if let Some(curr) = self.iter.next_back() {
-                let scope = self.stack.current_scope();
+            if let Some(curr) = self.block_iter.next_back() {
+                let scope = self.move_stack.current_scope();
                 if curr.moved == scope.map(|s| s.dest) {
                     // current item exists in the right (possibly none) move scope
                     if let Some(scope) = scope {
@@ -200,14 +202,14 @@ impl TxnDoubleEndedIterator for MoveIter {
                             self.escape_current_scope();
                             // we just returned to last active moved block ptr, we need to
                             // skip over it
-                            self.iter.next_back();
+                            self.block_iter.next_back();
                         }
                     }
                     if let ItemContent::Move(m) = &curr.content {
                         // we need to move to a new scope and reposition iterator at the end of it
                         let (start, end) = m.get_moved_coords(txn);
-                        self.stack.push(MoveScope::new(start, end, curr));
-                        self.iter = BlockIter(end);
+                        self.move_stack.push(MoveScope::new(start, end, curr));
+                        self.block_iter = BlockIter::new(end);
                     } else {
                         return Some(curr);
                     }
@@ -219,7 +221,7 @@ impl TxnDoubleEndedIterator for MoveIter {
                 // check if there are any remaining scopes on move stack and
                 // if so, reposition iterator to their return address and retry
                 let escaped = self.escape_current_scope();
-                self.iter.next_back();
+                self.block_iter.next_back();
                 escaped
             }
         } {}
@@ -227,8 +229,8 @@ impl TxnDoubleEndedIterator for MoveIter {
     }
 }
 
-#[derive(Debug, Default)]
-struct MoveStack(Option<Vec<MoveScope>>);
+#[derive(Debug, Clone, Default)]
+struct MoveStack(Option<Box<SmallVec<[MoveScope; 1]>>>);
 
 impl MoveStack {
     /// Returns a current scope of move operation.
@@ -246,7 +248,7 @@ impl MoveStack {
     /// Pushes a new scope on top of current move stack. This happens when we touched
     /// a new block that contains a move content.
     fn push(&mut self, scope: MoveScope) {
-        let stack = self.0.get_or_insert_with(Vec::default);
+        let stack = self.0.get_or_insert_with(Default::default);
         stack.push(scope);
     }
 
@@ -262,7 +264,7 @@ impl MoveStack {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MoveScope {
     /// First block moved in this scope.
     start: Option<ItemPtr>,
