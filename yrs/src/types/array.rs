@@ -1,6 +1,6 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
-use crate::moving::StickyIndex;
+use crate::cursor::RawCursor;
+use crate::moving::{Move, StickyIndex};
 use crate::transaction::TransactionMut;
 use crate::types::{
     event_change_set, Branch, BranchPtr, Change, ChangeSet, Path, RootRef, SharedRef, ToJson,
@@ -10,7 +10,7 @@ use crate::{Any, Assoc, DeepObservable, IndexedSequence, Observable, ReadTxn, ID
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -86,10 +86,10 @@ impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
     fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
-        let mut walker = BlockIter::new(self.0);
+        let mut cursor = self.0.cursor();
         let len = self.0.len();
         let mut buf = vec![Value::default(); len as usize];
-        let read = walker.slice(txn, &mut buf);
+        let read = cursor.read(txn, &mut buf);
         if read == len {
             let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
             Any::Array(res)
@@ -162,14 +162,9 @@ pub trait Array: AsRef<Branch> + Sized {
     where
         V: Prelim,
     {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            let ptr = walker.insert_contents(txn, value);
-            if let Ok(integrated) = ptr.try_into() {
-                integrated
-            } else {
-                panic!("Defect: unexpected integrated type")
-            }
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, index) {
+            cursor.insert(txn, value)
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }
@@ -221,9 +216,11 @@ pub trait Array: AsRef<Branch> + Sized {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.delete(txn, len)
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, index) {
+            if !cursor.remove(txn, len) {
+                panic!("Defect: removal didn't remove all elements");
+            }
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }
@@ -232,9 +229,9 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.read_value(txn)
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, index) {
+            cursor.read_value(txn)
         } else {
             None
         }
@@ -257,9 +254,9 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`source` index parameter is beyond the range of an y-array");
         let mut right = left.clone();
         right.assoc = Assoc::Before;
-        let mut walker = BlockIter::new(this);
-        if walker.try_forward(txn, target) {
-            walker.insert_move(txn, left, right);
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, target) {
+            cursor.insert(txn, Move::new(left, right, -1));
         } else {
             panic!(
                 "`target` index parameter {} is outside of the range of an array",
@@ -309,9 +306,9 @@ pub trait Array: AsRef<Branch> + Sized {
             .expect("`start` index parameter is beyond the range of an y-array");
         let right = StickyIndex::at(txn, this, end + 1, assoc_end)
             .expect("`end` index parameter is beyond the range of an y-array");
-        let mut walker = BlockIter::new(this);
-        if walker.try_forward(txn, target) {
-            walker.insert_move(txn, left, right);
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, target) {
+            cursor.insert(txn, Move::new(left, right, -1));
         } else {
             panic!(
                 "`target` index parameter {} is outside of the range of an array",
@@ -332,7 +329,7 @@ where
     B: Borrow<T>,
     T: ReadTxn,
 {
-    inner: BlockIter,
+    cursor: RawCursor<'static>,
     txn: B,
     _marker: PhantomData<T>,
 }
@@ -342,8 +339,9 @@ where
     T: Borrow<T> + ReadTxn,
 {
     pub fn from(array: &ArrayRef, txn: T) -> Self {
+        let cursor = array.as_ref().cursor();
         ArrayIter {
-            inner: BlockIter::new(array.0),
+            cursor: unsafe { std::mem::transmute(cursor) },
             txn,
             _marker: PhantomData::default(),
         }
@@ -355,8 +353,9 @@ where
     T: Borrow<T> + ReadTxn,
 {
     pub fn from_ref(array: &Branch, txn: &'a T) -> Self {
+        let cursor = array.cursor();
         ArrayIter {
-            inner: BlockIter::new(BranchPtr::from(array)),
+            cursor: unsafe { std::mem::transmute(cursor) },
             txn,
             _marker: PhantomData::default(),
         }
@@ -371,17 +370,7 @@ where
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.inner.finished() {
-            None
-        } else {
-            let mut buf = [Value::default(); 1];
-            let txn = self.txn.borrow();
-            if self.inner.slice(txn, &mut buf) != 0 {
-                Some(std::mem::replace(&mut buf[0], Value::default()))
-            } else {
-                None
-            }
-        }
+        self.cursor.read_value(self.txn.borrow())
     }
 }
 
@@ -853,14 +842,17 @@ mod test {
         let mut txn = d.transact_mut();
         for i in 0..10 {
             let mut m = HashMap::new();
-            m.insert("value".to_owned(), i);
+            m.insert(format!("value-{i}"), i);
             a.push_back(&mut txn, MapPrelim::from(m));
         }
 
         for (i, value) in a.iter(&txn).enumerate() {
             match value {
                 Value::YMap(_) => {
-                    assert_eq!(value.to_json(&txn), any!({"value": (i as f64) }))
+                    assert_eq!(
+                        value.to_json(&txn),
+                        any!({format!("value-{i}"): (i as f64) })
+                    )
                 }
                 _ => panic!("Value of array at index {} was no YMap", i),
             }

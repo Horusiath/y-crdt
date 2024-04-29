@@ -1,5 +1,4 @@
 use crate::block::{ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
 use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
 use crate::transaction::TransactionMut;
@@ -564,31 +563,11 @@ impl StickyIndex {
             index -= 1;
         }
 
-        let mut walker = BlockIter::new(branch);
-        if !walker.try_forward(txn, index) {
+        let mut cursor = branch.as_ref().cursor();
+        if !cursor.forward(txn, index) {
             return None;
         }
-        if walker.finished() {
-            if assoc == Assoc::Before {
-                let context = if let Some(ptr) = walker.next_item() {
-                    IndexScope::Relative(ptr.last_id())
-                } else {
-                    IndexScope::from_branch(branch)
-                };
-                Some(Self::new(context, assoc))
-            } else {
-                None
-            }
-        } else {
-            let context = if let Some(ptr) = walker.next_item() {
-                let mut id = ptr.id().clone();
-                id.clock += walker.rel();
-                IndexScope::Relative(id)
-            } else {
-                IndexScope::from_branch(branch)
-            };
-            Some(Self::new(context, assoc))
-        }
+        Some(cursor.as_sticky_index(assoc))
     }
 
     pub(crate) fn within_range(&self, ptr: Option<ItemPtr>) -> bool {

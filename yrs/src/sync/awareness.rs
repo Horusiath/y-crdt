@@ -52,7 +52,7 @@ impl Awareness {
     where
         F: Fn(&Event) -> () + 'static,
     {
-        self.on_update.subscribe(move |txn, e| f(e))
+        self.on_update.subscribe(move |_, e| f(e))
     }
 
     /// Returns a read-only reference to an underlying [Doc].
