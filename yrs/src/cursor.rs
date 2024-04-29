@@ -51,76 +51,69 @@ impl<'branch> RawCursor<'branch> {
     pub fn seek<T: ReadTxn>(&mut self, txn: &T, index: u32) -> bool {
         match index.cmp(&self.index) {
             Ordering::Less => self.backward(txn, self.index - index),
-            Ordering::Equal => return true,
-            Ordering::Greater => self.forward(txn, self.index - index),
+            Ordering::Equal | Ordering::Greater => self.forward(txn, index - self.index),
         }
     }
 
     pub fn forward<T: ReadTxn>(&mut self, txn: &T, offset: u32) -> bool {
         let mut remaining = offset;
         let encoding = txn.store().options.offset_kind;
-        let mut current = self.last_item;
-        if current.is_none() {
-            if self.move_iter.block_iter.next.is_none() {
-                self.move_iter.block_iter.next = self.branch.start;
-            }
-            current = self.next(txn);
-        }
-        loop {
-            if let Some(item) = current {
+        while {
+            if let Some(item) = self.last_item {
                 if !item.is_deleted() && item.is_countable() {
-                    let len = item.content_len(encoding);
-                    // n: how many elements can we move forward within the current item
-                    let n = (len - self.offset).min(remaining);
-                    self.offset += n;
-                    self.index += n;
-                    remaining -= n;
-                    if remaining == 0 {
-                        break;
+                    let remaining_item_len = item.content_len(encoding) - self.offset;
+                    if remaining_item_len > remaining {
+                        // cursor can move forward within the current item
+                        self.index += remaining;
+                        self.offset += remaining;
+                        return true;
+                    } else {
+                        // we trim the remaining offset by the current item
+                        remaining -= remaining_item_len;
                     }
                 }
-            } else {
-                break;
             }
-            current = self.next(txn);
-        }
+            self.next(txn).is_some()
+        } { /* move next */ }
         remaining == 0
     }
 
     pub fn backward<T: ReadTxn>(&mut self, txn: &T, offset: u32) -> bool {
-        let mut remaining = offset;
-        if self.offset >= remaining {
-            // offset we're looking for is within the range of current item
-            self.index -= remaining;
-            self.offset -= remaining;
+        if offset == 0 {
             return true;
-        } else if self.offset > 0 {
-            // we'll move to next item shortly, trim searched offset by the current item
-            remaining -= self.offset;
-            self.index -= self.offset;
-            self.offset = 0;
         }
-
-        // check if our internal iterator haven't been initialized yet
-        if self.move_iter.block_iter.next.is_none() {
-            self.move_iter.block_iter.next = self.last_item;
-            self.move_iter.next_back(txn);
-        }
-
-        let encoding = txn.store().options.offset_kind;
-        while let Some(item) = self.next_back(txn) {
-            self.last_item = Some(item);
+        let mut remaining = offset;
+        if let Some(item) = self.last_item {
             if !item.is_deleted() && item.is_countable() {
-                let len = item.content_len(encoding);
-                if remaining <= len {
+                if self.offset >= remaining {
+                    // offset we're looking for is within the range of current item
+                    self.index -= remaining;
+                    self.offset -= remaining;
+                    return true;
+                } else if self.offset > 0 {
+                    // we'll move to next item shortly, trim searched offset by the current item
+                    remaining -= self.offset;
+                    self.index -= self.offset;
+                    self.offset = 0;
+                }
+            }
+
+            // check if our internal iterator haven't been initialized yet
+            if self.move_iter.block_iter.next.is_none() {
+                self.move_iter.block_iter.next = Some(item);
+            }
+        }
+
+        while let Some(item) = self.next_back(txn) {
+            if !item.is_deleted() && item.is_countable() {
+                if remaining <= self.offset {
                     // the offset we're looking for is within current item
-                    self.offset = len - remaining;
+                    self.offset -= remaining;
                     self.index -= remaining;
                     return true;
                 } else {
                     // adjust length and offset and jump to next item
-                    self.index -= len;
-                    remaining -= len;
+                    remaining -= self.offset;
                 }
             }
         }
@@ -183,11 +176,16 @@ impl<'branch> RawCursor<'branch> {
                     let item_len = item.content_len(encoding);
                     let del_len = remaining.min(item_len - self.offset);
                     if self.offset != 0 || item_len != del_len {
-                        let slice = ItemSlice::new(item, self.offset, self.offset + del_len);
+                        let slice = ItemSlice::new(item, self.offset, self.offset + del_len - 1);
                         item = txn.store.materialize(slice);
+                        if item_len != del_len {
+                            self.move_iter.block_iter.next = Some(item);
+                            self.last_item = self.move_iter.next(txn);
+                        }
                     }
-                    self.offset += del_len;
                     txn.delete(item);
+                    self.offset = del_len;
+                    remaining -= del_len;
                 }
             }
             current = self.next(txn);
@@ -311,12 +309,18 @@ impl<'branch> TxnIterator for RawCursor<'branch> {
     type Item = ItemPtr;
 
     fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
-        self.index += self.remaining(txn);
+        let remaining_len = self.remaining(txn);
+        self.index += remaining_len;
         if let Some(next) = self.move_iter.next(txn) {
             self.last_item = Some(next);
             self.offset = 0;
             Some(next)
         } else {
+            self.offset = if let Some(item) = self.last_item {
+                item.content_len(txn.store().options.offset_kind)
+            } else {
+                0
+            };
             None
         }
     }
@@ -329,24 +333,28 @@ impl<'branch> TxnDoubleEndedIterator for RawCursor<'branch> {
                 self.index -= self.offset;
             }
         }
-        if let Some(next) = self.move_iter.next_back(txn) {
+        while let Some(next) = self.move_iter.next_back(txn) {
+            if Some(next) == self.last_item {
+                // we changed the direction of an iterator, so we need to double back
+                continue;
+            }
             let item_len = next.content_len(txn.store().options.offset_kind);
             self.last_item = Some(next);
             self.offset = item_len;
-            Some(next)
-        } else {
-            self.move_iter = self.branch.start.to_iter().moved();
-            None
+            return Some(next);
         }
+        self.move_iter = self.branch.start.to_iter().moved();
+        None
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{Array, Doc, Transact, Value, ID};
+    use crate::types::ToJson;
+    use crate::{any, Array, Doc, Transact, Value, ID};
 
     #[test]
-    fn cursor_push_back() {
+    fn push_back() {
         let doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
@@ -377,7 +385,7 @@ mod test {
     }
 
     #[test]
-    fn cursor_forward() {
+    fn forward() {
         let doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
@@ -434,7 +442,7 @@ mod test {
     }
 
     #[test]
-    fn cursor_backward() {
+    fn backward() {
         let doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
@@ -450,43 +458,86 @@ mod test {
         let mut c = array.as_ref().cursor();
 
         assert!(c.forward(&txn, 9), "move to index 9");
-        assert_eq!(c.index(), 9);
+        assert_eq!(c.index(), 9); // clocks: <7.8><6><4.5><1.2.3><0>^
         assert_eq!(c.neighbours(), (Some(ID::new(1, 0)), None));
 
         assert!(c.backward(&txn, 1), "move to index 8");
-        assert_eq!(c.index(), 8);
+        assert_eq!(c.index(), 8); // clocks: <7.8><6><4.5><1.2.3>^<0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 3)), Some(ID::new(1, 0))));
 
         assert!(c.backward(&txn, 1), "move to index 7");
-        assert_eq!(c.index(), 7);
+        assert_eq!(c.index(), 7); // clocks: <7.8><6><4.5><1.2^3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 2)), Some(ID::new(1, 3))));
 
         assert!(c.backward(&txn, 1), "move to index 6");
-        assert_eq!(c.index(), 6);
+        assert_eq!(c.index(), 6); // clocks: <7.8><6><4.5><1^2.3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 1)), Some(ID::new(1, 2))));
 
         assert!(c.backward(&txn, 1), "move to index 5");
-        assert_eq!(c.index(), 5);
+        assert_eq!(c.index(), 5); // clocks: <7.8><6><4.5>^<1.2.3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 5)), Some(ID::new(1, 1))));
 
         assert!(c.backward(&txn, 1), "move to index 4");
-        assert_eq!(c.index(), 4);
+        assert_eq!(c.index(), 4); // clocks: <7.8><6><4^5><1.2.3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 4)), Some(ID::new(1, 5))));
 
         assert!(c.backward(&txn, 1), "move to index 3");
-        assert_eq!(c.index(), 3);
+        assert_eq!(c.index(), 3); // clocks: <7.8><6>^<4.5><1.2.3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 6)), Some(ID::new(1, 4))));
 
         assert!(c.backward(&txn, 1), "move to index 2");
-        assert_eq!(c.index(), 2);
+        assert_eq!(c.index(), 2); // clocks: <7.8>^<6><4.5><1.2.3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 8)), Some(ID::new(1, 6))));
 
         assert!(c.backward(&txn, 1), "move to index 1");
-        assert_eq!(c.index(), 1);
+        assert_eq!(c.index(), 1); // clocks: <7^8><6><4.5><1.2.3><0>
         assert_eq!(c.neighbours(), (Some(ID::new(1, 7)), Some(ID::new(1, 8))));
 
         assert!(c.backward(&txn, 1), "move to index 0");
-        assert_eq!(c.index(), 0);
+        assert_eq!(c.index(), 0); // clocks: ^<7.8><6><4.5><1.2.3><0>
         assert_eq!(c.neighbours(), (None, Some(ID::new(1, 7))));
+    }
+
+    #[test]
+    fn remove_insert() {
+        let doc = Doc::with_client_id(1);
+        let array = doc.get_or_insert_array("array");
+        let mut txn = doc.transact_mut();
+
+        array.insert_range(&mut txn, 0, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        let mut c = array.as_ref().cursor();
+
+        c.seek(&txn, 8); // [1, 2, 3, 4, 5, 6, 7, 8, ^9]
+        c.remove(&mut txn, 1); // [1, 2, 3, 4, 5, 6, 7, 8][~]^
+        assert_eq!(c.neighbours(), (Some(ID::new(1, 8)), None));
+        assert_eq!(array.to_json(&txn), any!([1, 2, 3, 4, 5, 6, 7, 8]));
+
+        c.seek(&txn, 4); // [1, 2, 3, 4, ^5, 6, 7, 8][~]
+        c.remove(&mut txn, 2); // [1, 2, 3, 4][~~]^[7, 8][~]
+        assert_eq!(c.neighbours(), (Some(ID::new(1, 5)), Some(ID::new(1, 6))));
+        assert_eq!(array.to_json(&txn), any!([1, 2, 3, 4, 7, 8]));
+
+        c.seek(&txn, 0); // ^[1, 2, 3, 4][~~][7, 8][~]
+        c.remove(&mut txn, 1); // [~]^[2, 3, 4][~~][7, 8][~]
+        assert_eq!(c.neighbours(), (Some(ID::new(1, 0)), Some(ID::new(1, 1))));
+        assert_eq!(array.to_json(&txn), any!([2, 3, 4, 7, 8]));
+
+        let mut c = array.as_ref().cursor();
+        c.seek(&txn, 0); // [~]^[2, 3, 4][~~][7, 8][~]
+        assert_eq!(c.index(), 0);
+        assert_eq!(c.neighbours(), (Some(ID::new(1, 0)), Some(ID::new(1, 1))));
+        c.insert(&mut txn, 10); // [~][10]^[2, 3, 4][~~][7, 8][~]
+        assert_eq!(array.to_json(&txn), any!([10, 2, 3, 4, 7, 8]));
+
+        c.seek(&txn, 6); // [~][10][2, 3, 4][~~][7, 8][~]^
+        assert_eq!(c.neighbours(), (Some(ID::new(1, 8)), None));
+        c.insert(&mut txn, 11); // [~][10]^[2, 3, 4][~~][7, 8][~][11]^
+        assert_eq!(array.to_json(&txn), any!([10, 2, 3, 4, 7, 8, 11]));
+
+        c.backward(&txn, 3); // [~][10][2, 3, 4][~~]^[7, 8][~][11]
+        assert_eq!(c.neighbours(), (Some(ID::new(1, 5)), Some(ID::new(1, 6))));
+        c.insert(&mut txn, 12); // [~][10]^[2, 3, 4][~~][12]^[7, 8][~][11]
+        assert_eq!(array.to_json(&txn), any!([10, 2, 3, 4, 12, 7, 8, 11]));
     }
 }
