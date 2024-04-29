@@ -154,7 +154,7 @@ impl<'branch> RawCursor<'branch> {
         }
         let len = block_ptr.content_len(txn.store().options.offset_kind);
         self.index += len;
-        if let Some(right) = right {
+        if let Some(_) = right {
             self.last_item = block_ptr.right;
             self.offset = 0;
         } else {
@@ -193,32 +193,35 @@ impl<'branch> RawCursor<'branch> {
         remaining == 0
     }
 
+    pub fn read_value<T: ReadTxn>(&mut self, txn: &T) -> Option<Value> {
+        let mut buf = [Value::default()];
+        if self.read(txn, &mut buf) == 0 {
+            None
+        } else {
+            Some(std::mem::take(&mut buf[0]))
+        }
+    }
+
     pub fn read<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Value]) -> u32 {
         let mut read = 0u32;
-        let buf_len = buf.len() as u32;
-        while read < buf_len {
+        while {
             if let Some(item) = self.last_item {
                 if !item.is_deleted() && item.is_countable() {
                     let n = item
                         .content
                         .read(self.offset as usize, &mut buf[read as usize..])
                         as u32;
-
-                    self.offset += n;
-                    self.index += n;
                     read += n;
-                    if read >= buf_len {
-                        break;
+                    self.index += n;
+                    self.offset += n;
+                    if buf.len() == read as usize {
+                        // cursor can move forward within the current item
+                        return read;
                     }
                 }
             }
-            let next = self.move_iter.next(txn);
-            if next.is_none() {
-                break;
-            }
-            self.last_item = next;
-            self.offset = 0;
-        }
+            self.next(txn).is_some()
+        } { /* move next */ }
         read
     }
 

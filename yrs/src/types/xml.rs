@@ -8,7 +8,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
-use crate::block_iter::BlockIter;
 use crate::transaction::TransactionMut;
 use crate::types::text::{diff_between, TextEvent, YChange};
 use crate::types::{
@@ -1065,11 +1064,11 @@ pub trait XmlFragment: AsRef<Branch> {
     where
         V: XmlPrelim,
     {
-        let ptr = self.as_ref().insert_at(txn, index, xml_node).unwrap(); // XML node is never empty
-        if let Ok(integrated) = V::Return::try_from(ptr) {
-            integrated
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, index) {
+            cursor.insert(txn, xml_node)
         } else {
-            panic!("Defect: inserted XML element returned primitive value block")
+            panic!("Index {} is outside of the range of an array", index);
         }
     }
 
@@ -1100,9 +1099,11 @@ pub trait XmlFragment: AsRef<Branch> {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.delete(txn, len)
+        let mut cursor = self.as_ref().cursor();
+        if cursor.forward(txn, index) {
+            if !cursor.remove(txn, len) {
+                panic!("Not all elements were removed from the array");
+            }
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }

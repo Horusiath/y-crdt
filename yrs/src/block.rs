@@ -1638,21 +1638,37 @@ impl ItemContent {
                     j
                 }
                 ItemContent::Binary(v) => {
-                    buf[0] = Out::Any(Any::from(v.deref()));
-                    1
+                    if offset == 0 {
+                        buf[0] = Out::Any(Any::from(v.deref()));
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ItemContent::Doc(_, doc) => {
-                    buf[0] = Out::YDoc(doc.clone());
-                    1
+                    if offset == 0 {
+                        buf[0] = Out::YDoc(doc.clone());
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ItemContent::Type(c) => {
-                    let branch_ref = BranchPtr::from(c);
-                    buf[0] = branch_ref.into();
-                    1
+                    if offset == 0 {
+                        let branch_ref = BranchPtr::from(c);
+                        buf[0] = branch_ref.into();
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ItemContent::Embed(v) => {
-                    buf[0] = Out::Any(v.clone());
-                    1
+                    if offset == 0 {
+                        buf[0] = Out::Any(v.clone());
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ItemContent::Move(_) => 0,
                 ItemContent::Deleted(_) => 0,
