@@ -72,11 +72,9 @@ impl Iterator for BlockIter {
 
 impl DoubleEndedIterator for BlockIter {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let curr = self.next.take();
-        if let Some(item) = curr.as_deref() {
-            self.next = item.left;
-        }
-        curr
+        let item = self.next.take()?;
+        self.next = item.left;
+        item.left
     }
 }
 
