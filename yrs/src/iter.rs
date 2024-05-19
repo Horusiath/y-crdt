@@ -138,36 +138,34 @@ impl MoveIter {
             false
         }
     }
-}
 
-impl TxnIterator for MoveIter {
-    type Item = ItemPtr;
-
-    fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
+    pub fn move_next<T: ReadTxn>(&mut self, txn: &T) -> MoveIterResult {
         while {
             if let Some(curr) = self.block_iter.next() {
                 let scope = self.move_stack.current_scope();
                 let ctx = scope.map(|s| s.dest);
+                if let Some(scope) = scope {
+                    if scope.end == Some(curr) {
+                        // we're at the end of the current scope
+                        // while we still need to return current block ptr
+                        // we can descend already in the move stack
+                        self.escape_current_scope();
+                        // we just returned to last active moved block ptr, we need to
+                        // skip over it
+                        let moved = self.block_iter.next();
+                        return MoveIterResult::StepOut(moved.unwrap());
+                    }
+                }
                 if curr.moved == ctx {
                     // current item exists in the right (possibly none) move scope
-                    if let Some(scope) = scope {
-                        if scope.end == Some(curr) {
-                            // we're at the end of the current scope
-                            // while we still need to return current block ptr
-                            // we can already descent in the move stack
-                            self.escape_current_scope();
-                            // we just returned to last active moved block ptr, we need to
-                            // skip over it
-                            self.block_iter.next();
-                        }
-                    }
                     if let ItemContent::Move(m) = &curr.content {
                         // we need to move to a new scope and reposition iterator at the start of it
                         let (start, end) = m.get_moved_coords(txn);
                         self.move_stack.push(MoveScope::new(start, end, curr));
                         self.block_iter = BlockIter::new(start);
+                        return MoveIterResult::StepIn(curr);
                     } else {
-                        return Some(curr);
+                        return MoveIterResult::Next(curr);
                     }
                 }
 
@@ -181,35 +179,35 @@ impl TxnIterator for MoveIter {
                 escaped
             }
         } {}
-        None
+        MoveIterResult::Done
     }
-}
 
-impl TxnDoubleEndedIterator for MoveIter {
-    fn next_back<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
+    pub fn move_back<T: ReadTxn>(&mut self, txn: &T) -> MoveIterResult {
         while {
             if let Some(curr) = self.block_iter.next_back() {
                 let scope = self.move_stack.current_scope();
+                if let Some(scope) = scope {
+                    if scope.start == Some(curr) {
+                        // we're at the start of the current scope
+                        // while we still need to return current block ptr
+                        // we can already descent in the move stack
+                        self.escape_current_scope();
+                        // we just returned to last active moved block ptr, we need to
+                        // skip over it
+                        let moved = self.block_iter.next_back();
+                        return MoveIterResult::StepOut(moved.unwrap());
+                    }
+                }
                 if curr.moved == scope.map(|s| s.dest) {
                     // current item exists in the right (possibly none) move scope
-                    if let Some(scope) = scope {
-                        if scope.start == Some(curr) {
-                            // we're at the start of the current scope
-                            // while we still need to return current block ptr
-                            // we can already descent in the move stack
-                            self.escape_current_scope();
-                            // we just returned to last active moved block ptr, we need to
-                            // skip over it
-                            self.block_iter.next_back();
-                        }
-                    }
                     if let ItemContent::Move(m) = &curr.content {
                         // we need to move to a new scope and reposition iterator at the end of it
                         let (start, end) = m.get_moved_coords(txn);
                         self.move_stack.push(MoveScope::new(start, end, curr));
                         self.block_iter = BlockIter::new(end);
+                        return MoveIterResult::StepIn(curr);
                     } else {
-                        return Some(curr);
+                        return MoveIterResult::Next(curr);
                     }
                 }
 
@@ -223,8 +221,57 @@ impl TxnDoubleEndedIterator for MoveIter {
                 escaped
             }
         } {}
-        None
+        MoveIterResult::Done
     }
+}
+
+impl TxnIterator for MoveIter {
+    type Item = ItemPtr;
+
+    /// Returns next item in the sequence of blocks. If that item corresponds to move destination,
+    /// it will be skipped over.
+    fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
+        loop {
+            match self.move_next(txn) {
+                MoveIterResult::Next(item) => return Some(item),
+                MoveIterResult::Done => return None,
+                MoveIterResult::StepIn(_) | MoveIterResult::StepOut(_) => {
+                    /* iterate over to the next element */
+                }
+            }
+        }
+    }
+}
+
+impl TxnDoubleEndedIterator for MoveIter {
+    /// Returns previous item in the sequence of blocks. If that item corresponds to move
+    /// destination, it will be skipped over.
+    fn next_back<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
+        loop {
+            match self.move_back(txn) {
+                MoveIterResult::Next(item) => return Some(item),
+                MoveIterResult::Done => return None,
+                MoveIterResult::StepIn(_) | MoveIterResult::StepOut(_) => {
+                    /* iterate over to the next element */
+                }
+            }
+        }
+    }
+}
+
+/// Iteration result of moving [MoveIter] back or forth using [MoveIter::move_next] or
+/// [MoveIter::move_back]. Unlike [MoveIter::next]/[MoveIter::next_back] methods, this enum covers
+/// the information about stepping into/out of move ranges.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum MoveIterResult {
+    /// A next iterated item.
+    Next(ItemPtr),
+    /// Iterator reached the end of the collection.
+    Done,
+    /// Iterator stepped into move block, next move will jump into move range location.
+    StepIn(ItemPtr),
+    /// Iterator returned from move block scope.
+    StepOut(ItemPtr),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -545,9 +592,41 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::iter::{BlockIterator, BlockSliceIterator, IntoBlockIter, TxnIterator};
+    use crate::iter::{
+        BlockIterator, BlockSliceIterator, IntoBlockIter, MoveIterResult, TxnIterator,
+    };
     use crate::test_utils::exchange_updates;
     use crate::{Array, Assoc, Doc, StickyIndex, Transact, ID};
+    use assert_matches2::assert_matches;
+
+    #[test]
+    fn move_iter_result_forward() {
+        let doc = Doc::with_client_id(1);
+        let array = doc.get_or_insert_array("array");
+        let mut txn = doc.transact_mut();
+        array.insert_range(&mut txn, 0, [1, 2, 3]); //<1#0..2>
+        drop(txn);
+
+        let mut txn = doc.transact_mut();
+        array.move_to(&mut txn, 0, 3);
+
+        // iterate with normal iterator first
+        let start = array.as_ref().start;
+        let mut i = start.to_iter().moved().slices().values();
+        assert_eq!(i.next(&txn), Some(2.into()));
+        assert_eq!(i.next(&txn), Some(3.into()));
+        assert_eq!(i.next(&txn), Some(1.into()));
+        assert_eq!(i.next(&txn), None);
+
+        // iterate using move aware iterator
+        let start = array.as_ref().start;
+        let mut i = start.to_iter().moved();
+        assert_matches!(i.move_next(&txn), MoveIterResult::Next(_)); // [2, 3] (single block)
+        assert_matches!(i.move_next(&txn), MoveIterResult::StepIn(_)); // moved 1 (jump in)
+        assert_matches!(i.move_next(&txn), MoveIterResult::Next(_)); // 1
+        assert_matches!(i.move_next(&txn), MoveIterResult::StepOut(_)); // moved 1 (jump back)
+        assert_matches!(i.move_next(&txn), MoveIterResult::Done);
+    }
 
     #[test]
     fn move_last_elem_iter() {
