@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
-use crate::iter::{IntoBlockIter, MoveIter, TxnDoubleEndedIterator, TxnIterator};
+use crate::iter::{IntoBlockIter, MoveIter, MoveIterResult, TxnDoubleEndedIterator, TxnIterator};
 use crate::slice::ItemSlice;
 use crate::types::TypePtr;
 use crate::{Assoc, IndexScope, ReadTxn, StickyIndex, TransactionMut, Value, ID};
@@ -60,22 +60,52 @@ impl<'branch> RawCursor<'branch> {
         let encoding = txn.store().options.offset_kind;
         while {
             if let Some(item) = self.last_item {
-                if !item.is_deleted() && item.is_countable() {
-                    let remaining_item_len = item.content_len(encoding) - self.offset;
-                    if remaining_item_len > remaining {
-                        // cursor can move forward within the current item
-                        self.index += remaining;
-                        self.offset += remaining;
+                if !item.is_deleted() {
+                    if remaining == 0 {
+                        // remaining offset is 0, we still want to skip over all deleted items
+                        // and stop at the first non-deleted item, even if it's not countable
                         return true;
-                    } else {
-                        // we trim the remaining offset by the current item
-                        remaining -= remaining_item_len;
+                    } else if item.is_countable() {
+                        let remaining_item_len = item.content_len(encoding) - self.offset;
+                        if remaining_item_len > remaining {
+                            // cursor can move forward within the current item
+                            self.index += remaining;
+                            self.offset += remaining;
+                            return true;
+                        } else {
+                            // we trim the remaining offset by the current item
+                            remaining -= remaining_item_len;
+                        }
                     }
                 }
             }
-            self.next(txn).is_some()
+            // move to the next item
+            self.move_next(txn)
         } { /* move next */ }
         remaining == 0
+    }
+
+    fn move_next<T: ReadTxn>(&mut self, txn: &T) -> bool {
+        let remaining_len = self.remaining(txn);
+        self.index += remaining_len;
+        loop {
+            match self.move_iter.move_next(txn) {
+                MoveIterResult::Next(item) | MoveIterResult::StepIn(item) => {
+                    self.last_item = Some(item);
+                    self.offset = 0;
+                    return true;
+                }
+                MoveIterResult::Done => {
+                    self.offset = if let Some(item) = self.last_item {
+                        item.content_len(txn.store().options.offset_kind)
+                    } else {
+                        0
+                    };
+                    return false;
+                }
+                MoveIterResult::StepOut(_) => { /* next */ }
+            }
+        }
     }
 
     pub fn backward<T: ReadTxn>(&mut self, txn: &T, offset: u32) -> bool {
