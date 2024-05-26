@@ -134,7 +134,7 @@ impl<'branch> RawCursor<'branch> {
             }
         }
 
-        while let Some(item) = self.next_back(txn) {
+        while let Some(item) = self.move_back(txn) {
             if !item.is_deleted() && item.is_countable() {
                 if remaining <= self.offset {
                     // the offset we're looking for is within current item
@@ -148,6 +148,40 @@ impl<'branch> RawCursor<'branch> {
             }
         }
         remaining == 0
+    }
+
+    fn move_back<T: ReadTxn>(&mut self, txn: &T) -> Option<ItemPtr> {
+        if let Some(item) = self.last_item {
+            if !item.is_deleted() && item.is_countable() {
+                self.index -= self.offset;
+            }
+        }
+        while self.last_item.is_some() {
+            match self.move_iter.move_back(txn) {
+                MoveIterResult::Next(item) => {
+                    if Some(item) == self.last_item {
+                        // we changed the direction of an iterator, so we need to double back
+                        continue;
+                    }
+                    let item_len = item.content_len(txn.store().options.offset_kind);
+                    self.last_item = Some(item);
+                    self.offset = item_len;
+                    return Some(item);
+                }
+                MoveIterResult::StepOut(item) => {
+                    self.last_item = Some(item);
+                    self.offset = 0;
+                    return Some(item);
+                }
+                MoveIterResult::StepIn(item) => { /* approaching move from the back, jump over */ }
+                MoveIterResult::Done => {
+                    self.move_iter = self.branch.start.to_iter().moved();
+                    return None;
+                }
+            }
+        }
+        self.move_iter = self.branch.start.to_iter().moved();
+        None
     }
 
     pub fn insert<P>(&mut self, txn: &mut TransactionMut, prelim: P) -> P::Return
