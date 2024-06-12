@@ -151,6 +151,20 @@ pub trait Map: AsRef<Branch> + Sized {
         MapIter::new(self.as_ref(), txn)
     }
 
+    /// Returns an entry, that can be either vacant or occupied, for a given `key` within current map.
+    fn entry<'txn, 'doc, K: Into<Arc<str>>>(
+        &self,
+        txn: &'txn mut TransactionMut<'doc>,
+        key: K,
+    ) -> Entry<'txn, 'doc> {
+        let branch = BranchPtr::from(self.as_ref());
+        let key = key.into();
+        match branch.map.get(&key) {
+            None => Entry::vacant(branch, key, txn),
+            Some(left) => Entry::occupied(branch, key, txn, *left),
+        }
+    }
+
     /// Inserts a new `value` under given `key` into current map. Returns an integrated value.
     fn insert<K, V>(&self, txn: &mut TransactionMut, key: K, value: V) -> V::Return
     where
@@ -223,6 +237,205 @@ pub trait Map: AsRef<Branch> + Sized {
     fn clear(&self, txn: &mut TransactionMut) {
         for (_, ptr) in self.as_ref().map.iter() {
             txn.delete(ptr.clone());
+        }
+    }
+}
+
+/// Entry representing either a vacant or occupied key-value pair cell within a [Map].
+pub enum Entry<'txn, 'doc> {
+    Occupied(OccupiedEntry<'txn, 'doc>),
+    Vacant(VacantEntry<'txn, 'doc>),
+}
+
+impl<'txn, 'doc> Entry<'txn, 'doc> {
+    fn vacant(branch: BranchPtr, key: Arc<str>, txn: &'txn mut TransactionMut<'doc>) -> Self {
+        Self::Vacant(VacantEntry { branch, key, txn })
+    }
+
+    fn occupied(
+        branch: BranchPtr,
+        key: Arc<str>,
+        txn: &'txn mut TransactionMut<'doc>,
+        left: ItemPtr,
+    ) -> Self {
+        Self::Occupied(OccupiedEntry {
+            branch,
+            key,
+            txn,
+            left,
+        })
+    }
+
+    #[inline]
+    pub fn is_vacant(&self) -> bool {
+        matches!(self, Self::Vacant(_))
+    }
+
+    #[inline]
+    pub fn is_occupied(&self) -> bool {
+        matches!(self, Self::Occupied(_))
+    }
+
+    /// If current entry is occupied, returns a reference to a value stored within it.
+    /// If current entry is vacant, inserts given preliminary `value` and return a reference to it.
+    pub fn or_insert<V>(self, value: V) -> Result<V::Return, Value>
+    where
+        V: Prelim,
+        V::Return: TryFrom<Value, Error = Value>,
+    {
+        match self {
+            Entry::Occupied(e) => e.get(),
+            Entry::Vacant(e) => Ok(e.insert(value)),
+        }
+    }
+
+    /// If current entry is occupied, returns a reference to a value stored within it.
+    /// If current entry is vacant, inserts a new value using provided factory function and
+    /// returns a reference to inserted value.
+    pub fn or_insert_with<F, V>(self, f: F) -> Result<V::Return, Value>
+    where
+        F: FnOnce() -> V,
+        V: Prelim,
+        V::Return: TryFrom<Value, Error = Value>,
+    {
+        match self {
+            Entry::Occupied(e) => e.get(),
+            Entry::Vacant(e) => Ok(e.insert(f())),
+        }
+    }
+
+    /// If current entry is occupied, returns a reference to a value stored within it.
+    /// If current entry is vacant, inserts a new value using provided factory function and
+    /// returns a reference to inserted value.
+    pub fn or_insert_with_key<F, V>(self, f: F) -> Result<V::Return, Value>
+    where
+        F: FnOnce(&Arc<str>) -> V,
+        V: Prelim,
+        V::Return: TryFrom<Value, Error = Value>,
+    {
+        match self {
+            Entry::Occupied(e) => e.get(),
+            Entry::Vacant(e) => {
+                let value = f(e.key());
+                Ok(e.insert(value))
+            }
+        }
+    }
+
+    /// Returns a reference to a key related to a current entry.
+    #[inline]
+    pub fn key(&self) -> &Arc<str> {
+        match self {
+            Self::Occupied(entry) => entry.key(),
+            Self::Vacant(entry) => entry.key(),
+        }
+    }
+}
+
+/// Represents an occupied key-value entry within a [Map].
+pub struct OccupiedEntry<'txn, 'doc> {
+    branch: BranchPtr,
+    left: ItemPtr,
+    key: Arc<str>,
+    txn: &'txn mut TransactionMut<'doc>,
+}
+
+impl<'txn, 'doc> OccupiedEntry<'txn, 'doc> {
+    /// Returns a reference to a key related to a current entry.
+    #[inline]
+    pub fn key(&self) -> &Arc<str> {
+        &self.key
+    }
+
+    /// Replaces existing entry with a new preliminary value under a key related to a current entry.
+    /// Returns an integrated reference to inserted value.
+    pub fn insert<V>(&mut self, value: V) -> V::Return
+    where
+        V: Prelim,
+    {
+        let pos = {
+            ItemPosition {
+                parent: self.branch.into(),
+                left: Some(self.left),
+                right: None,
+                index: 0,
+                current_attrs: None,
+            }
+        };
+
+        let ptr = self.txn.create_item(&pos, value, Some(self.key.clone()));
+        self.left = ptr;
+        match V::Return::try_from(ptr) {
+            Ok(value) => value,
+            Err(_) => unreachable!(),
+        }
+    }
+
+    /// Removes (tombstones) a value stored under current occupied entry.
+    /// Returns an integrated value that was removed.
+    pub fn remove(self) -> Value {
+        self.branch.remove(self.txn, &self.key).unwrap()
+    }
+
+    /// Removes (tombstones) a value stored under current occupied entry.
+    /// Returns a key with integrated value that were removed.
+    pub fn remove_entry(self) -> (Arc<str>, Value) {
+        let value = self.branch.remove(self.txn, &self.key).unwrap();
+        (self.key, value)
+    }
+
+    /// Returns an integrated value related to current entry of a [Map].
+    pub fn get_value(&self) -> Value {
+        self.left.content.get_last().unwrap()
+    }
+
+    /// Returns an integrated value related to current entry of a [Map].
+    #[inline]
+    pub fn get<V>(&self) -> Result<V, V::Error>
+    where
+        V: TryFrom<Value>,
+    {
+        let value = self.get_value();
+        V::try_from(value)
+    }
+}
+
+/// Represents a vacant key-value entry within a [Map].
+pub struct VacantEntry<'txn, 'doc> {
+    branch: BranchPtr,
+    key: Arc<str>,
+    txn: &'txn mut TransactionMut<'doc>,
+}
+
+impl<'txn, 'doc> VacantEntry<'txn, 'doc> {
+    /// Returns a reference to a key related to a current entry.
+    #[inline]
+    pub fn key(&self) -> &Arc<str> {
+        &self.key
+    }
+
+    /// Inserts new preliminary value under a key related to a current entry.
+    /// Returns an integrated reference to inserted value.
+    pub fn insert<V>(self, value: V) -> V::Return
+    where
+        V: Prelim,
+        V::Return: TryFrom<Value, Error = Value>,
+    {
+        let pos = {
+            ItemPosition {
+                parent: self.branch.into(),
+                left: None,
+                right: None,
+                index: 0,
+                current_attrs: None,
+            }
+        };
+
+        let ptr = self.txn.create_item(&pos, value, Some(self.key.clone()));
+        let value = ptr.content.get_last().unwrap();
+        match ptr.try_into() {
+            Ok(value) => value,
+            Err(_) => unreachable!(),
         }
     }
 }
@@ -333,6 +546,13 @@ pub struct MapPrelim<T>(HashMap<String, T>);
 impl<T> MapPrelim<T> {
     pub fn new() -> Self {
         MapPrelim(HashMap::default())
+    }
+}
+
+impl Default for MapPrelim<Any> {
+    #[inline]
+    fn default() -> Self {
+        MapPrelim::new()
     }
 }
 
@@ -1024,5 +1244,18 @@ mod test {
         let value = map.get(&txn, "key").unwrap().to_json(&txn);
 
         assert!(value == 1.into() || value == 2.into())
+    }
+
+    #[test]
+    fn entry() {
+        let doc = Doc::with_client_id(1);
+        let map = doc.get_or_insert_map("map");
+        let mut txn = doc.transact_mut();
+        let mut e = map.entry(&mut txn, "key");
+
+        assert!(e.is_vacant(), "entry initially should be vacant");
+        assert!(!e.is_vacant(), "entry initially should not be occupied");
+
+        let value = e.or_insert(1u32);
     }
 }

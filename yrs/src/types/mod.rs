@@ -280,33 +280,51 @@ pub trait DeepObservable: AsRef<Branch> {
     }
 }
 
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum ValueType {
+    Array = TYPE_REFS_ARRAY,
+    Map = TYPE_REFS_MAP,
+    Text = TYPE_REFS_TEXT,
+    XmlElement = TYPE_REFS_XML_ELEMENT,
+    XmlFragment = TYPE_REFS_XML_FRAGMENT,
+    XmlHook = TYPE_REFS_XML_HOOK,
+    XmlText = TYPE_REFS_XML_TEXT,
+    SubDoc = TYPE_REFS_DOC,
+    #[cfg(feature = "weak")]
+    WeakLink = TYPE_REFS_WEAK,
+    Undefined = TYPE_REFS_UNDEFINED,
+    Any = u8::MAX,
+}
+
 /// Value that can be returned by Yrs data types. This includes [Any] which is an extension
 /// representation of JSON, but also nested complex collaborative structures specific to Yrs.
+#[repr(u8)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     /// Any value that it treated as a single element in it's entirety.
-    Any(Any),
+    Any(Any) = u8::MAX,
     /// Instance of a [TextRef].
-    YText(TextRef),
+    YText(TextRef) = TYPE_REFS_TEXT,
     /// Instance of an [ArrayRef].
-    YArray(ArrayRef),
+    YArray(ArrayRef) = TYPE_REFS_ARRAY,
     /// Instance of a [MapRef].
-    YMap(MapRef),
+    YMap(MapRef) = TYPE_REFS_MAP,
     /// Instance of a [XmlElementRef].
-    YXmlElement(XmlElementRef),
+    YXmlElement(XmlElementRef) = TYPE_REFS_XML_ELEMENT,
     /// Instance of a [XmlFragmentRef].
-    YXmlFragment(XmlFragmentRef),
+    YXmlFragment(XmlFragmentRef) = TYPE_REFS_XML_FRAGMENT,
     /// Instance of a [XmlTextRef].
-    YXmlText(XmlTextRef),
+    YXmlText(XmlTextRef) = TYPE_REFS_XML_TEXT,
     /// Subdocument.
-    YDoc(Doc),
+    YDoc(Doc) = TYPE_REFS_DOC,
     /// Instance of a [WeakRef] or unspecified type (requires manual casting).
     #[cfg(feature = "weak")]
-    YWeakLink(WeakRef<BranchPtr>),
+    YWeakLink(WeakRef<BranchPtr>) = TYPE_REFS_WEAK,
     /// Instance of a shared collection of undefined type. Usually happens when it refers to a root
     /// type that has not been defined locally. Can also refer to a [WeakRef] if "weak" feature flag
     /// was not set.
-    UndefinedRef(BranchPtr),
+    UndefinedRef(BranchPtr) = TYPE_REFS_UNDEFINED,
 }
 
 impl Default for Value {
@@ -317,6 +335,22 @@ impl Default for Value {
 
 impl Value {
     #[inline]
+    pub fn value_type(&self) -> ValueType {
+        match self {
+            Self::Any(_) => ValueType::Any,
+            Self::YText(_) => ValueType::Text,
+            Self::YArray(_) => ValueType::Array,
+            Self::YMap(_) => ValueType::Map,
+            Self::YXmlElement(_) => ValueType::XmlElement,
+            Self::YXmlFragment(_) => ValueType::XmlFragment,
+            Self::YXmlText(_) => ValueType::XmlText,
+            Self::YDoc(_) => ValueType::SubDoc,
+            Self::YWeakLink(_) => ValueType::WeakLink,
+            Self::UndefinedRef(_) => ValueType::Undefined,
+        }
+    }
+
+    #[inline]
     pub fn cast<T>(self) -> Result<T, Self>
     where
         T: TryFrom<Self, Error = Self>,
@@ -324,23 +358,19 @@ impl Value {
         T::try_from(self)
     }
 
-    /// Converts current value into stringified representation.
-    pub fn to_string<T: ReadTxn>(self, txn: &T) -> String {
+    pub fn as_ref(&self) -> ValueRef {
         match self {
-            Value::Any(a) => a.to_string(),
-            Value::YText(v) => v.get_string(txn),
-            Value::YArray(v) => v.to_json(txn).to_string(),
-            Value::YMap(v) => v.to_json(txn).to_string(),
-            Value::YXmlElement(v) => v.get_string(txn),
-            Value::YXmlFragment(v) => v.get_string(txn),
-            Value::YXmlText(v) => v.get_string(txn),
-            Value::YDoc(v) => v.to_string(),
+            Value::Any(a) => ValueRef::Any(a),
+            Value::YText(v) => ValueRef::YText(v.clone()),
+            Value::YArray(v) => ValueRef::YArray(v.clone()),
+            Value::YMap(v) => ValueRef::YMap(v.clone()),
+            Value::YXmlElement(v) => ValueRef::YXmlElement(v.clone()),
+            Value::YXmlFragment(v) => ValueRef::YXmlFragment(v.clone()),
+            Value::YXmlText(v) => ValueRef::YXmlText(v.clone()),
+            Value::YDoc(v) => ValueRef::YDoc(v),
             #[cfg(feature = "weak")]
-            Value::YWeakLink(v) => {
-                let text_ref: crate::WeakRef<TextRef> = crate::WeakRef::from(v);
-                text_ref.get_string(txn)
-            }
-            Value::UndefinedRef(_) => "".to_string(),
+            Value::YWeakLink(v) => ValueRef::YWeakLink(v.clone()),
+            Value::UndefinedRef(v) => ValueRef::UndefinedRef(v.as_ref()),
         }
     }
 
@@ -361,6 +391,27 @@ impl Value {
     }
 }
 
+impl GetString for Value {
+    fn get_string<T: ReadTxn>(&self, txn: &T) -> String {
+        match self {
+            Value::Any(a) => a.to_string(),
+            Value::YText(v) => v.get_string(txn),
+            Value::YArray(v) => v.to_json(txn).to_string(),
+            Value::YMap(v) => v.to_json(txn).to_string(),
+            Value::YXmlElement(v) => v.get_string(txn),
+            Value::YXmlFragment(v) => v.get_string(txn),
+            Value::YXmlText(v) => v.get_string(txn),
+            Value::YDoc(v) => v.to_string(),
+            #[cfg(feature = "weak")]
+            Value::YWeakLink(v) => {
+                let text_ref: crate::WeakRef<TextRef> = crate::WeakRef::from(v);
+                text_ref.get_string(txn)
+            }
+            Value::UndefinedRef(_) => "".to_string(),
+        }
+    }
+}
+
 impl<T> From<T> for Value
 where
     T: Into<Any>,
@@ -368,6 +419,123 @@ where
     fn from(v: T) -> Self {
         let any: Any = v.into();
         Value::Any(any)
+    }
+}
+
+impl TryFrom<Value> for Any {
+    type Error = Value;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Any(a) => Ok(a),
+            other => Err(other),
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueRef<'a> {
+    /// Any value that it treated as a single element in it's entirety.
+    Any(&'a Any) = u8::MAX,
+    /// Instance of a [TextRef].
+    YText(TextRef) = TYPE_REFS_WEAK,
+    /// Instance of an [ArrayRef].
+    YArray(ArrayRef) = TYPE_REFS_ARRAY,
+    /// Instance of a [MapRef].
+    YMap(MapRef) = TYPE_REFS_MAP,
+    /// Instance of a [XmlElementRef].
+    YXmlElement(XmlElementRef) = TYPE_REFS_XML_ELEMENT,
+    /// Instance of a [XmlFragmentRef].
+    YXmlFragment(XmlFragmentRef) = TYPE_REFS_XML_FRAGMENT,
+    /// Instance of a [XmlTextRef].
+    YXmlText(XmlTextRef) = TYPE_REFS_XML_TEXT,
+    /// Subdocument.
+    YDoc(&'a Doc) = TYPE_REFS_DOC,
+    /// Instance of a [WeakRef] or unspecified type (requires manual casting).
+    #[cfg(feature = "weak")]
+    YWeakLink(WeakRef<BranchPtr>) = TYPE_REFS_WEAK,
+    /// Instance of a shared collection of undefined type. Usually happens when it refers to a root
+    /// type that has not been defined locally. Can also refer to a [WeakRef] if "weak" feature flag
+    /// was not set.
+    UndefinedRef(&'a Branch) = TYPE_REFS_UNDEFINED,
+}
+
+impl<'a> ValueRef<'a> {
+    #[inline]
+    pub fn value_type(&self) -> ValueType {
+        match self {
+            Self::Any(_) => ValueType::Any,
+            Self::YText(_) => ValueType::Text,
+            Self::YArray(_) => ValueType::Array,
+            Self::YMap(_) => ValueType::Map,
+            Self::YXmlElement(_) => ValueType::XmlElement,
+            Self::YXmlFragment(_) => ValueType::XmlFragment,
+            Self::YXmlText(_) => ValueType::XmlText,
+            Self::YDoc(_) => ValueType::SubDoc,
+            Self::YWeakLink(_) => ValueType::WeakLink,
+            Self::UndefinedRef(_) => ValueType::Undefined,
+        }
+    }
+    #[inline]
+    pub fn cast<T>(self) -> Result<T, Self>
+    where
+        T: TryFrom<Self, Error = Self>,
+    {
+        T::try_from(self)
+    }
+
+    pub fn to_owned(self) -> Value {
+        match self {
+            ValueRef::Any(a) => Value::Any(a.clone()),
+            ValueRef::YText(v) => Value::YText(v.clone()),
+            ValueRef::YArray(v) => Value::YArray(v.clone()),
+            ValueRef::YMap(v) => Value::YMap(v.clone()),
+            ValueRef::YXmlElement(v) => Value::YXmlElement(v.clone()),
+            ValueRef::YXmlFragment(v) => Value::YXmlFragment(v.clone()),
+            ValueRef::YXmlText(v) => Value::YXmlText(v.clone()),
+            ValueRef::YDoc(v) => Value::YDoc(v.clone()),
+            #[cfg(feature = "weak")]
+            ValueRef::YWeakLink(v) => Value::YWeakLink(v.clone()),
+            ValueRef::UndefinedRef(v) => Value::UndefinedRef(BranchPtr::from(v)),
+        }
+    }
+
+    pub fn try_branch(&self) -> Option<&Branch> {
+        match self {
+            ValueRef::YText(b) => Some(b.as_ref()),
+            ValueRef::YArray(b) => Some(b.as_ref()),
+            ValueRef::YMap(b) => Some(b.as_ref()),
+            ValueRef::YXmlElement(b) => Some(b.as_ref()),
+            ValueRef::YXmlFragment(b) => Some(b.as_ref()),
+            ValueRef::YXmlText(b) => Some(b.as_ref()),
+            #[cfg(feature = "weak")]
+            ValueRef::YWeakLink(b) => Some(b.as_ref()),
+            ValueRef::UndefinedRef(b) => Some(b.as_ref()),
+            ValueRef::YDoc(_) => None,
+            ValueRef::Any(_) => None,
+        }
+    }
+}
+
+impl<'a> GetString for ValueRef<'a> {
+    fn get_string<T: ReadTxn>(&self, txn: &T) -> String {
+        match self {
+            ValueRef::Any(a) => a.to_string(),
+            ValueRef::YText(v) => v.get_string(txn),
+            ValueRef::YArray(v) => v.to_json(txn).to_string(),
+            ValueRef::YMap(v) => v.to_json(txn).to_string(),
+            ValueRef::YXmlElement(v) => v.get_string(txn),
+            ValueRef::YXmlFragment(v) => v.get_string(txn),
+            ValueRef::YXmlText(v) => v.get_string(txn),
+            ValueRef::YDoc(v) => v.to_string(),
+            #[cfg(feature = "weak")]
+            ValueRef::YWeakLink(v) => {
+                let text_ref: crate::WeakRef<TextRef> = crate::WeakRef::from(v);
+                text_ref.get_string(txn)
+            }
+            ValueRef::UndefinedRef(_) => "".to_string(),
+        }
     }
 }
 

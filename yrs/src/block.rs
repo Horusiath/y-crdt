@@ -2083,7 +2083,7 @@ impl std::fmt::Display for ItemPosition {
 pub trait Prelim: Sized {
     /// Type of a value to be returned as a result of inserting this [Prelim] type instance.
     /// Use [Unused] if none is necessary.
-    type Return: TryFrom<ItemPtr>;
+    type Return: TryFrom<Value>;
 
     /// This method is used to create initial content required in order to create a block item.
     /// A supplied `ptr` can be used to identify block that is about to be created to store
@@ -2104,7 +2104,7 @@ impl<T> Prelim for T
 where
     T: Into<Any>,
 {
-    type Return = Unused;
+    type Return = Any;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let value: Any = self.into();
