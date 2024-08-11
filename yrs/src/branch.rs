@@ -7,9 +7,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
-use crate::block::{BlockCell, Item, ItemContent, ItemPtr};
+use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::cursor::RawCursor;
 use crate::types::array::ArrayEvent;
 use crate::types::map::MapEvent;
@@ -23,15 +21,7 @@ use crate::{
     WriteTxn, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
 };
 use serde::{Deserialize, Serialize};
-use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryFrom;
-use std::fmt::Formatter;
-use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
-use std::ptr::NonNull;
-use std::sync::Arc;
 
 /// A wrapper around [Branch] cell, supplied with a bunch of convenience methods to operate on both
 /// map-like and array-like contents of a [Branch].

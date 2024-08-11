@@ -8,6 +8,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::cursor::RawCursor;
 use crate::transaction::TransactionMut;
 use crate::types::text::{diff_between, TextEvent, YChange};
 use crate::types::{
@@ -1045,8 +1046,8 @@ pub trait XmlFragment: AsRef<Branch> {
     /// Returns an iterator over all children of a current XML fragment.
     /// It does NOT include nested children of its children - for such cases use [Self::successors]
     /// iterator.
-    fn children<'a, T: ReadTxn>(&self, txn: &'a T) -> XmlNodes<'a, T> {
-        let iter = BlockIter::new(BranchPtr::from(self.as_ref()));
+    fn children<'a, T: ReadTxn>(&'a self, txn: &'a T) -> XmlNodes<'a, T> {
+        let iter = self.as_ref().cursor();
         XmlNodes::new(iter, txn)
     }
 
@@ -1066,7 +1067,7 @@ pub trait XmlFragment: AsRef<Branch> {
     {
         let mut cursor = self.as_ref().cursor();
         if cursor.forward(txn, index) {
-            cursor.insert(txn, xml_node)
+            cursor.insert(txn, xml_node).unwrap()
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }
@@ -1201,12 +1202,12 @@ where
 }
 
 pub struct XmlNodes<'a, T> {
-    iter: BlockIter,
+    iter: RawCursor<'a>,
     txn: &'a T,
 }
 
 impl<'a, T: ReadTxn> XmlNodes<'a, T> {
-    fn new(iter: BlockIter, txn: &'a T) -> Self {
+    fn new(iter: RawCursor<'a>, txn: &'a T) -> Self {
         XmlNodes { iter, txn }
     }
 }

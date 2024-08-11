@@ -1,8 +1,8 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
-use crate::block_iter::BlockIter;
+use crate::cursor::RawCursor;
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
-use crate::moving::StickyIndex;
+use crate::moving::{Move, StickyIndex};
 use crate::transaction::TransactionMut;
 use crate::types::{
     event_change_set, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim, In, Out, Path,
@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -189,7 +189,7 @@ pub trait Array: AsRef<Branch> + Sized {
     {
         let mut cursor = self.as_ref().cursor();
         if cursor.forward(txn, index) {
-            cursor.insert(txn, value)
+            cursor.insert(txn, value).unwrap()
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }
@@ -204,7 +204,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
     fn insert_range<T, V>(&self, txn: &mut TransactionMut, index: u32, values: T)
     where
-        T: IntoIterator<Item = V>,
+        T: IntoIterator<Item=V>,
         V: Into<Any>,
     {
         let prelim = RangePrelim::new(values);
@@ -256,7 +256,7 @@ pub trait Array: AsRef<Branch> + Sized {
 
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
-    fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Value> {
+    fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Out> {
         let mut cursor = self.as_ref().cursor();
         if cursor.forward(txn, index) {
             cursor.read_value(txn)
@@ -504,14 +504,14 @@ impl<T> FromIterator<T> for ArrayPrelim
 where
     T: Into<In>,
 {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self {
         ArrayPrelim(iter.into_iter().map(|v| v.into()).collect())
     }
 }
 
 impl<I, T> From<I> for ArrayPrelim
 where
-    I: IntoIterator<Item = T>,
+    I: IntoIterator<Item=T>,
     T: Into<In>,
 {
     fn from(iter: I) -> Self {
@@ -550,7 +550,7 @@ struct RangePrelim(Vec<Any>);
 impl RangePrelim {
     fn new<I, T>(iter: I) -> Self
     where
-        I: IntoIterator<Item = T>,
+        I: IntoIterator<Item=T>,
         T: Into<Any>,
     {
         RangePrelim(iter.into_iter().map(|v| v.into()).collect())
@@ -1050,7 +1050,7 @@ mod test {
                     Any::Number(4.0).into(),
                     Any::String("dtrn".into()).into()
                 ])]
-                .into()
+                    .into()
             )
         );
 
@@ -1081,7 +1081,7 @@ mod test {
                     Change::Retain(1),
                     Change::Added(vec![Any::Number(0.5).into()])
                 ]
-                .into()
+                    .into()
             )
         );
 
@@ -1116,7 +1116,7 @@ mod test {
                     Any::String("dtrn".into()).into(),
                     Any::Number(0.5).into(),
                 ])]
-                .into()
+                    .into()
             )
         );
     }

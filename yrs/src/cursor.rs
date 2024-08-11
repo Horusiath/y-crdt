@@ -6,7 +6,7 @@ use crate::branch::{Branch, BranchPtr};
 use crate::iter::{IntoBlockIter, MoveIter, MoveIterResult, TxnDoubleEndedIterator, TxnIterator};
 use crate::slice::ItemSlice;
 use crate::types::TypePtr;
-use crate::{Assoc, IndexScope, ReadTxn, StickyIndex, TransactionMut, Value, ID};
+use crate::{Assoc, IndexScope, Out, ReadTxn, StickyIndex, TransactionMut, ID};
 
 #[derive(Debug, Clone)]
 pub struct RawCursor<'branch> {
@@ -173,7 +173,7 @@ impl<'branch> RawCursor<'branch> {
                     self.offset = 0;
                     return Some(item);
                 }
-                MoveIterResult::StepIn(item) => { /* approaching move from the back, jump over */ }
+                MoveIterResult::StepIn(_) => { /* approaching move from the back, jump over */ }
                 MoveIterResult::Done => {
                     self.move_iter = self.branch.start.to_iter().moved();
                     return None;
@@ -184,7 +184,7 @@ impl<'branch> RawCursor<'branch> {
         None
     }
 
-    pub fn insert<P>(&mut self, txn: &mut TransactionMut, prelim: P) -> P::Return
+    pub fn insert<P>(&mut self, txn: &mut TransactionMut, prelim: P) -> Option<P::Return>
     where
         P: Prelim,
     {
@@ -206,7 +206,7 @@ impl<'branch> RawCursor<'branch> {
             parent,
             None,
             content,
-        );
+        )?;
         let mut block_ptr = ItemPtr::from(&mut block);
 
         block_ptr.integrate(txn, 0);
@@ -227,7 +227,7 @@ impl<'branch> RawCursor<'branch> {
         }
 
         let result = P::Return::try_from(block_ptr);
-        result.ok().unwrap()
+        result.ok()
     }
 
     pub fn remove(&mut self, txn: &mut TransactionMut, len: u32) -> bool {
@@ -257,8 +257,8 @@ impl<'branch> RawCursor<'branch> {
         remaining == 0
     }
 
-    pub fn read_value<T: ReadTxn>(&mut self, txn: &T) -> Option<Value> {
-        let mut buf = [Value::default()];
+    pub fn read_value<T: ReadTxn>(&mut self, txn: &T) -> Option<Out> {
+        let mut buf = [Out::default()];
         if self.read(txn, &mut buf) == 0 {
             None
         } else {
@@ -266,7 +266,7 @@ impl<'branch> RawCursor<'branch> {
         }
     }
 
-    pub fn read<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Value]) -> u32 {
+    pub fn read<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Out]) -> u32 {
         let mut read = 0u32;
         while {
             if let Some(item) = self.last_item {
@@ -418,7 +418,7 @@ impl<'branch> TxnDoubleEndedIterator for RawCursor<'branch> {
 #[cfg(test)]
 mod test {
     use crate::types::ToJson;
-    use crate::{any, Array, Doc, Transact, Value, ID};
+    use crate::{any, Array, Doc, Out, Transact, ID};
 
     #[test]
     fn push_back() {
@@ -440,14 +440,14 @@ mod test {
         assert_eq!(cursor.index(), 0);
 
         let mut buf = [
-            Value::default(),
-            Value::default(),
-            Value::default(),
-            Value::default(),
+            Out::default(),
+            Out::default(),
+            Out::default(),
+            Out::default(),
         ];
         let read = cursor.read(&txn, &mut buf);
         assert_eq!(read, 3);
-        assert_eq!(buf, [1.into(), 2.into(), 3.into(), Value::default()]);
+        assert_eq!(buf, [1.into(), 2.into(), 3.into(), Out::default()]);
         assert_eq!(cursor.index(), 3);
     }
 
