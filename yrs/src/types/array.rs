@@ -204,7 +204,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
     fn insert_range<T, V>(&self, txn: &mut TransactionMut, index: u32, values: T)
     where
-        T: IntoIterator<Item=V>,
+        T: IntoIterator<Item = V>,
         V: Into<Any>,
     {
         let prelim = RangePrelim::new(values);
@@ -504,14 +504,14 @@ impl<T> FromIterator<T> for ArrayPrelim
 where
     T: Into<In>,
 {
-    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         ArrayPrelim(iter.into_iter().map(|v| v.into()).collect())
     }
 }
 
 impl<I, T> From<I> for ArrayPrelim
 where
-    I: IntoIterator<Item=T>,
+    I: IntoIterator<Item = T>,
     T: Into<In>,
 {
     fn from(iter: I) -> Self {
@@ -550,7 +550,7 @@ struct RangePrelim(Vec<Any>);
 impl RangePrelim {
     fn new<I, T>(iter: I) -> Self
     where
-        I: IntoIterator<Item=T>,
+        I: IntoIterator<Item = T>,
         T: Into<Any>,
     {
         RangePrelim(iter.into_iter().map(|v| v.into()).collect())
@@ -960,7 +960,7 @@ mod test {
         for i in 0..10 {
             let mut m = HashMap::new();
             m.insert(format!("value-{i}"), i);
-            a.push_back(&mut txn, MapPrelim::from(m));
+            a.push_back(&mut txn, MapPrelim::from_iter(m));
         }
 
         for (i, value) in a.iter(&txn).enumerate() {
@@ -1050,7 +1050,7 @@ mod test {
                     Any::Number(4.0).into(),
                     Any::String("dtrn".into()).into()
                 ])]
-                    .into()
+                .into()
             )
         );
 
@@ -1081,7 +1081,7 @@ mod test {
                     Change::Retain(1),
                     Change::Added(vec![Any::Number(0.5).into()])
                 ]
-                    .into()
+                .into()
             )
         );
 
@@ -1116,7 +1116,7 @@ mod test {
                     Any::String("dtrn".into()).into(),
                     Any::Number(0.5).into(),
                 ])]
-                    .into()
+                .into()
             )
         );
     }
