@@ -1,8 +1,9 @@
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim, Unused};
+use crate::path::Path;
 use crate::transaction::TransactionMut;
 use crate::types::{
-    AsPrelim, Attrs, Branch, BranchPtr, DefaultPrelim, Delta, Out, Path, RootRef, SharedRef,
-    TypePtr, TypeRef,
+    AsPrelim, Attrs, Branch, BranchPtr, DefaultPrelim, Delta, Out, RootRef, SharedRef, TypePtr,
+    TypeRef,
 };
 use crate::utils::OptionExt;
 use crate::*;

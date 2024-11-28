@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ pub use text::TextRef;
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
+use crate::path::Path;
 use crate::transaction::TransactionMut;
 use crate::types::array::{ArrayEvent, ArrayRef};
 use crate::types::map::MapEvent;
@@ -684,35 +685,6 @@ impl std::fmt::Display for TypePtr {
             }
             TypePtr::ID(id) => write!(f, "{}", id),
             TypePtr::Named(name) => write!(f, "{}", name),
-        }
-    }
-}
-
-/// A path describing nesting structure between shared collections containing each other. It's a
-/// collection of segments which refer to either index (in case of [Array] or [XmlElement]) or
-/// string key (in case of [Map]) where successor shared collection can be found within subsequent
-/// parent types.
-pub type Path = VecDeque<PathSegment>;
-
-/// A single segment of a [Path].
-#[derive(Debug, Clone, PartialEq)]
-pub enum PathSegment {
-    /// Key segments are used to inform how to access child shared collections within a [Map] types.
-    Key(Arc<str>),
-
-    /// Index segments are used to inform how to access child shared collections within an [Array]
-    /// or [XmlElement] types.
-    Index(u32),
-}
-
-impl Serialize for PathSegment {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            PathSegment::Key(key) => serializer.serialize_str(&*key),
-            PathSegment::Index(i) => serializer.serialize_u32(*i),
         }
     }
 }

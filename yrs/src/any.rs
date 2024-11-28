@@ -1,5 +1,7 @@
 use crate::encoding::read::{Error, Read};
 use crate::encoding::write::Write;
+use crate::path::PathSegment;
+use std::borrow::Borrow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -196,6 +198,57 @@ impl Any {
         let mut s = Serializer::new(cursor);
         self.serialize(&mut s).unwrap();
     }
+
+    /// Resolves the value at the given `path`. Paths consists of member accessors in form of
+    /// map entries and array indices.
+    ///
+    /// # Example
+    /// ```rust
+    /// use serde::Deserialize;
+    /// use serde_json::json;
+    /// use yrs::{any, Any};
+    /// use yrs::path::Path;
+    ///
+    /// // Paths can be serialized and deserialized
+    /// let path = Path::deserialize(json!(["friends", 1, "name"])).unwrap();
+    /// let input = any!({
+    ///     "name": "John",
+    ///     "friends": [
+    ///         { "name": "Alice" },
+    ///         { "name": "Bob" },
+    ///     ],
+    /// });
+    /// let actual = input.at_path(path).cloned();
+    /// assert_eq!(actual, Some(Any::from("Bob")));
+    /// ```
+    pub fn at_path<P, S>(&self, path: P) -> Option<&Any>
+    where
+        P: IntoIterator<Item = S>,
+        S: Borrow<PathSegment>,
+    {
+        let mut current = self;
+        for segment in path {
+            match segment.borrow() {
+                PathSegment::Key(key) => {
+                    if let Any::Map(map) = current {
+                        let value = map.get(&**key)?;
+                        current = value;
+                    } else {
+                        return None;
+                    }
+                }
+                PathSegment::Index(index) => {
+                    if let Any::Array(arr) = current {
+                        let value = arr.get(*index as usize)?;
+                        current = value;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(current)
+    }
 }
 
 impl std::fmt::Display for Any {
@@ -238,6 +291,12 @@ impl std::fmt::Display for Any {
                 Ok(())
             }
         }
+    }
+}
+
+impl Default for Any {
+    fn default() -> Self {
+        Any::Null
     }
 }
 

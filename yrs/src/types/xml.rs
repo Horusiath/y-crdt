@@ -9,11 +9,12 @@ use std::sync::Arc;
 
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::block_iter::BlockIter;
+use crate::path::Path;
 use crate::transaction::TransactionMut;
 use crate::types::text::{diff_between, TextEvent, YChange};
 use crate::types::{
     event_change_set, event_keys, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim,
-    Delta, Entries, EntryChange, MapRef, Out, Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
+    Delta, Entries, EntryChange, MapRef, Out, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
 };
 use crate::{
     Any, ArrayRef, BranchID, DeepObservable, GetString, In, IndexedSequence, Map, Observable,

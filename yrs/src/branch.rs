@@ -1,11 +1,10 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::path::{Path, PathSegment};
 use crate::types::array::ArrayEvent;
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
 use crate::types::xml::{XmlEvent, XmlTextEvent};
-use crate::types::{
-    Entries, Event, Events, Path, PathSegment, RootRef, SharedRef, TypePtr, TypeRef,
-};
+use crate::types::{Entries, Event, Events, RootRef, SharedRef, TypePtr, TypeRef};
 use crate::{
     ArrayRef, Doc, MapRef, Observer, Origin, Out, ReadTxn, Subscription, TextRef, TransactionMut,
     WriteTxn, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
@@ -531,7 +530,7 @@ impl Branch {
                 path.push_front(PathSegment::Index(i));
             }
         }
-        path
+        Path::new(path)
     }
 
     #[cfg(feature = "sync")]

@@ -1,10 +1,11 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
+use crate::path::Path;
 use crate::transaction::TransactionMut;
 use crate::types::{
-    event_keys, AsPrelim, Branch, BranchPtr, DefaultPrelim, Entries, EntryChange, In, Out, Path,
-    RootRef, SharedRef, ToJson, TypeRef,
+    event_keys, AsPrelim, Branch, BranchPtr, DefaultPrelim, Entries, EntryChange, In, Out, RootRef,
+    SharedRef, ToJson, TypeRef,
 };
 use crate::*;
 use serde::de::DeserializeOwned;
@@ -617,10 +618,11 @@ impl MapEvent {
 
 #[cfg(test)]
 mod test {
+    use crate::path::{Path, PathSegment};
     use crate::test_utils::{exchange_updates, run_scenario, RngExt};
     use crate::transaction::ReadTxn;
     use crate::types::text::TextPrelim;
-    use crate::types::{DeepObservable, EntryChange, Event, Out, Path, PathSegment, ToJson};
+    use crate::types::{DeepObservable, EntryChange, Event, Out, ToJson};
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encoder, EncoderV1};
     use crate::{
@@ -632,6 +634,7 @@ mod test {
     use fastrand::Rng;
     use serde::Deserialize;
     use std::collections::HashMap;
+    use std::iter::FromIterator;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1150,14 +1153,14 @@ mod test {
         assert_eq!(
             actual.as_slice(),
             &[
-                vec![Path::from(vec![])],
-                vec![Path::from(vec![PathSegment::Key("map".into())])],
-                vec![Path::from(vec![
+                vec![Path::default()],
+                vec![Path::from_iter([PathSegment::Key("map".into())])],
+                vec![Path::from_iter([
                     PathSegment::Key("map".into()),
                     PathSegment::Key("array".into())
                 ])],
-                vec![Path::from(vec![PathSegment::Key("map".into()),])],
-                vec![Path::from(vec![
+                vec![Path::from_iter([PathSegment::Key("map".into()),])],
+                vec![Path::from_iter([
                     PathSegment::Key("map".into()),
                     PathSegment::Key("text".into()),
                 ])],

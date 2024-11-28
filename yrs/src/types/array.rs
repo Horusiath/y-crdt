@@ -3,9 +3,10 @@ use crate::block_iter::BlockIter;
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
 use crate::moving::StickyIndex;
+use crate::path::Path;
 use crate::transaction::TransactionMut;
 use crate::types::{
-    event_change_set, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim, In, Out, Path,
+    event_change_set, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim, In, Out,
     RootRef, SharedRef, ToJson, TypeRef,
 };
 use crate::{Any, Assoc, DeepObservable, IndexedSequence, Observable, ReadTxn, ID};
@@ -640,7 +641,7 @@ impl ArrayEvent {
 mod test {
     use crate::test_utils::{exchange_updates, run_scenario, RngExt};
     use crate::types::map::MapPrelim;
-    use crate::types::{Change, DeepObservable, Event, Out, Path, PathSegment, ToJson};
+    use crate::types::{Change, DeepObservable, Event, Out, ToJson};
     use crate::{
         any, Any, Array, ArrayPrelim, Assoc, Doc, Map, MapRef, Observable, SharedRef, StateVector,
         Transact, Update, WriteTxn, ID,
@@ -1161,6 +1162,7 @@ mod test {
         assert_eq!(c2.swap(None), Some(Arc::new(a2.hook())));
     }
 
+    use crate::path::{Path, PathSegment};
     use crate::transaction::ReadTxn;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encoder, EncoderV1};
@@ -1333,7 +1335,7 @@ mod test {
 
         let expected = &[
             vec![Path::default()],
-            vec![Path::default(), Path::from([PathSegment::Index(1)])],
+            vec![Path::default(), Path::from_iter([PathSegment::Index(1)])],
         ];
         let actual = paths.lock().unwrap();
         assert_eq!(actual.as_slice(), expected);

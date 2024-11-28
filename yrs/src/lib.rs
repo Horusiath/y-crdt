@@ -596,6 +596,7 @@ pub mod json_path;
 mod moving;
 pub mod observer;
 mod out;
+pub mod path;
 mod slice;
 mod state_vector;
 pub mod sync;

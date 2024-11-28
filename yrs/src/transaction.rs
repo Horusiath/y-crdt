@@ -6,18 +6,20 @@ use crate::event::SubdocsEvent;
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
+use crate::path::PathSegment;
 use crate::slice::BlockSlice;
 use crate::store::{Store, StoreEvents, SubdocGuids, SubdocsIter};
-use crate::types::{Event, Events, RootRef, SharedRef, TypePtr};
+use crate::types::{Event, Events, RootRef, SharedRef, TypePtr, TypeRef};
 use crate::update::Update;
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::utils::OptionExt;
 use crate::{
-    merge_updates_v1, merge_updates_v2, ArrayRef, BranchID, Doc, MapRef, Out, Snapshot,
+    merge_updates_v1, merge_updates_v2, Array, ArrayRef, BranchID, Doc, Map, MapRef, Out, Snapshot,
     StateVector, TextRef, Transact, XmlFragmentRef,
 };
 use async_lock::{RwLockReadGuard, RwLockWriteGuard};
 use smallvec::SmallVec;
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -182,6 +184,48 @@ pub trait ReadTxn: Sized {
         XmlFragmentRef::root(name).get(self)
     }
 
+    /// Returns a value stored at given `path`, starting from the root refs.
+    fn at_path<P, S>(&self, path: P) -> Option<Out>
+    where
+        P: IntoIterator<Item = S>,
+        S: Borrow<PathSegment>,
+    {
+        let mut iter = path.into_iter();
+
+        // get root ref first
+        let segment = iter.next()?;
+        if let PathSegment::Key(segment) = segment.borrow() {
+            let mut current = self.store().get_type(&**segment)?;
+
+            // get the rest of the path
+            while let Some(segment) = iter.next() {
+                if let Some(next) = match segment.borrow() {
+                    PathSegment::Key(segment) if current.type_ref == TypeRef::Map => {
+                        let map = MapRef::from(current);
+                        map.get(self, segment)
+                    }
+                    PathSegment::Index(index) => {
+                        let array = ArrayRef::from(current);
+                        array.get(self, *index)
+                    }
+                    _ => return None,
+                } {
+                    if let Some(branch) = next.try_branch() {
+                        current = BranchPtr::from(branch);
+                    } else if let Out::Any(any) = next {
+                        let any = any.at_path(iter)?;
+                        return Some(Out::Any(any.clone()));
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
     /// If current document has been inserted as a sub-document, returns a reference to a parent
     /// document, which contains it.
     fn parent_doc(&self) -> Option<Doc> {
@@ -253,7 +297,7 @@ pub trait WriteTxn: Sized {
 
     /// Returns a [XmlFragmentRef] data structure stored under a given `name`. XML elements represent
     /// nodes of XML document. They can contain attributes (key-value pairs, both of string type)
-    /// as well as other nested XML elements or text values, which are stored in their insertion
+    /// and other nested XML elements or text values, which are stored in their insertion
     /// order.
     ///
     /// If no structure under defined `name` existed before, it will be created and returned
