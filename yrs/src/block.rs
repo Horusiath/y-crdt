@@ -1056,6 +1056,16 @@ impl ItemFlags {
     }
 
     #[inline]
+    pub fn set_marked(&mut self) {
+        self.set(ITEM_FLAG_MARKED)
+    }
+
+    #[inline]
+    pub fn clear_marked(&mut self) {
+        self.clear(ITEM_FLAG_MARKED)
+    }
+
+    #[inline]
     pub fn is_linked(&self) -> bool {
         self.check(ITEM_FLAG_LINKED)
     }

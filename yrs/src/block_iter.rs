@@ -18,10 +18,11 @@ pub(crate) struct BlockIter {
     curr_move_end: Option<ItemPtr>,
     moved_stack: Vec<StackItem>,
     reached_end: bool,
+    search_marker: Option<u32>,
 }
 
 impl BlockIter {
-    pub fn new(branch: BranchPtr) -> Self {
+    pub fn new(branch: BranchPtr, search_marker: Option<u32>) -> Self {
         let next_item = branch.start;
         let reached_end = branch.start.is_none();
         BlockIter {
@@ -34,6 +35,33 @@ impl BlockIter {
             index: 0,
             rel: 0,
             moved_stack: Vec::default(),
+            search_marker,
+        }
+    }
+
+    pub(crate) fn finalize(mut self) {
+        if self.reached_end {
+            self.reached_end = false;
+            if let Some(next_item) = self.next_item {
+                if next_item.is_countable() && !next_item.is_deleted() {
+                    self.index -= next_item.len;
+                }
+            }
+            self.rel = 0;
+        }
+        self.index -= self.rel;
+        self.rel = 0;
+        if let Some(next_item) = self.next_item {
+            if next_item.info.is_marked() {
+                if let Some(search_marker) = self.search_marker {
+                    // already marked, forget current iterator
+                    if let Some(sm) = &mut self.branch.search_markers {
+                        sm.remove(search_marker);
+                    }
+                }
+            } else {
+                next_item.info.set_marked();
+            }
         }
     }
 
@@ -518,6 +546,14 @@ impl BlockIter {
         txn: &'txn mut TransactionMut<'txn>,
     ) -> Values<'a, 'txn> {
         Values::new(self, txn)
+    }
+}
+
+impl Drop for BlockIter {
+    fn drop(&mut self) {
+        if self.search_marker.is_some() {
+            self.finalize()
+        }
     }
 }
 

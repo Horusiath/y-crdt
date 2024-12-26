@@ -262,7 +262,10 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
     fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Out> {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
+        let mut branch = BranchPtr::from(self.as_ref());
+        let marker = branch.search_marker(index);
+
+        let mut walker = BlockIter::new();
         if walker.try_forward(txn, index) {
             walker.read_value(txn)
         } else {

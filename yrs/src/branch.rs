@@ -1,4 +1,5 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::block_iter::BlockIter;
 use crate::types::array::ArrayEvent;
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
@@ -19,6 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 /// A wrapper around [Branch] cell, supplied with a bunch of convenience methods to operate on both
@@ -212,6 +214,9 @@ pub struct Branch {
     pub(crate) observers: Observer<ObserveFn>,
 
     pub(crate) deep_observers: Observer<DeepObserveFn>,
+
+    /// Search markers used to speed up the index lookups.
+    pub(crate) search_markers: Option<SearchMarkers>,
 }
 
 #[cfg(feature = "sync")]
@@ -254,6 +259,7 @@ impl Branch {
             type_ref,
             observers: Observer::default(),
             deep_observers: Observer::default(),
+            search_markers: None,
         })
     }
 
@@ -634,6 +640,142 @@ impl Branch {
 
         Some(event)
     }
+
+    /// Search marker help us find positions in the associative array faster.
+    /// They speed up the process of finding a position without much bookkeeping.
+    /// This function always returns a refreshed marker (updated timestamp)
+    pub(crate) fn search_marker<T: ReadTxn>(&mut self, txn: &T, index: u32) -> BlockIter {
+        const MAX_SEARCH_MARKER: u32 = 300;
+        const FRESH_SEARCH_MARKER_DISTANCE: u32 = 30;
+
+        let mut search_markers = match &mut self.search_markers {
+            Some(sm) if self.start.is_some() && index > FRESH_SEARCH_MARKER_DISTANCE => sm,
+            _ => {
+                let mut iter = BlockIter::new(BranchPtr::from(self), None);
+                iter.forward(txn, index);
+                return iter;
+            }
+        };
+
+        if search_markers.is_empty() {
+            let mut iter = BlockIter::new(BranchPtr::from(self), None);
+            iter.forward(txn, index);
+            if let Some(item) = iter.next_item() {
+                item.info.set_marked();
+            }
+            return search_markers.push();
+        }
+
+        let search_markers = self.search_markers.as_mut()?;
+
+        let mut item = self.start?;
+        let mut item_index = 0;
+        let m = match search_markers.find_nearest(index) {
+            None => None,
+            Some(i) => {
+                let marker = &mut search_markers.0[i];
+                marker.refresh();
+                item = marker.item;
+                item_index = marker.index;
+                Some((i, marker.index))
+            }
+        };
+
+        // iterate to right if possible
+        while let Some(right) = item.right {
+            if item_index >= index {
+                break;
+            }
+            if !item.is_deleted() && item.is_countable() {
+                if index < item_index + item.len() {
+                    break;
+                }
+                item_index += item.len();
+            }
+            item = right;
+        }
+
+        // iterate to left if necessary (might be that pindex > index)
+        while let Some(left) = item.left {
+            if item_index <= index {
+                break;
+            }
+            item = left;
+            if !item.is_deleted() && item.is_countable() {
+                item_index -= item.len();
+            }
+        }
+
+        // we want to make sure that item can't be merged with left, because that would screw up everything
+        // in that case just return what we have (it is most likely the best marker anyway)
+        // iterate to left until item can't be merged with left
+        while let Some(left) = item.left {
+            if !(left.id.client == item.id.client && left.id.clock + left.len() == item.id.clock) {
+                break;
+            }
+            item = left;
+            if !item.is_deleted() && item.is_countable() {
+                item_index -= item.len();
+            }
+        }
+
+        let parent = item.parent.as_branch().unwrap();
+        if let Some((marker_i, marker_index)) = m {
+            if (((marker_index as i32) - (item_index as i32)).abs() as u32)
+                < (parent.content_len / MAX_SEARCH_MARKER)
+            {
+                return search_markers.0.get_mut(marker_i);
+            }
+        }
+
+        let marker = search_markers.push(SearchMarker::new(item, item_index));
+        Some(marker)
+    }
+
+    /// Update markers when a change happened.
+    /// This should be called before doing a deletion!
+    ///
+    /// * `len` - ff insertion, len is positive. If deletion, len is negative.
+    pub(crate) fn update_markers(&mut self, index: u32, len: i32) {
+        if let Some(search_markers) = &mut self.search_markers {
+            search_markers.0.retain_mut(|marker| {
+                if len > 0 {
+                    let mut item = marker.item;
+                    item.info.clear_marked();
+                    // Ideally we just want to do a simple position comparison, but this will only work if
+                    // search markers don't point to deleted items for formats.
+                    // Iterate marker to prev undeleted countable position so we know what to do when updating a position
+                    let mut item = Some(item);
+                    while let Some(ptr) = item {
+                        if !ptr.is_deleted() && ptr.is_countable() {
+                            break;
+                        }
+                        item = ptr.left;
+                        if let Some(left) = item {
+                            // adjust position. the loop should break now
+                            marker.index -= left.len();
+                        }
+                    }
+                    match item {
+                        None => return false,
+                        Some(item) if item.info.is_marked() => {
+                            // remove search marker if updated position is null or if position is already marked
+                            return false;
+                        }
+                        Some(item) => {
+                            marker.item = item;
+                            marker.item.info.set_marked();
+                        }
+                    }
+                }
+                if index < marker.index || (len > 0 && index == marker.index) {
+                    // ^ a simple index <= marker.index check would actually suffice
+                    marker.index = index.max(marker.index + len as u32);
+                }
+                true
+            });
+        }
+    }
 }
 
 pub(crate) struct Iter<'a, T> {
@@ -958,5 +1100,74 @@ impl std::fmt::Debug for BranchID {
             BranchID::Nested(id) => write!(f, "{}", id),
             BranchID::Root(name) => write!(f, "'{}'", name),
         }
+    }
+}
+
+pub(crate) struct SearchMarker {
+    item: ItemPtr,
+    index: u32,
+    timestamp: u64,
+}
+
+static TIMESTAMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl SearchMarker {
+    pub fn new(mut item: ItemPtr, index: u32) -> Self {
+        item.info.set_marked();
+        SearchMarker {
+            item,
+            index,
+            timestamp: TIMESTAMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.timestamp = TIMESTAMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn rewrite(&mut self, item: ItemPtr, index: u32) {
+        self.item.info.clear_marked();
+        self.item = item;
+        self.index = index;
+        self.item.info.set_marked();
+        self.refresh();
+    }
+}
+
+#[derive(Default)]
+#[repr(transparent)]
+pub(crate) struct SearchMarkers(Box<Vec<SearchMarker>>);
+
+impl SearchMarkers {
+    pub(crate) fn push(&mut self, marker: SearchMarker) -> &mut SearchMarker {
+        let last = self.0.len();
+        self.0.push(marker);
+        &mut self.0[last]
+    }
+
+    pub fn remove(&mut self, index: u32) {
+        self.0.remove(index as usize);
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn find_nearest(&self, index: u32) -> Option<usize> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let index = index as i32;
+        let mut found = 0;
+        let mut closest = i32::MAX;
+        for (i, marker) in self.0.iter().enumerate() {
+            let diff = (index - marker.index as i32).abs();
+            if diff < closest {
+                closest = diff;
+                found = i;
+            }
+        }
+        Some(found)
     }
 }
