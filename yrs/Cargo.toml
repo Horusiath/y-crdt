@@ -43,3 +43,6 @@ harness = false
 doctest = true
 bench = true
 doc = true
+
+[profile.release]
+debug = true

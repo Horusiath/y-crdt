@@ -5,9 +5,10 @@ use crate::types::TypePtr;
 use crate::utils::client_hasher::ClientHasher;
 use crate::*;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::ops::{Index, IndexMut, Range, RangeInclusive};
+use std::pin::Pin;
 use std::vec::Vec;
 
 /// A resizable list of blocks inserted by a single client.
@@ -18,7 +19,7 @@ pub(crate) struct ClientBlockList {
 
 struct SquashBlockRange {
     range: Range<usize>,
-    gc_block: bool
+    gc_block: bool,
 }
 
 impl ClientBlockList {
@@ -166,7 +167,7 @@ impl ClientBlockList {
             let right = &mut r[0];
 
             match (left, right) {
-                (BlockCell::GC(left), BlockCell::GC(right)) => {
+                (BlockCell::GC(_), BlockCell::GC(_)) => {
                     let mut extended = false;
                     match squash_intervals.last_mut() {
                         Some(last_range) if last_range.gc_block => {
@@ -195,7 +196,13 @@ impl ClientBlockList {
                     let right = ItemPtr::from(right);
                     if left.try_squash(right) {
                         // Merge right into left Blocks one by one.
-                        squash_intervals.push(SquashBlockRange { range: Range {start: right_index, end: right_index }, gc_block: false });
+                        squash_intervals.push(SquashBlockRange {
+                            range: Range {
+                                start: right_index,
+                                end: right_index,
+                            },
+                            gc_block: false,
+                        });
                     }
                 }
                 _ => { /* cannot squash incompatible types */ }
@@ -211,14 +218,14 @@ impl ClientBlockList {
 
             // The start_idx - 1 element is the one want to squash into.
             let left = &mut left_slice[start_idx - 1];
-            let right = &right_slice[0];
+            let right = &mut right_slice[0];
 
             match (left, right) {
                 (BlockCell::GC(left), BlockCell::GC(right)) => {
                     left.end = right.end;
                 }
                 (BlockCell::Block(left), BlockCell::Block(right)) => {
-                    let mut left = ItemPtr::from(left);
+                    let left = ItemPtr::from(left);
                     let right = ItemPtr::from(right);
                     if let Some(key) = right.parent_sub.as_deref() {
                         if let TypePtr::Branch(mut parent) = right.parent {
@@ -237,7 +244,6 @@ impl ClientBlockList {
             self.list.drain(start_idx..=end_idx);
         }
     }
-
 
     /// Attempts to squash block at a given `index` with a corresponding block on its left side.
     /// If this succeeds, block under a given `index` will be removed, and its contents will be
@@ -334,7 +340,7 @@ impl BlockStore {
         }
     }
 
-    pub fn push_block(&mut self, block: Box<Item>) {
+    pub fn push_block(&mut self, block: Pin<Box<Item>>) {
         let id = block.id();
         match self.clients.entry(id.client) {
             Entry::Occupied(mut e) => {

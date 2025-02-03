@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasherDefault;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::block::{
@@ -377,8 +378,8 @@ impl Update {
                         }
                     }
                 }
+                #[cfg(feature = "weak")]
                 ItemContent::Type(branch) => {
-                    #[cfg(feature = "weak")]
                     if let crate::types::TypeRef::WeakLink(source) = &branch.type_ref {
                         let start = source.quote_start.id();
                         let end = source.quote_end.id();
@@ -804,7 +805,7 @@ impl<T: Iterator> Memoizable for T {
 
 #[derive(PartialEq)]
 pub(crate) enum BlockCarrier {
-    Item(Box<Item>),
+    Item(Pin<Box<Item>>),
     GC(BlockRange),
     Skip(BlockRange),
 }
@@ -885,7 +886,7 @@ impl BlockCarrier {
         }
     }
 
-    pub fn into_block(self) -> Option<Box<Item>> {
+    pub fn into_block(self) -> Option<Pin<Box<Item>>> {
         if let BlockCarrier::Item(block) = self {
             Some(block)
         } else {
@@ -927,8 +928,8 @@ impl BlockCarrier {
     }
 }
 
-impl From<Box<Item>> for BlockCarrier {
-    fn from(block: Box<Item>) -> Self {
+impl From<Pin<Box<Item>>> for BlockCarrier {
+    fn from(block: Pin<Box<Item>>) -> Self {
         BlockCarrier::Item(block)
     }
 }
@@ -1094,8 +1095,7 @@ mod test {
     use crate::update::{BlockCarrier, Update};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::{
-        Doc, GetString, Options, ReadTxn, StateVector, Text, Transact, WriteTxn, XmlFragment,
-        XmlOut, ID,
+        Doc, GetString, Options, ReadTxn, StateVector, Text, Transact, XmlFragment, XmlOut, ID,
     };
 
     #[test]
@@ -1366,7 +1366,7 @@ mod test {
     #[test]
     fn update_lower_bound() {
         let d1 = Doc::with_client_id(1);
-        let mut updates = Arc::new(Mutex::new(vec![]));
+        let updates = Arc::new(Mutex::new(vec![]));
         let sub = {
             let server_updates = updates.clone();
             d1.observe_update_v1(move |_, update| {

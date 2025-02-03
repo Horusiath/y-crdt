@@ -15,12 +15,12 @@ use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
 use crate::transaction::TransactionMut;
-use crate::types::array::{ArrayEvent, ArrayRef};
+use crate::types::array::ArrayEvent;
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
 #[cfg(feature = "weak")]
-use crate::types::weak::{LinkSource, WeakEvent, WeakRef};
-use crate::types::xml::{XmlElementRef, XmlEvent, XmlTextEvent, XmlTextRef};
+use crate::types::weak::{LinkSource, WeakEvent};
+use crate::types::xml::{XmlEvent, XmlTextEvent};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::*;
@@ -32,7 +32,7 @@ pub mod text;
 pub mod weak;
 pub mod xml;
 
-/// Type ref identifier for an [ArrayRef] type.
+/// Type ref identifier for an [ArrayRef](crate::ArrayRef) type.
 pub const TYPE_REFS_ARRAY: u8 = 0;
 
 /// Type ref identifier for a [MapRef] type.
@@ -41,7 +41,7 @@ pub const TYPE_REFS_MAP: u8 = 1;
 /// Type ref identifier for a [TextRef] type.
 pub const TYPE_REFS_TEXT: u8 = 2;
 
-/// Type ref identifier for a [XmlElementRef] type.
+/// Type ref identifier for a [XmlElementRef](crate::XmlElementRef) type.
 pub const TYPE_REFS_XML_ELEMENT: u8 = 3;
 
 /// Type ref identifier for a [XmlFragmentRef] type. Used for compatibility.
@@ -50,10 +50,10 @@ pub const TYPE_REFS_XML_FRAGMENT: u8 = 4;
 /// Type ref identifier for a [XmlHookRef] type. Used for compatibility.
 pub const TYPE_REFS_XML_HOOK: u8 = 5;
 
-/// Type ref identifier for a [XmlTextRef] type.
+/// Type ref identifier for a [XmlTextRef](crate::XmlTextRef) type.
 pub const TYPE_REFS_XML_TEXT: u8 = 6;
 
-/// Type ref identifier for a [WeakRef] type.
+/// Type ref identifier for a [WeakRef](crate::WeakRef) type.
 pub const TYPE_REFS_WEAK: u8 = 7;
 
 /// Type ref identifier for a [DocRef] type.
@@ -314,13 +314,13 @@ pub trait GetString {
 }
 
 /// A subset of [SharedRef] used to mark collaborative collections that can be used as a
-/// root level collections. This includes common types like [ArrayRef], [MapRef], [TextRef] and
+/// root level collections. This includes common types like [ArrayRef](crate::ArrayRef), [MapRef], [TextRef] and
 /// [XmlFragmentRef].
 ///
-/// Some types like [XmlTextRef] and [XmlElementRef] are not bound to be used as root-level types
+/// Some types like [XmlTextRef](crate::XmlTextRef) and [XmlElementRef](crate::XmlElementRef) are not bound to be used as root-level types
 /// since they have limited capabilities (i.e. cannot propagate XML node name).
 ///
-/// Other types like [WeakRef] are not supposed to be used at root-level since they refer to
+/// Other types like [WeakRef](crate::WeakRef) are not supposed to be used at root-level since they refer to
 /// elements created prior to them, while root-level types are virtually immortal and technically
 /// exist for the whole lifespan of their document.
 pub trait RootRef: SharedRef {
@@ -369,7 +369,7 @@ pub trait DeepObservable: AsRef<Branch> {
     /// Callback is accepting transaction which triggered that event and event itself, wrapped
     /// within an [Event] structure.
     ///
-    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef],[TextRef]) is being removed,
+    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef](crate::ArrayRef),[TextRef]) is being removed,
     /// all of its contents will be removed first. So the observed value will be empty. For example,
     /// The value wrapped in the [EntryChange::Removed] of the [Event::Map] will be empty.
     ///
@@ -387,7 +387,7 @@ pub trait DeepObservable: AsRef<Branch> {
     /// Callback is accepting transaction which triggered that event and event itself, wrapped
     /// within an [Event] structure.
     ///
-    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef],[TextRef]) is being removed,
+    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef](crate::ArrayRef),[TextRef]) is being removed,
     /// all of its contents will be removed first. So the observed value will be empty. For example,
     /// The value wrapped in the [EntryChange::Removed] of the [Event::Map] will be empty.
     ///
@@ -420,7 +420,7 @@ pub trait DeepObservable: AsRef<Branch> {
     /// Callback is accepting transaction which triggered that event and event itself, wrapped
     /// within an [Event] structure.
     ///
-    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef],[TextRef]) is being removed,
+    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef](crate::ArrayRef),[TextRef]) is being removed,
     /// all of its contents will be removed first. So the observed value will be empty. For example,
     /// The value wrapped in the [EntryChange::Removed] of the [Event::Map] will be empty.
     ///
@@ -438,7 +438,7 @@ pub trait DeepObservable: AsRef<Branch> {
     /// Callback is accepting transaction which triggered that event and event itself, wrapped
     /// within an [Event] structure.
     ///
-    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef],[TextRef]) is being removed,
+    /// In case when a nested shared type (e.g. [MapRef],[ArrayRef](crate::ArrayRef),[TextRef]) is being removed,
     /// all of its contents will be removed first. So the observed value will be empty. For example,
     /// The value wrapped in the [EntryChange::Removed] of the [Event::Map] will be empty.
     ///

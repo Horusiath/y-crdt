@@ -22,6 +22,7 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::panic;
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -101,7 +102,7 @@ impl ID {
 
 pub(crate) enum BlockCell {
     GC(GC),
-    Block(Box<Item>),
+    Block(Pin<Box<Item>>),
 }
 
 impl PartialEq for BlockCell {
@@ -180,8 +181,8 @@ impl BlockCell {
     }
 }
 
-impl From<Box<Item>> for BlockCell {
-    fn from(value: Box<Item>) -> Self {
+impl From<Pin<Box<Item>>> for BlockCell {
+    fn from(value: Pin<Box<Item>>) -> Self {
         BlockCell::Block(value)
     }
 }
@@ -226,6 +227,8 @@ impl Encode for GC {
 
 /// A raw [Item] pointer. As the underlying block doesn't move it's in-memory location, [ItemPtr]
 /// can be considered a pinned object.
+/// Item pointers are used to satisfy cross-block references in document graph structure.
+/// The original `Pin<Box<Item>>` it points to exists within Document [Store].
 #[repr(transparent)]
 #[derive(Clone, Copy, Hash)]
 pub struct ItemPtr(NonNull<Item>);
@@ -433,7 +436,7 @@ impl ItemPtr {
         }
     }
 
-    pub(crate) fn splice(&mut self, offset: u32, encoding: OffsetKind) -> Option<Box<Item>> {
+    pub(crate) fn splice(&mut self, offset: u32, encoding: OffsetKind) -> Option<Pin<Box<Item>>> {
         let self_ptr = self.clone();
         if offset == 0 {
             None
@@ -443,7 +446,7 @@ impl ItemPtr {
             let clock = item.id.clock;
             let content = item.content.splice(offset as usize, encoding).unwrap();
             item.len = offset;
-            let mut new = Box::new(Item {
+            let mut new = Box::pin(Item {
                 id: ID::new(client, clock + offset),
                 len: content.len(OffsetKind::Utf16),
                 left: Some(self_ptr),
@@ -806,26 +809,30 @@ impl ItemPtr {
 impl Deref for ItemPtr {
     type Target = Item;
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         unsafe { self.0.as_ref() }
     }
 }
 
 impl DerefMut for ItemPtr {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.0.as_mut() }
     }
 }
 
-impl<'a> From<&'a mut Box<Item>> for ItemPtr {
-    fn from(block: &'a mut Box<Item>) -> Self {
-        ItemPtr(NonNull::from(block.as_mut()))
+impl<'a> From<&'a mut Pin<Box<Item>>> for ItemPtr {
+    fn from(block: &'a mut Pin<Box<Item>>) -> Self {
+        let ptr = Pin::get_mut(block.as_mut()) as *mut Item;
+        ItemPtr(unsafe { NonNull::new_unchecked(ptr) })
     }
 }
 
-impl<'a> From<&'a Box<Item>> for ItemPtr {
-    fn from(block: &'a Box<Item>) -> Self {
-        ItemPtr(unsafe { NonNull::new_unchecked(block.as_ref() as *const Item as *mut Item) })
+impl<'a> From<&'a Pin<Box<Item>>> for ItemPtr {
+    fn from(block: &'a Pin<Box<Item>>) -> Self {
+        let ptr = Pin::get_ref(block.as_ref()) as *const Item as *mut Item;
+        ItemPtr(unsafe { NonNull::new_unchecked(ptr) })
     }
 }
 
@@ -1212,7 +1219,7 @@ impl Item {
         parent: TypePtr,
         parent_sub: Option<Arc<str>>,
         content: ItemContent,
-    ) -> Option<Box<Item>> {
+    ) -> Option<Pin<Box<Item>>> {
         let info = ItemFlags::new(if content.is_countable() {
             ITEM_FLAG_COUNTABLE
         } else {
@@ -1227,7 +1234,7 @@ impl Item {
         } else {
             None
         };
-        let mut item = Box::new(Item {
+        let mut item = Box::pin(Item {
             id,
             len,
             left,

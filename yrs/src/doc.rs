@@ -3,7 +3,7 @@ use crate::branch::BranchPtr;
 use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
 use crate::store::{DocStore, StoreInner};
-use crate::transaction::{Origin, Transaction, TransactionMut};
+use crate::transaction::{Origin, TransactionMut};
 use crate::types::{RootRef, ToJson};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// A Yrs document type. Documents are the most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
 /// generated on per-document basis (rather than individual shared type). All operations on shared
-/// collections happen via [Transaction], which lifetime is also bound to a document.
+/// collections happen via [Transaction](crate::transaction::Transaction), which lifetime is also bound to a document.
 ///
 /// Document manages so-called root types, which are top-level shared types definitions (as opposed
 /// to recursively nested types).
@@ -1034,8 +1034,7 @@ impl DocAddr {
 
 #[cfg(test)]
 mod test {
-    use crate::block::{BlockCell, ItemContent, GC};
-    use crate::branch::{Branch, BranchPtr};
+    use crate::block::{BlockCell, ItemContent};
     use crate::test_utils::exchange_updates;
     use crate::transaction::{ReadTxn, TransactionMut};
     use crate::types::ToJson;
@@ -1043,10 +1042,9 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        any, Any, Array, ArrayPrelim, ArrayRef, BranchID, DeleteSet, Doc, GetString, Map,
-        MapPrelim, MapRef, OffsetKind, Options, SharedRef, StateVector, Subscription, Text,
-        TextPrelim, TextRef, Transact, Uuid, WriteTxn, XmlElementPrelim, XmlFragment,
-        XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
+        any, Any, Array, ArrayPrelim, ArrayRef, DeleteSet, Doc, GetString, Map, MapRef, OffsetKind,
+        Options, StateVector, Subscription, Text, TextPrelim, TextRef, Transact, Uuid, WriteTxn,
+        XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
     };
     use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;

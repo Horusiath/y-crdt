@@ -1,7 +1,10 @@
 [workspace]
 
 members = [
-  "yrs",
-  "ywasm",
-  "yffi"
+    "yrs",
+    "ywasm",
+    "yffi"
 ]
+
+[profile.release]
+debug = true
