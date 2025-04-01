@@ -1131,8 +1131,7 @@ mod test {
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
     use crate::{
-        Any, Doc, GetString, Options, ReadTxn, StateVector, Text, Transact, WriteTxn, XmlFragment,
-        XmlOut, ID,
+        Any, Doc, GetString, Options, ReadTxn, StateVector, Text, Transact, XmlFragment, XmlOut, ID,
     };
 
     #[test]

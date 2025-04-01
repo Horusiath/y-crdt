@@ -643,7 +643,7 @@ mod test {
     use crate::types::{Change, DeepObservable, Event, Out, Path, PathSegment, ToJson};
     use crate::{
         any, Any, Array, ArrayPrelim, Assoc, Doc, Map, MapRef, Observable, SharedRef, StateVector,
-        Transact, Update, WriteTxn, ID,
+        Transact, Update, ID,
     };
     use std::collections::{HashMap, HashSet};
     use std::iter::FromIterator;

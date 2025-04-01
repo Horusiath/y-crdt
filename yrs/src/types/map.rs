@@ -654,8 +654,8 @@ mod test {
     use crate::updates::encoder::{Encoder, EncoderV1};
     use crate::{
         any, Any, Array, ArrayPrelim, ArrayRef, Doc, GetString, In, Map, MapPrelim, MapRef,
-        Observable, StateVector, Text, TextRef, Transact, Update, WriteTxn, XmlFragment,
-        XmlFragmentRef, XmlTextPrelim, XmlTextRef,
+        Observable, StateVector, Text, TextRef, Transact, Update, XmlFragment, XmlFragmentRef,
+        XmlTextPrelim, XmlTextRef,
     };
     use arc_swap::ArcSwapOption;
     use fastrand::Rng;

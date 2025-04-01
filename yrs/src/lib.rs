@@ -673,7 +673,6 @@ pub use crate::transaction::ReadTxn;
 pub use crate::transaction::RootRefs;
 pub use crate::transaction::Transaction;
 pub use crate::transaction::TransactionMut;
-pub use crate::transaction::WriteTxn;
 pub use crate::types::array::Array;
 pub use crate::types::array::ArrayPrelim;
 pub use crate::types::array::ArrayRef;
