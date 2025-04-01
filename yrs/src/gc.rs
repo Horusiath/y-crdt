@@ -25,7 +25,7 @@ impl GCCollector {
     /// Mark deleted items based on a current transaction delete set.
     fn mark_in_scope(&mut self, txn: &mut TransactionMut) {
         for (client, range) in txn.delete_set.iter() {
-            if let Some(blocks) = txn.store.blocks.get_client_mut(client) {
+            if let Some(blocks) = txn.doc.store.blocks.get_client_mut(client) {
                 for delete_item in range.iter().rev() {
                     let mut start = delete_item.start;
                     if let Some(mut i) = blocks.find_pivot(start) {
@@ -49,7 +49,7 @@ impl GCCollector {
     }
 
     fn mark_all(&mut self, txn: &mut TransactionMut) {
-        for (_, client_blocks) in txn.store.blocks.iter_mut() {
+        for (_, client_blocks) in txn.doc.store.blocks.iter_mut() {
             for block in client_blocks.iter_mut() {
                 if let BlockCell::Block(item) = block {
                     if item.is_deleted() {
@@ -70,7 +70,7 @@ impl GCCollector {
     /// Garbage collects all items marked for GC.
     fn collect_all_marked(self, txn: &mut TransactionMut) {
         for (client_id, clocks) in self.items.into_iter() {
-            let client = txn.store.blocks.get_client_blocks_mut(client_id);
+            let client = txn.doc.store.blocks.get_client_blocks_mut(client_id);
             for clock in clocks {
                 if let Some(index) = client.find_pivot(clock) {
                     let block = &mut client[index];

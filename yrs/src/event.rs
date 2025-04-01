@@ -42,7 +42,7 @@ impl TransactionCleanupEvent {
 }
 
 /// Event used to communicate load requests from the underlying subdocuments.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SubdocsEvent {
     pub(crate) added: HashMap<DocAddr, Doc>,
     pub(crate) removed: HashMap<DocAddr, Doc>,

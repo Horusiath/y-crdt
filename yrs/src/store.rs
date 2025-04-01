@@ -15,8 +15,6 @@ use crate::{
     Uuid, ID,
 };
 use arc_swap::{ArcSwap, DefaultStrategy, Guard};
-use async_lock::futures::{Read, Write};
-use async_lock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -27,9 +25,7 @@ use std::sync::Arc;
 /// map of root types, pending updates waiting to be applied once a missing update information
 /// arrives and all subscribed callbacks.
 pub struct Store {
-    pub(crate) client_id: ClientID,
-    pub(crate) offset_kind: OffsetKind,
-    pub(crate) skip_gc: bool,
+    pub(crate) options: Options,
 
     /// Root types (a.k.a. top-level types). These types are defined by users at the document level,
     /// they have their own unique names and represent core shared types that expose operations
@@ -64,11 +60,9 @@ pub struct Store {
 
 impl Store {
     /// Create a new empty store in context of a given `client_id`.
-    pub(crate) fn new(options: &Options) -> Self {
+    pub(crate) fn new(options: Options) -> Self {
         Store {
-            client_id: options.client_id,
-            offset_kind: options.offset_kind,
-            skip_gc: options.skip_gc,
+            options,
             types: HashMap::default(),
             blocks: BlockStore::default(),
             subdocs: HashMap::default(),
@@ -78,6 +72,14 @@ impl Store {
             pending_ds: None,
             parent: None,
         }
+    }
+
+    pub fn options(&self) -> &Options {
+        &self.options
+    }
+
+    pub fn client_id(&self) -> ClientID {
+        self.options.client_id
     }
 
     /// If there are any missing updates, this method will return a pending update which contains
@@ -101,7 +103,7 @@ impl Store {
     /// block that's about to be inserted. You cannot use that clock value to find any existing
     /// block content.
     pub fn get_local_state(&self) -> u32 {
-        self.blocks.get_clock(&self.client_id)
+        self.blocks.get_clock(&self.options.client_id)
     }
 
     /// Returns a branch reference to a complex type identified by its pointer. Returns `None` if
@@ -142,7 +144,7 @@ impl Store {
         snapshot: &Snapshot,
         encoder: &mut E,
     ) -> Result<(), Error> {
-        if !self.skip_gc {
+        if !self.options.skip_gc {
             return Err(Error::Gc);
         }
         self.write_blocks_to(&snapshot.state_map, encoder);
@@ -379,7 +381,7 @@ impl std::fmt::Debug for Store {
 
 impl std::fmt::Display for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct(&self.client_id.to_string());
+        let mut s = f.debug_struct(&self.options.client_id.to_string());
         if !self.types.is_empty() {
             s.field("root types", &self.types);
         }
@@ -401,91 +403,6 @@ impl std::fmt::Display for Store {
         }
         s.finish()
     }
-}
-
-#[repr(transparent)]
-#[derive(Debug, Clone)]
-pub(crate) struct DocStore(pub(crate) Arc<StoreInner>);
-
-impl DocStore {
-    pub fn new(options: Options, parent: Option<ItemPtr>) -> Self {
-        let mut store = Store::new(&options);
-        let options = ArcSwap::new(options.into());
-        store.parent = parent;
-        DocStore(Arc::new(StoreInner {
-            options,
-            store: RwLock::new(store),
-        }))
-    }
-
-    pub(crate) fn try_read(&self) -> Option<RwLockReadGuard<Store>> {
-        self.0.store.try_read()
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn read_blocking(&self) -> RwLockReadGuard<Store> {
-        self.0.store.read_blocking()
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn read_blocking(&self) -> RwLockReadGuard<Store> {
-        self.0.store.try_read().unwrap()
-    }
-
-    pub(crate) fn read_async(&self) -> Read<Store> {
-        self.0.store.read()
-    }
-
-    pub(crate) fn try_write(&self) -> Option<RwLockWriteGuard<Store>> {
-        self.0.store.try_write()
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn write_blocking(&self) -> RwLockWriteGuard<Store> {
-        self.0.store.write_blocking()
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn write_blocking(&self) -> RwLockWriteGuard<Store> {
-        self.0.store.try_write().unwrap()
-    }
-
-    pub(crate) fn write_async(&self) -> Write<Store> {
-        self.0.store.write()
-    }
-
-    pub(crate) fn options(&self) -> Guard<Arc<Options>, DefaultStrategy> {
-        self.0.options.load()
-    }
-
-    /// Sets [Doc::should_load] flag, returning previous value.
-    pub(crate) fn set_should_load(&self, should_load: bool) -> bool {
-        self.0
-            .options
-            .rcu(|options| {
-                let mut options = options.deref().clone();
-                options.should_load = should_load;
-                options
-            })
-            .should_load
-    }
-
-    pub(crate) fn set_subdoc_data(&self, client_id: ClientID, collection_id: Option<Arc<str>>) {
-        self.0.options.rcu(|options| {
-            let mut options = options.deref().clone();
-            options.client_id = client_id;
-            if options.collection_id.is_none() {
-                options.collection_id = collection_id.clone();
-            }
-            options
-        });
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct StoreInner {
-    options: ArcSwap<Options>,
-    store: RwLock<Store>,
 }
 
 #[repr(transparent)]

@@ -1131,7 +1131,7 @@ mod test {
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
     use crate::{
-        Any, Doc, GetString, Options, ReadTxn, StateVector, Text, Transact, XmlFragment, XmlOut, ID,
+        Any, Doc, GetString, Options, ReadTxn, StateVector, Text, XmlFragment, XmlOut, ID,
     };
 
     #[test]
@@ -1178,11 +1178,11 @@ mod test {
 
     #[test]
     fn update_merge() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("test");
         let mut t1 = d1.transact_mut();
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let txt2 = d2.get_or_insert_text("test");
         let mut t2 = d2.transact_mut();
 
@@ -1222,7 +1222,7 @@ mod test {
 
     #[test]
     fn test_duplicate_updates() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         let mut tr = doc.transact_mut();
         txt.insert(&mut tr, 0, "aaa");
@@ -1239,14 +1239,14 @@ mod test {
     #[test]
     fn test_multiple_clients_in_one_update() {
         let binary1 = {
-            let doc = Doc::with_client_id(1);
+            let mut doc = Doc::with_client_id(1);
             let txt = doc.get_or_insert_text("test");
             let mut tr = doc.transact_mut();
             txt.insert(&mut tr, 0, "aaa");
             tr.encode_update_v1()
         };
         let binary2 = {
-            let doc = Doc::with_client_id(2);
+            let mut doc = Doc::with_client_id(2);
             let txt = doc.get_or_insert_text("test");
             let mut tr = doc.transact_mut();
             txt.insert(&mut tr, 0, "bbb");
@@ -1291,7 +1291,7 @@ mod test {
         let update = vec![
             0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 198, 182, 140, 174, 4, 1, 2, 0, 0, 5,
         ];
-        let doc = Doc::with_options(Options {
+        let mut doc = Doc::with_options(Options {
             skip_gc: true,
             client_id: 1,
             ..Default::default()
@@ -1324,7 +1324,7 @@ mod test {
 
     #[test]
     fn merge_pending_updates() {
-        let d0 = Doc::with_client_id(0);
+        let mut d0 = Doc::with_client_id(0);
         let server_updates = Arc::new(Mutex::new(vec![]));
         let sub = {
             let server_updates = server_updates.clone();
@@ -1345,7 +1345,7 @@ mod test {
         let updates = Arc::into_inner(server_updates).unwrap();
         let updates = updates.into_inner().unwrap();
 
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         d1.transact_mut()
             .apply_update(Update::decode_v1(&updates[0]).unwrap())
             .unwrap();
@@ -1353,7 +1353,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         d2.transact_mut()
             .apply_update(Update::decode_v1(&u1).unwrap())
             .unwrap();
@@ -1364,7 +1364,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d3 = Doc::with_client_id(3);
+        let mut d3 = Doc::with_client_id(3);
         d3.transact_mut()
             .apply_update(Update::decode_v1(&u2).unwrap())
             .unwrap();
@@ -1375,7 +1375,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d4 = Doc::with_client_id(4);
+        let mut d4 = Doc::with_client_id(4);
         d4.transact_mut()
             .apply_update(Update::decode_v1(&u3).unwrap())
             .unwrap();
@@ -1386,7 +1386,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d5 = Doc::with_client_id(5);
+        let mut d5 = Doc::with_client_id(5);
         d5.transact_mut()
             .apply_update(Update::decode_v1(&u4).unwrap())
             .unwrap();
@@ -1447,14 +1447,14 @@ mod test {
 
     #[test]
     fn empty_update_v1() {
-        let mut u = Update::new();
+        let u = Update::new();
         let binary = u.encode_v1();
         assert_eq!(&binary, Update::EMPTY_V1)
     }
 
     #[test]
     fn empty_update_v2() {
-        let mut u = Update::new();
+        let u = Update::new();
         let binary = u.encode_v2();
         assert_eq!(&binary, Update::EMPTY_V2)
     }

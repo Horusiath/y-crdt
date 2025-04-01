@@ -31,7 +31,7 @@ use std::sync::Arc;
 /// use yrs::{any, Doc, Map, MapPrelim, Transact};
 /// use yrs::types::ToJson;
 ///
-/// let doc = Doc::new();
+/// let mut doc = Doc::new();
 /// let map = doc.get_or_insert_map("map");
 /// let mut txn = doc.transact_mut();
 ///
@@ -227,7 +227,7 @@ pub trait Map: AsRef<Branch> + Sized {
     /// ```rust
     /// use yrs::{Doc, Map, Transact, WriteTxn};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
     /// let map = txn.get_or_insert_map("map");
     ///
@@ -319,7 +319,7 @@ pub trait Map: AsRef<Branch> + Sized {
     /// ```rust
     /// use yrs::{Doc, In, Map, MapPrelim, Transact, WriteTxn};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
     /// let map = txn.get_or_insert_map("map");
     ///
@@ -667,11 +667,11 @@ mod test {
 
     #[test]
     fn map_basic() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let m1 = d1.get_or_insert_map("map");
         let mut t1 = d1.transact_mut();
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let m2 = d2.get_or_insert_map("map");
         let mut t2 = d2.transact_mut();
 
@@ -722,7 +722,7 @@ mod test {
 
     #[test]
     fn map_get_set() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let m1 = d1.get_or_insert_map("map");
         let mut t1 = d1.transact_mut();
 
@@ -731,7 +731,7 @@ mod test {
 
         let update = t1.encode_state_as_update_v1(&StateVector::default());
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let m2 = d2.get_or_insert_map("map");
         let mut t2 = d2.transact_mut();
 
@@ -744,11 +744,11 @@ mod test {
 
     #[test]
     fn map_get_set_sync_with_conflicts() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let m1 = d1.get_or_insert_map("map");
         let mut t1 = d1.transact_mut();
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let m2 = d2.get_or_insert_map("map");
         let mut t2 = d2.transact_mut();
 
@@ -769,7 +769,7 @@ mod test {
 
     #[test]
     fn map_len_remove() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let m1 = d1.get_or_insert_map("map");
         let mut t1 = d1.transact_mut();
 
@@ -795,7 +795,7 @@ mod test {
 
     #[test]
     fn map_clear() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let m1 = d1.get_or_insert_map("map");
         let mut t1 = d1.transact_mut();
 
@@ -807,7 +807,7 @@ mod test {
         assert_eq!(m1.get(&t1, &"key1".to_owned()), None);
         assert_eq!(m1.get(&t1, &"key2".to_owned()), None);
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let m2 = d2.get_or_insert_map("map");
         let mut t2 = d2.transact_mut();
 
@@ -822,9 +822,9 @@ mod test {
 
     #[test]
     fn map_clear_sync() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
-        let d3 = Doc::with_client_id(3);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
+        let mut d3 = Doc::with_client_id(3);
         let d4 = Doc::with_client_id(4);
 
         {
@@ -888,9 +888,9 @@ mod test {
 
     #[test]
     fn map_get_set_with_3_way_conflicts() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
-        let d3 = Doc::with_client_id(3);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
+        let mut d3 = Doc::with_client_id(3);
 
         {
             let m1 = d1.get_or_insert_map("map");
@@ -923,9 +923,9 @@ mod test {
 
     #[test]
     fn map_get_set_remove_with_3_way_conflicts() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
-        let d3 = Doc::with_client_id(3);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
+        let mut d3 = Doc::with_client_id(3);
         let d4 = Doc::with_client_id(4);
 
         {
@@ -979,7 +979,7 @@ mod test {
 
     #[test]
     fn insert_and_remove_events() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let m1 = d1.get_or_insert_map("map");
 
         let entries = Arc::new(ArcSwapOption::default());
@@ -1066,7 +1066,7 @@ mod test {
         assert_eq!(entries.swap(None), Some(HashMap::new().into()));
 
         // copy updates over
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let m2 = d2.get_or_insert_map("map");
 
         let entries = Arc::new(ArcSwapOption::default());
@@ -1145,7 +1145,7 @@ mod test {
 
     #[test]
     fn observe_deep() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let map = doc.get_or_insert_map("map");
 
         let paths = Arc::new(Mutex::new(vec![]));
@@ -1196,7 +1196,7 @@ mod test {
 
     #[test]
     fn get_or_init() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let mut txn = doc.transact_mut();
         let map = txn.get_or_insert_map("map");
 
@@ -1228,7 +1228,7 @@ mod test {
 
     #[test]
     fn try_update() {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
         let map = txn.get_or_insert_map("map");
 
@@ -1269,7 +1269,7 @@ mod test {
             quantity: u32,
         }
 
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
         let map = txn.get_or_insert_map("map");
 

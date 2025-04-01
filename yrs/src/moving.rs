@@ -382,9 +382,9 @@ impl std::fmt::Display for Move {
 /// Example:
 ///
 /// ```rust
-/// use yrs::{Assoc, Doc, IndexedSequence, Text, Transact};
+/// use yrs::{Assoc, Doc, IndexedSequence, Text};
 ///
-/// let doc = Doc::new();
+/// let mut doc = Doc::new();
 /// let txt = doc.get_or_insert_text("text");
 /// let mut txn = doc.transact_mut();
 /// txt.insert(&mut txn, 0, "abc"); // => 'abc'
@@ -460,9 +460,9 @@ impl StickyIndex {
     /// # Examples
     ///
     /// ```rust
-    /// use yrs::{Assoc, Doc, IndexedSequence, Text, Transact};
+    /// use yrs::{Assoc, Doc, IndexedSequence, Text};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let text = doc.get_or_insert_text("text");
     /// let mut txn = doc.transact_mut();
     ///
@@ -507,7 +507,7 @@ impl StickyIndex {
                                 } else {
                                     right.start + 1
                                 };
-                                let encoding = store.offset_kind;
+                                let encoding = store.options.offset_kind;
                                 let mut n = right.ptr.left;
                                 while let Some(item) = n.as_deref() {
                                     if !item.is_deleted() && item.is_countable() {
@@ -932,10 +932,10 @@ mod test {
     use crate::moving::Assoc;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, Transact, ID};
+    use crate::{Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, ID};
     use serde::{Deserialize, Serialize};
 
-    fn check_sticky_indexes(doc: &Doc, text: &TextRef) {
+    fn check_sticky_indexes(doc: &mut Doc, text: &TextRef) {
         // test if all positions are encoded and restored correctly
         let mut txn = doc.transact_mut();
         let len = text.len(&txn);
@@ -956,7 +956,7 @@ mod test {
 
     #[test]
     fn sticky_index_case_1() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         {
@@ -968,21 +968,21 @@ mod test {
             txt.insert(&mut txn, 0, "x");
         }
 
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&mut doc, &txt);
     }
 
     #[test]
     fn sticky_index_case_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         txt.insert(&mut doc.transact_mut(), 0, "abc");
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&mut doc, &txt);
     }
 
     #[test]
     fn sticky_index_case_3() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         {
@@ -992,21 +992,21 @@ mod test {
             txt.insert(&mut txn, 0, "xyz");
         }
 
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&mut doc, &txt);
     }
 
     #[test]
     fn sticky_index_case_4() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         txt.insert(&mut doc.transact_mut(), 0, "1");
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&mut doc, &txt);
     }
 
     #[test]
     fn sticky_index_case_5() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         {
@@ -1015,19 +1015,19 @@ mod test {
             txt.insert(&mut txn, 0, "1");
         }
 
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&mut doc, &txt);
     }
 
     #[test]
     fn sticky_index_case_6() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&mut doc, &txt);
     }
 
     #[test]
     fn sticky_index_association_difference() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         let mut txn = doc.transact_mut();

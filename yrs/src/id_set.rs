@@ -732,7 +732,7 @@ mod test {
     use crate::test_utils::exchange_updates;
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-    use crate::{DeleteSet, Doc, Options, ReadTxn, Text, Transact, ID};
+    use crate::{DeleteSet, Doc, Options, ReadTxn, Text, ID};
     use std::collections::HashSet;
     use std::fmt::Debug;
 
@@ -850,21 +850,21 @@ mod test {
         let mut o = Options::default();
         o.client_id = 1;
         o.skip_gc = true;
-        let d1 = Doc::with_options(o.clone());
+        let mut d1 = Doc::with_options(o.clone());
         let t1 = d1.get_or_insert_text("test");
 
         o.client_id = 2;
-        let d2 = Doc::with_options(o);
+        let mut d2 = Doc::with_options(o);
         let t2 = d2.get_or_insert_text("test");
 
         t1.insert(&mut d1.transact_mut(), 0, "aaaaa");
         t1.insert(&mut d1.transact_mut(), 0, "bbb");
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         t2.insert(&mut d2.transact_mut(), 4, "cccc");
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         // t1: 'bbbaccccaaaa'
         t1.remove_range(&mut d1.transact_mut(), 2, 2); // => 'bbccccaaaa'
@@ -873,7 +873,7 @@ mod test {
         t1.remove_range(&mut d1.transact_mut(), 7, 1); // => 'bbccaaa'
 
         let blocks = {
-            let mut txn = d1.transact_mut();
+            let txn = d1.transact_mut();
             let s = txn.snapshot();
 
             let mut blocks = HashSet::new();
@@ -881,7 +881,7 @@ mod test {
             let mut i = 0;
             let mut deleted = s.delete_set.deleted_blocks();
             while let Some(BlockSlice::Item(b)) = deleted.next(&txn) {
-                let item = txn.store.materialize(b);
+                let item = txn.doc.store.materialize(b);
                 if let ItemContent::String(str) = &item.content {
                     let t = (
                         item.is_deleted(),
@@ -912,7 +912,7 @@ mod test {
     #[test]
     fn deleted_blocks2() {
         let mut ds = DeleteSet::new();
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "testab");
         ds.insert(ID::new(1, 5), 1);

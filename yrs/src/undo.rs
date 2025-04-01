@@ -10,7 +10,7 @@ use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{DeleteSet, Doc, Observer, ReadTxn, Transact, TransactionAcqError, TransactionMut, ID};
+use crate::{DeleteSet, Doc, Observer, ReadTxn, TransactionMut, ID};
 
 /// Undo manager is a structure used to perform undo/redo operations over the associated shared
 /// type(s).
@@ -91,7 +91,7 @@ where
     /// without any pre-initialize scope. While it's possible for undo manager to observe multiple
     /// shared types (see: [UndoManager::expand_scope]), it can only work with a single document
     /// at the same time.
-    pub fn with_options(doc: &Doc, options: Options) -> Self {
+    pub fn with_options(doc: &mut Doc, options: Options) -> Self {
         let mut inner = Arc::new(Inner {
             scope: HashSet::new(),
             options,
@@ -113,16 +113,14 @@ where
             let ptr = ptr.load(Ordering::Acquire);
             let inner = unsafe { ptr.as_mut().unwrap() };
             Self::handle_destroy(txn, inner)
-        })
-        .unwrap();
+        });
         let ptr = AtomicPtr::new(inner_mut as *mut Inner<M>);
 
         doc.observe_after_transaction_with(origin, move |txn| {
             let ptr = ptr.load(Ordering::Acquire);
             let inner = unsafe { ptr.as_mut().unwrap() };
             Self::handle_after_transaction(inner, txn);
-        })
-        .unwrap();
+        });
 
         UndoManager {
             state: inner,
@@ -527,8 +525,8 @@ where
     ///
     /// Example:
     /// ```rust
-    /// use yrs::{Doc, GetString, Text, Transact, UndoManager};
-    /// let doc = Doc::new();
+    /// use yrs::{Doc, GetString, Text,  UndoManager};
+    /// let mut doc = Doc::new();
     ///
     /// // without UndoManager::stop
     /// let txt = doc.get_or_insert_text("no-stop");
@@ -755,10 +753,10 @@ where
             let deleted: Vec<_> = item.insertions.deleted_blocks().collect(txn);
             for slice in deleted {
                 if let BlockSlice::Item(slice) = slice {
-                    let mut item = txn.store.materialize(slice);
+                    let mut item = txn.doc.store.materialize(slice);
                     if item.redone.is_some() {
                         let slice = txn.store_mut().follow_redone(item.id())?;
-                        item = txn.store.materialize(slice);
+                        item = txn.doc.store.materialize(slice);
                     }
 
                     if !item.is_deleted() && scope.iter().any(|b| b.is_parent_of(Some(item))) {
@@ -770,7 +768,7 @@ where
             let mut deleted = item.deletions.deleted_blocks();
             while let Some(slice) = deleted.next(txn) {
                 if let BlockSlice::Item(slice) = slice {
-                    let ptr = txn.store.materialize(slice);
+                    let ptr = txn.doc.store.materialize(slice);
                     if scope.iter().any(|b| b.is_parent_of(Some(ptr)))
                         && !item.insertions.is_deleted(ptr.id())
                     // Never redo structs in stackItem.insertions because they were created and deleted in the same capture interval.
@@ -823,8 +821,8 @@ impl<M: std::fmt::Debug> std::fmt::Debug for UndoManager<M> {
 impl<M> Drop for UndoManager<M> {
     fn drop(&mut self) {
         let origin = Origin::from(Arc::as_ptr(&self.state) as usize);
-        self.doc.unobserve_destroy(origin.clone()).unwrap();
-        self.doc.unobserve_after_transaction(origin).unwrap();
+        self.doc.unobserve_destroy(origin.clone());
+        self.doc.unobserve_after_transaction(origin);
     }
 }
 
@@ -1029,17 +1027,17 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::{
         any, Any, Array, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, ReadTxn, StateVector,
-        Text, TextPrelim, TextRef, Transact, UndoManager, Update, Xml, XmlElementPrelim,
-        XmlElementRef, XmlFragment, XmlTextPrelim,
+        Text, TextPrelim, TextRef, UndoManager, Update, Xml, XmlElementPrelim, XmlElementRef,
+        XmlFragment, XmlTextPrelim,
     };
 
     #[test]
     fn undo_text() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("test");
         let mut mgr = UndoManager::new(&d1, &txt1);
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let txt2 = d2.get_or_insert_text("test");
 
         // items that are added & deleted in the same transaction won't be undo
@@ -1061,17 +1059,17 @@ mod test {
         txt1.insert(&mut d1.transact_mut(), 0, "abc");
         txt2.insert(&mut d2.transact_mut(), 0, "xyz");
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
         mgr.undo_blocking();
         assert_eq!(txt1.get_string(&d1.transact()), "xyz");
         mgr.redo_blocking();
         assert_eq!(txt1.get_string(&d1.transact()), "abcxyz");
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         txt2.remove_range(&mut d2.transact_mut(), 0, 1);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         mgr.undo_blocking();
         assert_eq!(txt1.get_string(&d1.transact()), "xyz");
@@ -1109,7 +1107,7 @@ mod test {
 
     #[test]
     fn double_undo() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         txt.insert(&mut doc.transact_mut(), 0, "1221");
 
@@ -1126,10 +1124,10 @@ mod test {
 
     #[test]
     fn undo_map() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let map1 = d1.get_or_insert_map("test");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let map2 = d2.get_or_insert_map("test");
 
         map1.insert(&mut d1.transact_mut(), "a", 0);
@@ -1154,13 +1152,13 @@ mod test {
         let expected = Any::from_json(r#"{ "a": { "x": 42 } }"#).unwrap();
         assert_eq!(actual, expected);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         // if content is overwritten by another user, undo operations should be skipped
         map2.insert(&mut d2.transact_mut(), "a", 44);
 
-        exchange_updates(&[&d1, &d2]);
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         mgr.undo_blocking();
         assert_eq!(map1.get(&d1.transact(), "a").unwrap(), 44.into());
@@ -1179,17 +1177,17 @@ mod test {
 
     #[test]
     fn undo_array() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let array1 = d1.get_or_insert_array("test");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let array2 = d2.get_or_insert_array("test");
 
         let mut mgr = UndoManager::new(&d1, &array1);
         array1.insert_range(&mut d1.transact_mut(), 0, [1, 2, 3]);
         array2.insert_range(&mut d2.transact_mut(), 0, [4, 5, 6]);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         assert_eq!(
             array1.to_json(&d1.transact()),
@@ -1203,11 +1201,11 @@ mod test {
             vec![1, 2, 3, 4, 5, 6].into()
         );
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         array2.remove_range(&mut d2.transact_mut(), 0, 1); // user2 deletes [1]
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         mgr.undo_blocking();
         assert_eq!(array1.to_json(&d1.transact()), vec![4, 5, 6].into());
@@ -1244,7 +1242,7 @@ mod test {
         let expected = Any::from_json(r#"[{"a":1}]"#).unwrap();
         assert_eq!(actual, expected);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         let map2 = array2
             .get(&d2.transact(), 0)
@@ -1252,7 +1250,7 @@ mod test {
             .cast::<MapRef>()
             .unwrap();
         map2.insert(&mut d2.transact_mut(), "b", 2);
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         let actual = array1.to_json(&d1.transact());
         let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
@@ -1279,7 +1277,7 @@ mod test {
 
     #[test]
     fn undo_xml() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let frag = d1.get_or_insert_xml_fragment("xml");
         let xml1 = frag.insert(
             &mut d1.transact_mut(),
@@ -1331,7 +1329,7 @@ mod test {
         use crate::undo::UndoManager;
         type Metadata = HashMap<String, usize>;
 
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         let mut mgr: UndoManager<Metadata> = UndoManager::new(&doc, &txt);
 
@@ -1364,10 +1362,10 @@ mod test {
 
     #[test]
     fn undo_until_change_performed() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let arr1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let arr2 = d2.get_or_insert_array("array");
 
         let map1a = arr1.push_back(
@@ -1380,7 +1378,7 @@ mod test {
             MapPrelim::from([("key".to_owned(), "value".to_owned())]),
         );
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         let mut mgr1 = UndoManager::new(&d1, &arr1);
         mgr1.include_origin(d1.client_id());
@@ -1394,7 +1392,7 @@ mod test {
             "value modified",
         );
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
         mgr1.reset();
 
         map1a.insert(
@@ -1403,16 +1401,16 @@ mod test {
             "world modified",
         );
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         arr2.remove_range(&mut d2.transact_mut_with(d2.client_id()), 0, 1);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
         mgr2.undo_blocking();
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
         mgr1.undo_blocking();
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         assert_eq!(map1b.get(&d1.transact(), "key"), Some("value".into()));
     }
@@ -1420,7 +1418,7 @@ mod test {
     #[test]
     fn nested_undo() {
         // This issue has been reported in https://github.com/yjs/yjs/issues/317
-        let doc = Doc::with_options(crate::doc::Options {
+        let mut doc = Doc::with_options(crate::doc::Options {
             skip_gc: true,
             client_id: 1,
             ..crate::doc::Options::default()
@@ -1501,7 +1499,7 @@ mod test {
     #[test]
     fn consecutive_redo_bug() {
         // https://github.com/yjs/yjs/issues/355
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let root = doc.get_or_insert_map("root");
         let mut mgr = UndoManager::new(&doc, &root);
 
@@ -1573,7 +1571,7 @@ mod test {
     fn undo_xml_bug() {
         // https://github.com/yjs/yjs/issues/304
         const ORIGIN: &str = "origin";
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let f = doc.get_or_insert_xml_fragment("t");
         let mut mgr = UndoManager::with_scope_and_options(&doc, &f, {
             let mut o = Options::default();
@@ -1623,7 +1621,7 @@ mod test {
     #[test]
     fn undo_block_bug() {
         // https://github.com/yjs/yjs/issues/343
-        let doc = Doc::with_options({
+        let mut doc = Doc::with_options({
             let mut o = crate::doc::Options::default();
             o.client_id = 1;
             o.skip_gc = true;
@@ -1698,14 +1696,14 @@ mod test {
             dst.transact_mut().apply_update(update).unwrap();
         }
 
-        let doc1 = Doc::with_client_id(1);
+        let mut doc1 = Doc::with_client_id(1);
         let txt = doc1.get_or_insert_text("test");
         txt.insert(
             &mut doc1.transact_mut(),
             0,
             "Attack ships on fire off the shoulder of Orion.",
         ); // D1: 'Attack ships on fire off the shoulder of Orion.'
-        let doc2 = Doc::with_client_id(2);
+        let mut doc2 = Doc::with_client_id(2);
         let txt2 = doc2.get_or_insert_text("test");
 
         send(&doc1, &doc2); // D2: 'Attack ships on fire off the shoulder of Orion.'
@@ -1750,7 +1748,7 @@ mod test {
     fn special_deletion_case() {
         // https://github.com/yjs/yjs/issues/447
         const ORIGIN: &str = "undoable";
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let f = doc.get_or_insert_xml_fragment("test");
         let mut mgr = UndoManager::new(&doc, &f);
         mgr.include_origin(ORIGIN);
@@ -1778,11 +1776,11 @@ mod test {
 
     #[test]
     fn undo_in_embed() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("test");
         let mut mgr = UndoManager::new(&d1, &txt1);
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let txt2 = d2.get_or_insert_text("test");
 
         let attrs = Attrs::from([("bold".into(), true.into())]);
@@ -1810,7 +1808,7 @@ mod test {
             "initial text".to_string()
         );
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
         let diff = txt2.diff(&d1.transact(), YChange::identity);
         let nested2 = diff[0].insert.clone().cast::<TextRef>().unwrap();
         assert_eq!(
@@ -1825,7 +1823,7 @@ mod test {
     #[test]
     fn github_issue_345() {
         // https://github.com/y-crdt/y-crdt/issues/345
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let map = doc.get_or_insert_map("r");
         let mut mgr = UndoManager::with_scope_and_options(&doc, &map, Options::default());
         mgr.include_origin(doc.client_id());
@@ -1900,7 +1898,7 @@ mod test {
     #[test]
     fn github_issue_345_part_2() {
         // https://github.com/y-crdt/y-crdt/issues/345
-        let d = Doc::new();
+        let mut d = Doc::new();
         let r = d.get_or_insert_map("r");
 
         let s1 = r.insert(&mut d.transact_mut(), "s1", MapPrelim::default());
@@ -1939,7 +1937,7 @@ mod test {
 
     #[test]
     fn issue_371() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
 
         let r = doc.get_or_insert_map("r");
         let s1 = r.insert(&mut doc.transact_mut(), "s1", MapPrelim::default()); // { s1: {} }
@@ -1986,7 +1984,7 @@ mod test {
 
     #[test]
     fn issue_371_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let r = doc.get_or_insert_map("r");
         let s1 = r.insert(&mut doc.transact_mut(), "s1", MapPrelim::default()); // { s1:{} }
         s1.insert(&mut doc.transact_mut(), "f2", "AAA"); // { s1: { f2: AAA } }
@@ -2019,7 +2017,7 @@ mod test {
 
     #[test]
     fn issue_380() {
-        let d = Doc::with_client_id(1);
+        let mut d = Doc::with_client_id(1);
         let r = d.get_or_insert_map("r"); // {r:{}}
         let s1 = r.insert(&mut d.transact_mut(), "s1", MapPrelim::default()); // {r:{s1:{}}
         let b1_arr = s1.insert(&mut d.transact_mut(), "b1", ArrayPrelim::default()); // {r:{s1:{b1:[]}}

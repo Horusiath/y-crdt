@@ -43,7 +43,7 @@ use std::ops::{Deref, DerefMut};
 /// use yrs::{Array, Doc, Map, MapPrelim, Transact, Any, any};
 /// use yrs::types::ToJson;
 ///
-/// let doc = Doc::new();
+/// let mut doc = Doc::new();
 /// let array = doc.get_or_insert_array("array");
 /// let mut txn = doc.transact_mut();
 ///
@@ -277,9 +277,9 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Example
     ///
     /// ```rust
-    /// use yrs::{Doc, In, Array, MapPrelim, Transact, WriteTxn};
+    /// use yrs::{Doc, In, Array, MapPrelim};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
     /// let array = txn.get_or_insert_array("array");
     ///
@@ -372,8 +372,8 @@ pub trait Array: AsRef<Branch> + Sized {
     ///
     /// Example:
     /// ```
-    /// use yrs::{Doc, Transact, Array, Assoc};
-    /// let doc = Doc::new();
+    /// use yrs::{Doc, Array, Assoc};
+    /// let mut doc = Doc::new();
     /// let array = doc.get_or_insert_array("array");
     /// array.insert_range(&mut doc.transact_mut(), 0, [1,2,3,4]);
     /// // move elements 2 and 3 after the 4
@@ -643,7 +643,7 @@ mod test {
     use crate::types::{Change, DeepObservable, Event, Out, Path, PathSegment, ToJson};
     use crate::{
         any, Any, Array, ArrayPrelim, Assoc, Doc, Map, MapRef, Observable, SharedRef, StateVector,
-        Transact, Update, ID,
+        Update, ID,
     };
     use std::collections::{HashMap, HashSet};
     use std::iter::FromIterator;
@@ -651,7 +651,7 @@ mod test {
 
     #[test]
     fn push_back() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let a = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
 
@@ -665,7 +665,7 @@ mod test {
 
     #[test]
     fn push_front() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let a = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
 
@@ -679,7 +679,7 @@ mod test {
 
     #[test]
     fn insert() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let a = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
 
@@ -693,8 +693,8 @@ mod test {
 
     #[test]
     fn basic() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
 
         let a1 = d1.get_or_insert_array("array");
 
@@ -714,7 +714,7 @@ mod test {
 
     #[test]
     fn len() {
-        let d = Doc::with_client_id(1);
+        let mut d = Doc::with_client_id(1);
         let a = d.get_or_insert_array("array");
 
         {
@@ -757,7 +757,7 @@ mod test {
 
     #[test]
     fn remove_insert() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
         let mut t1 = d1.transact_mut();
@@ -767,8 +767,8 @@ mod test {
 
     #[test]
     fn insert_3_elements_try_re_get() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
         let a1 = d1.get_or_insert_array("array");
         {
             let mut t1 = d1.transact_mut();
@@ -783,7 +783,7 @@ mod test {
             );
         }
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         let a2 = d2.get_or_insert_array("array");
         let t2 = d2.transact();
@@ -796,26 +796,26 @@ mod test {
 
     #[test]
     fn concurrent_insert_with_3_conflicts() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a = d1.get_or_insert_array("array");
         {
             let mut txn = d1.transact_mut();
             a.insert(&mut txn, 0, 0);
         }
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         {
-            let mut txn = d1.transact_mut();
+            let mut txn = d2.transact_mut();
             a.insert(&mut txn, 0, 1);
         }
 
-        let d3 = Doc::with_client_id(3);
+        let mut d3 = Doc::with_client_id(3);
         {
-            let mut txn = d1.transact_mut();
+            let mut txn = d3.transact_mut();
             a.insert(&mut txn, 0, 2);
         }
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -826,22 +826,23 @@ mod test {
     }
 
     fn to_array(d: &Doc) -> Vec<Out> {
-        let a = d.get_or_insert_array("array");
-        a.iter(&d.transact()).collect()
+        let txn = d.transact();
+        let a = txn.get_array("array").unwrap();
+        a.iter(&txn).collect()
     }
 
     #[test]
     fn concurrent_insert_remove_with_3_conflicts() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         {
             let a = d1.get_or_insert_array("array");
             let mut txn = d1.transact_mut();
             a.insert_range(&mut txn, 0, ["x", "y", "z"]);
         }
-        let d2 = Doc::with_client_id(2);
-        let d3 = Doc::with_client_id(3);
+        let mut d2 = Doc::with_client_id(2);
+        let mut d3 = Doc::with_client_id(3);
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
 
         {
             // start state: [x,y,z]
@@ -858,7 +859,7 @@ mod test {
             a3.insert(&mut t3, 1, 2); // [x,2,y,z]
         }
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
         // after exchange expected: [0,2,y]
 
         let a1 = to_array(&d1);
@@ -871,17 +872,17 @@ mod test {
 
     #[test]
     fn insertions_in_late_sync() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         {
             let a = d1.get_or_insert_array("array");
             let mut txn = d1.transact_mut();
             a.push_back(&mut txn, "x");
             a.push_back(&mut txn, "y");
         }
-        let d2 = Doc::with_client_id(2);
-        let d3 = Doc::with_client_id(3);
+        let mut d2 = Doc::with_client_id(2);
+        let mut d3 = Doc::with_client_id(3);
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
 
         {
             let a1 = d1.get_or_insert_array("array");
@@ -896,7 +897,7 @@ mod test {
             a3.insert(&mut t3, 1, "user2");
         }
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -908,16 +909,16 @@ mod test {
 
     #[test]
     fn removals_in_late_sync() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         {
             let a = d1.get_or_insert_array("array");
             let mut txn = d1.transact_mut();
             a.push_back(&mut txn, "x");
             a.push_back(&mut txn, "y");
         }
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         {
             let a1 = d1.get_or_insert_array("array");
@@ -929,7 +930,7 @@ mod test {
             a1.remove_range(&mut t1, 0, 2);
         }
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -939,7 +940,7 @@ mod test {
 
     #[test]
     fn insert_then_merge_delete_on_sync() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         {
             let a = d1.get_or_insert_array("array");
             let mut txn = d1.transact_mut();
@@ -947,9 +948,9 @@ mod test {
             a.push_back(&mut txn, "y");
             a.push_back(&mut txn, "z");
         }
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         {
             let a2 = d2.get_or_insert_array("array");
@@ -958,7 +959,7 @@ mod test {
             a2.remove_range(&mut t2, 0, 3);
         }
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -968,7 +969,7 @@ mod test {
 
     #[test]
     fn iter_array_containing_types() {
-        let d = Doc::with_client_id(1);
+        let mut d = Doc::with_client_id(1);
         let a = d.get_or_insert_array("arr");
         let mut txn = d.transact_mut();
         for i in 0..10 {
@@ -989,7 +990,7 @@ mod test {
 
     #[test]
     fn insert_and_remove_events() {
-        let d = Doc::with_client_id(1);
+        let mut d = Doc::with_client_id(1);
         let array = d.get_or_insert_array("array");
         let happened = Arc::new(AtomicBool::new(false));
         let happened_clone = happened.clone();
@@ -1030,7 +1031,7 @@ mod test {
 
     #[test]
     fn insert_and_remove_event_changes() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let array = d1.get_or_insert_array("array");
         let added = Arc::new(ArcSwapOption::default());
         let removed = Arc::new(ArcSwapOption::default());
@@ -1096,7 +1097,7 @@ mod test {
             )
         );
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let array2 = d2.get_or_insert_array("array");
         let (added_c, removed_c, delta_c) = (added.clone(), removed.clone(), delta.clone());
         let _sub = array2.observe(move |txn, e| {
@@ -1135,8 +1136,8 @@ mod test {
 
     #[test]
     fn target_on_local_and_remote() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
         let a1 = d1.get_or_insert_array("array");
         let a2 = d2.get_or_insert_array("array");
 
@@ -1155,7 +1156,7 @@ mod test {
             let mut t1 = d1.transact_mut();
             a1.insert_range(&mut t1, 0, [1, 2]);
         }
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         assert_eq!(c1.swap(None), Some(Arc::new(a1.hook())));
         assert_eq!(c2.swap(None), Some(Arc::new(a2.hook())));
@@ -1298,7 +1299,7 @@ mod test {
 
     #[test]
     fn get_at_removed_index() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
         let mut t1 = d1.transact_mut();
 
@@ -1311,7 +1312,7 @@ mod test {
 
     #[test]
     fn observe_deep_event_order() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         let paths = Arc::new(Mutex::new(vec![]));
@@ -1341,10 +1342,10 @@ mod test {
 
     #[test]
     fn move_1() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let a2 = d2.get_or_insert_array("array");
 
         let e1 = Arc::new(ArcSwapOption::default());
@@ -1366,7 +1367,7 @@ mod test {
         }
         assert_eq!(a1.to_json(&d1.transact()), vec![2, 1, 3].into());
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         assert_eq!(a2.to_json(&d2.transact()), vec![2, 1, 3].into());
         let actual = e2.load_full();
@@ -1395,10 +1396,10 @@ mod test {
 
     #[test]
     fn move_2() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let a2 = d2.get_or_insert_array("array");
 
         let e1 = Arc::new(ArcSwapOption::default());
@@ -1428,7 +1429,7 @@ mod test {
             );
         }
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         assert_eq!(a2.to_json(&d2.transact()), vec![2, 1].into());
         {
@@ -1456,14 +1457,14 @@ mod test {
 
     #[test]
     fn move_cycles() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let a2 = d2.get_or_insert_array("array");
 
         a1.insert_range(&mut d1.transact_mut(), 0, [1, 2, 3, 4]);
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&[&mut d1, &mut d2]);
 
         a1.move_range_to(&mut d1.transact_mut(), 0, Assoc::After, 1, Assoc::Before, 3);
         assert_eq!(a1.to_json(&d1.transact()), vec![3, 1, 2, 4].into());
@@ -1471,8 +1472,8 @@ mod test {
         a2.move_range_to(&mut d2.transact_mut(), 2, Assoc::After, 3, Assoc::Before, 1);
         assert_eq!(a2.to_json(&d2.transact()), vec![1, 3, 4, 2].into());
 
-        exchange_updates(&[&d1, &d2]);
-        exchange_updates(&[&d1, &d2]); // move cycles may not be detected within a single update exchange
+        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates(&[&mut d1, &mut d2]); // move cycles may not be detected within a single update exchange
 
         assert_eq!(a1.len(&d1.transact()), 4);
         assert_eq!(a1.to_json(&d1.transact()), a2.to_json(&d2.transact()));
@@ -1481,7 +1482,7 @@ mod test {
     #[test]
     #[ignore] //TODO: investigate (see: https://github.com/y-crdt/y-crdt/pull/266)
     fn move_range_to() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let arr = doc.get_or_insert_array("array");
         // Move 1-2 to 4
         {
@@ -1714,7 +1715,7 @@ mod test {
                 let millis = fastrand::u64(1..20);
                 sleep(Duration::from_millis(millis));
 
-                let doc = d2.write().unwrap();
+                let mut doc = d2.write().unwrap();
                 let array = doc.get_or_insert_array("test");
                 let mut txn = doc.transact_mut();
                 array.push_back(&mut txn, "a");
@@ -1727,7 +1728,7 @@ mod test {
                 let millis = fastrand::u64(1..20);
                 sleep(Duration::from_millis(millis));
 
-                let doc = d3.write().unwrap();
+                let mut doc = d3.write().unwrap();
                 let array = doc.get_or_insert_array("test");
                 let mut txn = doc.transact_mut();
                 array.push_back(&mut txn, "b");
@@ -1737,7 +1738,7 @@ mod test {
         h3.join().unwrap();
         h2.join().unwrap();
 
-        let doc = doc.read().unwrap();
+        let mut doc = doc.read().unwrap();
         let array = doc.get_or_insert_array("test");
         let len = array.len(&doc.transact());
         assert_eq!(len, 20);
@@ -1747,7 +1748,7 @@ mod test {
     fn move_last_elem_iter() {
         // https://github.com/y-crdt/y-crdt/issues/186
 
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
         array.insert_range(&mut txn, 0, [1, 2, 3]);
@@ -1769,7 +1770,7 @@ mod test {
 
     #[test]
     fn insert_empty_range() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let mut txn = doc.transact_mut();
         let array = txn.get_or_insert_array("array");
 
@@ -1784,7 +1785,7 @@ mod test {
 
         let data = txn.encode_state_as_update_v1(&StateVector::default());
 
-        let doc2 = Doc::with_client_id(2);
+        let mut doc2 = Doc::with_client_id(2);
         let mut txn = doc2.transact_mut();
         let array = txn.get_or_insert_array("array");
         txn.apply_update(Update::decode_v1(&data).unwrap()).unwrap();

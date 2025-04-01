@@ -13,7 +13,7 @@ use crate::undo::UndoStack;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
-use crate::{Any, DeleteSet, Doc, Options, Out, Transact};
+use crate::{Any, DeleteSet, Doc, Options, Out};
 use serde::{Deserialize, Serialize};
 use smallstr::SmallString;
 use std::collections::HashSet;
@@ -247,8 +247,8 @@ impl ItemPtr {
         let self_ptr = self.clone();
         let item = self.deref_mut();
         if let Some(redone) = item.redone.as_ref() {
-            let slice = txn.store.blocks.get_item_clean_start(redone)?;
-            return Some(txn.store.materialize(slice));
+            let slice = txn.doc.store.blocks.get_item_clean_start(redone)?;
+            return Some(txn.doc.store.materialize(slice));
         }
 
         let mut parent_block = item.parent.as_branch().and_then(|b| b.item);
@@ -267,10 +267,11 @@ impl ItemPtr {
                 let mut redone = parent.redone;
                 while let Some(id) = redone.as_ref() {
                     parent_block = txn
+                        .doc
                         .store
                         .blocks
                         .get_item_clean_start(id)
-                        .map(|slice| txn.store.materialize(slice));
+                        .map(|slice| txn.doc.store.materialize(slice));
                     redone = parent_block.and_then(|ptr| ptr.redone);
                 }
             }
@@ -305,10 +306,10 @@ impl ItemPtr {
                             left = Some(left_right);
                             while let Some(item) = left.as_deref() {
                                 if let Some(id) = item.redone.as_ref() {
-                                    left = match txn.store.blocks.get_item_clean_start(id) {
+                                    left = match txn.doc.store.blocks.get_item_clean_start(id) {
                                         None => break,
                                         Some(slice) => {
-                                            let ptr = txn.store.materialize(slice);
+                                            let ptr = txn.doc.store.materialize(slice);
                                             txn.merge_blocks.push(ptr.id().clone());
                                             Some(ptr)
                                         }
@@ -344,8 +345,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         left_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.store.materialize(s))
+                            let slice = txn.doc.store.blocks.get_item_clean_start(redone);
+                            slice.map(|s| txn.doc.store.materialize(s))
                         } else {
                             None
                         };
@@ -370,8 +371,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         right_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.store.materialize(s))
+                            let slice = txn.doc.store.blocks.get_item_clean_start(redone);
+                            slice.map(|s| txn.doc.store.materialize(s))
                         } else {
                             None
                         };
@@ -390,8 +391,8 @@ impl ItemPtr {
             }
         }
 
-        let next_clock = txn.store.get_local_state();
-        let next_id = ID::new(txn.store.client_id, next_clock);
+        let next_clock = txn.doc.store.get_local_state();
+        let next_id = ID::new(txn.doc.store.options.client_id, next_clock);
         let mut redone_item = Item::new(
             next_id,
             left,
@@ -648,7 +649,7 @@ impl ItemPtr {
                             // inherit links from the block we're overriding
                             left.info.clear_linked();
                             this.info.set_linked();
-                            let all_links = &mut txn.store.linked_by;
+                            let all_links = &mut txn.doc.store.linked_by;
                             if let Some(linked_by) = all_links.remove(&left) {
                                 all_links.insert(self_ptr, linked_by);
                                 // since left is being deleted, it will remove
@@ -714,7 +715,7 @@ impl ItemPtr {
                     *parent_doc = Some(txn.doc().clone());
                     {
                         let mut child_txn = doc.transact_mut();
-                        child_txn.store.parent = Some(self_ptr);
+                        child_txn.doc.store.parent = Some(self_ptr);
                     }
                     let subdocs = txn.subdocs.get_or_init();
                     subdocs.added.insert(DocAddr::new(doc), doc.clone());
@@ -739,7 +740,7 @@ impl ItemPtr {
             }
             txn.add_changed_type(parent_ref, this.parent_sub.clone());
             if this.info.is_linked() {
-                if let Some(links) = txn.store.linked_by.get(&self_ptr).cloned() {
+                if let Some(links) = txn.doc.store.linked_by.get(&self_ptr).cloned() {
                     // notify links about changes
                     for link in links.iter() {
                         txn.add_changed_type(*link, this.parent_sub.clone());
@@ -1752,7 +1753,7 @@ impl ItemContent {
                     encoder.write_any(&any[i as usize]);
                 }
             }
-            ItemContent::Doc(_, doc) => doc.store().options().encode(encoder),
+            ItemContent::Doc(_, doc) => doc.store.options.encode(encoder),
             ItemContent::Move(m) => m.encode(encoder),
         }
     }
@@ -1782,7 +1783,7 @@ impl ItemContent {
                     encoder.write_any(a);
                 }
             }
-            ItemContent::Doc(_, doc) => doc.store().options().encode(encoder),
+            ItemContent::Doc(_, doc) => doc.store.options.encode(encoder),
             ItemContent::Move(m) => m.encode(encoder),
         }
     }

@@ -274,10 +274,19 @@ impl Branch {
         }
     }
 
-    pub fn as_subdoc(&self) -> Option<Doc> {
+    pub fn as_subdoc(&self) -> Option<&Doc> {
         let item = self.item?;
         if let ItemContent::Doc(_, doc) = &item.content {
-            Some(doc.clone())
+            Some(doc)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_subdoc_mut(&mut self) -> Option<&mut Doc> {
+        let item = self.item?;
+        if let ItemContent::Doc(_, doc) = &mut item.content {
+            Some(doc)
         } else {
             None
         }
@@ -392,7 +401,7 @@ impl Branch {
         mut ptr: Option<ItemPtr>,
         mut index: u32,
     ) -> (Option<ItemPtr>, Option<ItemPtr>) {
-        let encoding = txn.store.offset_kind;
+        let encoding = txn.doc.store.options.offset_kind;
         while let Some(item) = ptr {
             let content_len = item.content_len(encoding);
             if !item.is_deleted() && item.is_countable() {
@@ -406,7 +415,7 @@ impl Branch {
                     } else {
                         index
                     };
-                    let right = txn.store.blocks.split_block(item, index, encoding);
+                    let right = txn.doc.store.blocks.split_block(item, index, encoding);
                     if let Some(_) = item.moved {
                         if let Some(src) = right {
                             if let Some(&prev_dst) = txn.prev_moved.get(&item) {
@@ -434,7 +443,7 @@ impl Branch {
         };
         while remaining > 0 {
             if let Some(item) = ptr {
-                let encoding = txn.store().offset_kind;
+                let encoding = txn.doc.store.options.offset_kind;
                 if !item.is_deleted() {
                     let content_len = item.content_len(encoding);
                     let (l, r) = if remaining < content_len {
@@ -444,7 +453,7 @@ impl Branch {
                             remaining
                         };
                         remaining = 0;
-                        let new_right = txn.store.blocks.split_block(item, offset, encoding);
+                        let new_right = txn.doc.store.blocks.split_block(item, offset, encoding);
                         if let Some(_) = item.moved {
                             if let Some(src) = new_right {
                                 if let Some(&prev_dst) = txn.prev_moved.get(&item) {
@@ -663,14 +672,14 @@ impl<'a, T: ReadTxn> Iterator for Iter<'a, T> {
 /// # Example
 ///
 /// ```rust
-/// use yrs::{Doc, RootRef, SharedRef, TextRef, Transact};
+/// use yrs::{Doc, RootRef, SharedRef, TextRef};
 ///
 /// let root = TextRef::root("hello");
 ///
-/// let doc1 = Doc::new();
+/// let mut doc1 = Doc::new();
 /// let txt1 = root.get_or_create(&mut doc1.transact_mut());
 ///
-/// let doc2 = Doc::new();
+/// let mut doc2 = Doc::new();
 /// let txt2 = root.get_or_create(&mut doc2.transact_mut());
 ///
 /// // instances of TextRef point to different heap objects
@@ -732,9 +741,9 @@ impl<S> Into<BranchID> for Root<S> {
 /// # Example
 ///
 /// ```rust
-/// use yrs::{Doc, Map, Nested, SharedRef, TextPrelim, TextRef, Transact, WriteTxn};
+/// use yrs::{Doc, Map, Nested, SharedRef, TextPrelim, TextRef};
 ///
-/// let doc = Doc::new();
+/// let mut doc = Doc::new();
 /// let mut txn = doc.transact_mut();
 /// let root = txn.get_or_insert_map("root"); // root-level collection
 /// let text = root.insert(&mut txn, "nested", TextPrelim::new("")); // nested collection
@@ -838,9 +847,9 @@ impl<S: SharedRef> Hook<S> {
     /// # Example
     ///
     /// ```rust
-    /// use yrs::{Hook, Doc, Map, MapRef, Nested, SharedRef, TextPrelim, TextRef, Transact, WriteTxn};
+    /// use yrs::{Hook, Doc, Map, MapRef, Nested, SharedRef, TextPrelim, TextRef};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
     /// let root = txn.get_or_insert_map("root"); // root-level collection
     /// let nested = root.insert(&mut txn, "nested", TextPrelim::new("")); // nested collection

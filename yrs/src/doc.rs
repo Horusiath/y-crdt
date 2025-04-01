@@ -2,15 +2,14 @@ use crate::block::{ClientID, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
 use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
-use crate::store::{DocStore, StoreInner};
 use crate::transaction::{Origin, Transaction, TransactionMut};
 use crate::types::{RootRef, ToJson};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
 use crate::{
-    uuid_v4, uuid_v4_from, ArrayRef, BranchID, MapRef, Out, ReadTxn, TextRef, Transact,
-    TransactionAcqError, Uuid, XmlFragmentRef,
+    uuid_v4, uuid_v4_from, ArrayRef, BranchID, MapRef, Out, ReadTxn, Store, TextRef, Uuid,
+    XmlFragmentRef,
 };
 use crate::{Any, Subscription};
 use std::collections::HashMap;
@@ -29,17 +28,17 @@ use std::sync::Arc;
 /// # Example
 ///
 /// ```rust
-/// use yrs::{Doc, ReadTxn, StateVector, Text, Transact, Update};
+/// use yrs::{Doc, ReadTxn, StateVector, Text,  Update};
 /// use yrs::updates::decoder::Decode;
 /// use yrs::updates::encoder::Encode;
 ///
-/// let doc = Doc::new();
+/// let mut doc = Doc::new();
 /// let root = doc.get_or_insert_text("root-type-name");
 /// let mut txn = doc.transact_mut(); // all Yrs operations happen in scope of a transaction
 /// root.push(&mut txn, "hello world"); // append text to our collaborative document
 ///
 /// // in order to exchange data with other documents we first need to create a state vector
-/// let remote_doc = Doc::new();
+/// let mut remote_doc = Doc::new();
 /// let mut remote_txn = remote_doc.transact_mut();
 /// let state_vector = remote_txn.state_vector().encode_v1();
 ///
@@ -51,9 +50,9 @@ use std::sync::Arc;
 /// remote_txn.apply_update(Update::decode_v1(update.as_slice()).unwrap());
 /// ```
 #[repr(transparent)]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Doc {
-    pub(crate) store: DocStore,
+    pub(crate) store: Box<Store>,
 }
 
 unsafe impl Send for Doc {}
@@ -78,23 +77,21 @@ impl Doc {
 
     #[doc(hidden)]
     pub fn into_raw(self) -> *const Doc {
-        let ptr = Arc::into_raw(self.store.0);
+        let ptr = Box::into_raw(self.store);
         ptr as *const Doc
     }
 
     #[doc(hidden)]
-    pub unsafe fn from_raw(ptr: *const Doc) -> Doc {
-        let ptr = ptr as *const StoreInner;
-        let cell = Arc::from_raw(ptr);
-        Doc {
-            store: DocStore(cell),
-        }
+    pub unsafe fn from_raw(ptr: *mut Doc) -> Doc {
+        let ptr = ptr as *mut Store;
+        let store = Box::from_raw(ptr);
+        Doc { store }
     }
 
     #[doc(hidden)]
-    pub fn as_raw(self) -> *const Doc {
-        let ptr = Arc::as_ptr(&self.store.0);
-        ptr as *const Doc
+    pub fn as_raw(&self) -> *const Doc {
+        let ptr = &*self.store;
+        ptr as *const Store as *const Doc
     }
 
     /// Creates a new document with a specified `client_id`. It's up to a caller to guarantee that
@@ -106,18 +103,8 @@ impl Doc {
     /// Creates a new document with a configured set of [Options].
     pub fn with_options(options: Options) -> Self {
         Doc {
-            store: DocStore::new(options, None),
+            store: Store::new(options).into(),
         }
-    }
-
-    pub(crate) fn subdoc(parent: ItemPtr, options: Options) -> Self {
-        Doc {
-            store: DocStore::new(options, Some(parent)),
-        }
-    }
-
-    pub(crate) fn store(&self) -> &DocStore {
-        &self.store
     }
 
     /// A unique client identifier, that's also a unique identifier of current document replica
@@ -187,7 +174,7 @@ impl Doc {
     /// This method requires exclusive access to an underlying document store. If there
     /// is another transaction in process, it will panic. It's advised to define all root shared
     /// types during the document creation.
-    pub fn get_or_insert_text<N: Into<Arc<str>>>(&self, name: N) -> TextRef {
+    pub fn get_or_insert_text<N: Into<Arc<str>>>(&mut self, name: N) -> TextRef {
         TextRef::root(name).get_or_create(&mut self.transact_mut())
     }
 
@@ -208,7 +195,7 @@ impl Doc {
     /// This method requires exclusive access to an underlying document store. If there
     /// is another transaction in process, it will panic. It's advised to define all root shared
     /// types during the document creation.
-    pub fn get_or_insert_map<N: Into<Arc<str>>>(&self, name: N) -> MapRef {
+    pub fn get_or_insert_map<N: Into<Arc<str>>>(&mut self, name: N) -> MapRef {
         MapRef::root(name).get_or_create(&mut self.transact_mut())
     }
 
@@ -228,7 +215,7 @@ impl Doc {
     /// This method requires exclusive access to an underlying document store. If there
     /// is another transaction in process, it will panic. It's advised to define all root shared
     /// types during the document creation.
-    pub fn get_or_insert_array<N: Into<Arc<str>>>(&self, name: N) -> ArrayRef {
+    pub fn get_or_insert_array<N: Into<Arc<str>>>(&mut self, name: N) -> ArrayRef {
         ArrayRef::root(name).get_or_create(&mut self.transact_mut())
     }
 
@@ -250,7 +237,7 @@ impl Doc {
     /// This method requires exclusive access to an underlying document store. If there
     /// is another transaction in process, it will panic. It's advised to define all root shared
     /// types during the document creation.
-    pub fn get_or_insert_xml_fragment<N: Into<Arc<str>>>(&self, name: N) -> XmlFragmentRef {
+    pub fn get_or_insert_xml_fragment<N: Into<Arc<str>>>(&mut self, name: N) -> XmlFragmentRef {
         XmlFragmentRef::root(name).get_or_create(&mut self.transact_mut())
     }
 
@@ -261,16 +248,12 @@ impl Doc {
     ///
     /// Returns a subscription, which will unsubscribe function when dropped.
     #[cfg(feature = "sync")]
-    pub fn observe_update_v1<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_update_v1<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &UpdateEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.update_v1_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.update_v1_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -280,16 +263,12 @@ impl Doc {
     ///
     /// Returns a subscription, which will unsubscribe function when dropped.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_update_v1<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_update_v1<F>(&mut self, f: F) -> Result<Subscription, TransactionAcqError>
     where
         F: Fn(&TransactionMut, &UpdateEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.update_v1_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.update_v1_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -299,20 +278,15 @@ impl Doc {
     ///
     /// Provided `key` will be used to identify a subscription, which will be used to unsubscribe.
     #[cfg(feature = "sync")]
-    pub fn observe_update_v1_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_update_v1_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &UpdateEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .update_v1_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -322,32 +296,23 @@ impl Doc {
     ///
     /// Provided `key` will be used to identify a subscription, which will be used to unsubscribe.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_update_v1_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_update_v1_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &UpdateEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .update_v1_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
-    pub fn unobserve_update_v1<K>(&self, key: K) -> Result<bool, TransactionAcqError>
+    pub fn unobserve_update_v1<K>(&mut self, key: K) -> bool
     where
         K: Into<Origin>,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.update_v1_events.unsubscribe(&key.into()))
+        let events = self.store.events.get_or_init();
+        events.update_v1_events.unsubscribe(&key.into())
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -357,16 +322,12 @@ impl Doc {
     ///
     /// Returns a subscription, which will unsubscribe function when dropped.
     #[cfg(feature = "sync")]
-    pub fn observe_update_v2<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_update_v2<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &UpdateEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.update_v2_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.update_v2_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -376,16 +337,12 @@ impl Doc {
     ///
     /// Returns a subscription, which will unsubscribe function when dropped.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_update_v2<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_update_v2<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &UpdateEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.update_v2_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.update_v2_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -395,20 +352,15 @@ impl Doc {
     ///
     /// Provided `key` will be used to identify a subscription, which will be used to unsubscribe.
     #[cfg(feature = "sync")]
-    pub fn observe_update_v2_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_update_v2_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &UpdateEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .update_v2_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
     /// Subscribe callback function for any changes performed within transaction scope. These
@@ -418,349 +370,240 @@ impl Doc {
     ///
     /// Provided `key` will be used to identify a subscription, which will be used to unsubscribe.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_update_v2_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_update_v2_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &UpdateEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .update_v2_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
-    pub fn unobserve_update_v2<K>(&self, key: K) -> Result<bool, TransactionAcqError>
+    pub fn unobserve_update_v2<K>(&mut self, key: K) -> bool
     where
         K: Into<Origin>,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.update_v2_events.unsubscribe(&key.into()))
+        let events = self.store.events.get_or_init();
+        events.update_v2_events.unsubscribe(&key.into())
     }
 
     /// Subscribe callback function to updates on the `Doc`. The callback will receive state updates and
     /// deletions when a document transaction is committed.
     #[cfg(feature = "sync")]
-    pub fn observe_transaction_cleanup<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_transaction_cleanup<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &TransactionCleanupEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.transaction_cleanup_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.transaction_cleanup_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function to updates on the `Doc`. The callback will receive state updates and
     /// deletions when a document transaction is committed.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_transaction_cleanup<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_transaction_cleanup<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &TransactionCleanupEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.transaction_cleanup_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.transaction_cleanup_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function to updates on the `Doc`. The callback will receive state updates and
     /// deletions when a document transaction is committed.
     #[cfg(feature = "sync")]
-    pub fn observe_transaction_cleanup_with<K, F>(
-        &self,
-        key: K,
-        f: F,
-    ) -> Result<(), TransactionAcqError>
+    pub fn observe_transaction_cleanup_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &TransactionCleanupEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .transaction_cleanup_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
     /// Subscribe callback function to updates on the `Doc`. The callback will receive state updates and
     /// deletions when a document transaction is committed.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_transaction_cleanup_with<K, F>(
-        &self,
-        key: K,
-        f: F,
-    ) -> Result<(), TransactionAcqError>
+    pub fn observe_transaction_cleanup_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &TransactionCleanupEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .transaction_cleanup_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
-    pub fn unobserve_transaction_cleanup<K>(&self, key: K) -> Result<bool, TransactionAcqError>
+    pub fn unobserve_transaction_cleanup<K>(&mut self, key: K) -> bool
     where
         K: Into<Origin>,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.transaction_cleanup_events.unsubscribe(&key.into()))
+        let events = self.store.events.get_or_init();
+        events.transaction_cleanup_events.unsubscribe(&key.into())
     }
 
     #[cfg(feature = "sync")]
-    pub fn observe_after_transaction<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_after_transaction<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&mut TransactionMut) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.after_transaction_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.after_transaction_events.subscribe(Box::new(f))
     }
 
     #[cfg(feature = "sync")]
-    pub fn observe_after_transaction_with<K, F>(
-        &self,
-        key: K,
-        f: F,
-    ) -> Result<(), TransactionAcqError>
+    pub fn observe_after_transaction_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&mut TransactionMut) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .after_transaction_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
     #[cfg(not(feature = "sync"))]
-    pub fn observe_after_transaction_with<K, F>(
-        &self,
-        key: K,
-        f: F,
-    ) -> Result<(), TransactionAcqError>
+    pub fn observe_after_transaction_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&mut TransactionMut) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .after_transaction_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
-    pub fn unobserve_after_transaction<K>(&self, key: K) -> Result<bool, TransactionAcqError>
+    pub fn unobserve_after_transaction<K>(&mut self, key: K) -> bool
     where
         K: Into<Origin>,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.after_transaction_events.unsubscribe(&key.into()))
+        let events = self.store.events.get_or_init();
+        events.after_transaction_events.unsubscribe(&key.into())
     }
 
     /// Subscribe callback function, that will be called whenever a subdocuments inserted in this
     /// [Doc] will request a load.
     #[cfg(feature = "sync")]
-    pub fn observe_subdocs<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_subdocs<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &SubdocsEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.subdocs_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.subdocs_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function, that will be called whenever a subdocuments inserted in this
     /// [Doc] will request a load.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_subdocs<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_subdocs<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &SubdocsEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.subdocs_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.subdocs_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function, that will be called whenever a subdocuments inserted in this
     /// [Doc] will request a load.
     #[cfg(feature = "sync")]
-    pub fn observe_subdocs_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_subdocs_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &SubdocsEvent) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .subdocs_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
     /// Subscribe callback function, that will be called whenever a subdocuments inserted in this
     /// [Doc] will request a load.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_subdocs_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_subdocs_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &SubdocsEvent) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .subdocs_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
-    pub fn unobserve_subdocs<K>(&self, key: K) -> Result<bool, TransactionAcqError>
+    pub fn unobserve_subdocs<K>(&mut self, key: K) -> bool
     where
         K: Into<Origin>,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.subdocs_events.unsubscribe(&key.into()))
+        let events = self.store.events.get_or_init();
+        events.subdocs_events.unsubscribe(&key.into())
     }
 
     /// Subscribe callback function, that will be called whenever a [DocRef::destroy] has been called.
     #[cfg(feature = "sync")]
-    pub fn observe_destroy<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_destroy<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &Doc) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.destroy_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.destroy_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function, that will be called whenever a [DocRef::destroy] has been called.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_destroy<F>(&self, f: F) -> Result<Subscription, TransactionAcqError>
+    pub fn observe_destroy<F>(&mut self, f: F) -> Subscription
     where
         F: Fn(&TransactionMut, &Doc) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.destroy_events.subscribe(Box::new(f)))
+        let events = self.store.events.get_or_init();
+        events.destroy_events.subscribe(Box::new(f))
     }
 
     /// Subscribe callback function, that will be called whenever a [DocRef::destroy] has been called.
     #[cfg(feature = "sync")]
-    pub fn observe_destroy_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_destroy_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &Doc) + Send + Sync + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .destroy_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
-    pub fn unobserve_destroy<K>(&self, key: K) -> Result<bool, TransactionAcqError>
+    pub fn unobserve_destroy<K>(&mut self, key: K) -> bool
     where
         K: Into<Origin>,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
-        Ok(events.destroy_events.unsubscribe(&key.into()))
+        let events = self.store.events.get_or_init();
+        events.destroy_events.unsubscribe(&key.into())
     }
 
     /// Subscribe callback function, that will be called whenever a [DocRef::destroy] has been called.
     #[cfg(not(feature = "sync"))]
-    pub fn observe_destroy_with<K, F>(&self, key: K, f: F) -> Result<(), TransactionAcqError>
+    pub fn observe_destroy_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
         F: Fn(&TransactionMut, &Doc) + 'static,
     {
-        let mut store = self
-            .store
-            .try_write()
-            .ok_or(TransactionAcqError::ExclusiveAcqFailed)?;
-        let events = store.events.get_or_init();
+        let events = self.store.events.get_or_init();
         events
             .destroy_events
             .subscribe_with(key.into(), Box::new(f));
-        Ok(())
     }
 
     /// Sends a load request to a parent document. Works only if current document is a sub-document
     /// of a document.
-    pub fn load(&self, parent_txn: &mut TransactionMut<'_>) {
-        let should_load = self.store.set_should_load(true);
+    pub fn load(&mut self, parent_txn: &mut TransactionMut<'_>) {
+        let should_load = std::mem::replace(&mut self.store.options.should_load, true);
         if !should_load {
             let txn = self.transact();
             if txn.store().is_subdoc() {
@@ -772,16 +615,16 @@ impl Doc {
         }
     }
 
-    /// Starts destroy procedure for a current document, triggering an "destroy" callback and
+    /// Starts destroy procedure for a current document, triggering a "destroy" callback and
     /// invalidating all event callback subscriptions.
-    pub fn destroy(&self, parent_txn: &mut TransactionMut<'_>) {
+    pub fn destroy(&mut self, parent_txn: &mut TransactionMut<'_>) {
         let mut txn = self.transact_mut();
         let store = txn.store_mut();
         let subdocs: Vec<_> = store.subdocs.values().cloned().collect();
-        for subdoc in subdocs {
+        for mut subdoc in subdocs {
             subdoc.destroy(&mut txn);
         }
-        if let Some(mut item) = txn.store.parent.take() {
+        if let Some(mut item) = txn.doc.store.parent.take() {
             let parent_ref = item.clone();
             let is_deleted = item.is_deleted();
             if let ItemContent::Doc(_, content) = &mut item.content {
@@ -810,7 +653,14 @@ impl Doc {
 
     /// If current document has been inserted as a sub-document, returns a reference to a parent
     /// document, which contains it.
-    pub fn parent_doc(&self) -> Option<Doc> {
+    pub fn parent_doc(&self) -> Option<&Doc> {
+        let txn = self.transact();
+        txn.parent_doc()
+    }
+
+    /// If current document has been inserted as a sub-document, returns a reference to a parent
+    /// document, which contains it.
+    pub fn parent_doc_mut(&mut self) -> Option<&mut Doc> {
         let txn = self.transact();
         txn.parent_doc()
     }
@@ -821,11 +671,31 @@ impl Doc {
     }
 
     pub fn ptr_eq(a: &Doc, b: &Doc) -> bool {
-        Arc::ptr_eq(&a.store.0, &b.store.0)
+        std::ptr::eq(&a.store, &b.store)
     }
 
     pub(crate) fn addr(&self) -> DocAddr {
         DocAddr::new(&self)
+    }
+}
+
+impl From<Store> for Doc {
+    fn from(value: Store) -> Self {
+        Doc {
+            store: Box::new(value),
+        }
+    }
+}
+
+impl AsRef<Store> for Doc {
+    fn as_ref(&self) -> &Store {
+        &self.store
+    }
+}
+
+impl AsMut<Store> for Doc {
+    fn as_mut(&mut self) -> &mut Store {
+        &mut self.store
     }
 }
 
@@ -1021,7 +891,7 @@ pub(crate) struct DocAddr(usize);
 
 impl DocAddr {
     pub fn new(doc: &Doc) -> Self {
-        let ptr = Arc::as_ptr(&doc.store.0);
+        let ptr = doc.store.as_ptr();
         DocAddr(ptr as usize)
     }
 }
@@ -1037,8 +907,8 @@ mod test {
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
         any, Any, Array, ArrayPrelim, ArrayRef, DeleteSet, Doc, GetString, Map, MapRef, OffsetKind,
-        Options, StateVector, Subscription, Text, TextPrelim, TextRef, Transact, Uuid,
-        XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
+        Options, StateVector, Subscription, Text, TextPrelim, TextRef, Uuid, XmlElementPrelim,
+        XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
     };
     use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
@@ -1065,7 +935,7 @@ mod test {
             1, 3, 227, 214, 245, 198, 5, 0, 4, 1, 4, 116, 121, 112, 101, 1, 48, 68, 227, 214, 245,
             198, 5, 0, 1, 49, 68, 227, 214, 245, 198, 5, 1, 1, 50, 0,
         ];
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let txt = doc.get_or_insert_text("type");
         let mut txn = doc.transact_mut();
         txn.apply_update(Update::decode_v1(update).unwrap())
@@ -1093,7 +963,7 @@ mod test {
             0, 0, 6, 195, 187, 207, 162, 7, 1, 0, 2, 0, 2, 3, 4, 0, 68, 11, 7, 116, 121, 112, 101,
             48, 49, 50, 4, 65, 1, 1, 1, 0, 0, 1, 3, 0, 0,
         ];
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let txt = doc.get_or_insert_text("type");
         let mut txn = doc.transact_mut();
         txn.apply_update(Update::decode_v2(update).unwrap())
@@ -1105,7 +975,7 @@ mod test {
 
     #[test]
     fn encode_basic() {
-        let doc = Doc::with_client_id(1490905955);
+        let mut doc = Doc::with_client_id(1490905955);
         let txt = doc.get_or_insert_text("type");
         let mut t = doc.transact_mut();
         txt.insert(&mut t, 0, "0");
@@ -1123,7 +993,7 @@ mod test {
     #[test]
     fn integrate() {
         // create new document at A and add some initial text to it
-        let d1 = Doc::new();
+        let mut d1 = Doc::new();
         let txt = d1.get_or_insert_text("test");
         let mut t1 = d1.transact_mut();
         // Question: why YText.insert uses positions of blocks instead of actual cursor positions
@@ -1135,7 +1005,7 @@ mod test {
         assert_eq!(txt.get_string(&t1), "hello world".to_string());
 
         // create document at B
-        let d2 = Doc::new();
+        let mut d2 = Doc::new();
         let txt = d2.get_or_insert_text("test");
         let mut t2 = d2.transact_mut();
         let sv = t2.state_vector().encode_v1();
@@ -1162,8 +1032,8 @@ mod test {
     #[test]
     fn on_update() {
         let counter = Arc::new(AtomicU32::new(0));
-        let doc = Doc::new();
-        let doc2 = Doc::new();
+        let mut doc = Doc::new();
+        let mut doc2 = Doc::new();
         let c = counter.clone();
         let sub = doc2.observe_update_v1(move |_, e| {
             let u = Update::decode_v1(&e.update).unwrap();
@@ -1198,7 +1068,7 @@ mod test {
 
     #[test]
     fn pending_update_integration() {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let txt = doc.get_or_insert_text("source");
 
         let updates = [
@@ -1251,7 +1121,7 @@ mod test {
 
     #[test]
     fn ypy_issue_32() {
-        let d1 = Doc::with_client_id(1971027812);
+        let mut d1 = Doc::with_client_id(1971027812);
         let source_1 = d1.get_or_insert_text("source");
         source_1.push(&mut d1.transact_mut(), "a");
 
@@ -1283,7 +1153,7 @@ mod test {
 
         assert_eq!("a", source_1.get_string(&d1.transact()));
 
-        let d2 = Doc::new();
+        let mut d2 = Doc::new();
         let source_2 = d2.get_or_insert_text("source");
         let state_2 = d2.transact().state_vector().encode_v1();
         let update = d1
@@ -1302,7 +1172,7 @@ mod test {
         d1.transact_mut().apply_update(update).unwrap();
         assert_eq!("ab", source_1.get_string(&d1.transact()));
 
-        let d3 = Doc::new();
+        let mut d3 = Doc::new();
         let source_3 = d3.get_or_insert_text("source");
         let state_3 = d3.transact().state_vector().encode_v1();
         let state_3 = StateVector::decode_v1(&state_3).unwrap();
@@ -1316,7 +1186,7 @@ mod test {
     #[test]
     fn observe_transaction_cleanup() {
         // Setup
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let text = doc.get_or_insert_text("test");
         let before_state = Arc::new(ArcSwapOption::default());
         let after_state = Arc::new(ArcSwapOption::default());
@@ -1371,14 +1241,14 @@ mod test {
 
     #[test]
     fn partially_duplicated_update() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("text");
         txt1.insert(&mut d1.transact_mut(), 0, "hello");
         let u = d1
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let txt2 = d2.get_or_insert_text("text");
         d2.transact_mut()
             .apply_update(Update::decode_v1(&u).unwrap())
@@ -1402,7 +1272,7 @@ mod test {
     fn incremental_observe_update() {
         const INPUT: &'static str = "hello";
 
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("text");
         let acc = Arc::new(Mutex::new(String::new()));
 
@@ -1459,7 +1329,7 @@ mod test {
 
     #[test]
     fn ycrdt_issue_174() {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let bin = &[
             0, 0, 11, 176, 133, 128, 149, 31, 205, 190, 199, 196, 21, 7, 3, 0, 3, 5, 0, 17, 168, 1,
             8, 0, 40, 0, 8, 0, 40, 0, 8, 0, 40, 0, 33, 1, 39, 110, 91, 49, 49, 49, 114, 111, 111,
@@ -1501,7 +1371,7 @@ mod test {
         let mut options = Options::with_client_id(1);
         options.skip_gc = true;
 
-        let d1 = Doc::with_options(options);
+        let mut d1 = Doc::with_options(options);
         let txt1 = d1.get_or_insert_text("text");
         txt1.insert(&mut d1.transact_mut(), 0, "hello");
         let snapshot = d1.transact_mut().snapshot();
@@ -1513,7 +1383,7 @@ mod test {
             .unwrap();
         let update = Update::decode_v1(&encoder.to_vec()).unwrap();
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let txt2 = d2.get_or_insert_text("text");
         d2.transact_mut().apply_update(update).unwrap();
 
@@ -1525,7 +1395,7 @@ mod test {
         let mut options = Options::default();
         options.skip_gc = true;
 
-        let doc = Doc::with_options(options.clone().into());
+        let mut doc = Doc::with_options(options.clone().into());
         let txt = doc.get_or_insert_text("name");
 
         let mut txn = doc.transact_mut();
@@ -1746,7 +1616,7 @@ mod test {
             ],
         ];
 
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
         for diff in diffs {
             let u = Update::decode_v1(diff.as_slice()).unwrap();
@@ -1756,7 +1626,7 @@ mod test {
 
     #[test]
     fn root_refs() {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         {
             let _txt = doc.get_or_insert_text("text");
             let _array = doc.get_or_insert_array("array");
@@ -1779,9 +1649,9 @@ mod test {
 
     #[test]
     fn integrate_block_with_parent_gc() {
-        let d1 = Doc::with_client_id(1);
-        let d2 = Doc::with_client_id(2);
-        let d3 = Doc::with_client_id(3);
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
+        let mut d3 = Doc::with_client_id(3);
 
         {
             let root = d1.get_or_insert_array("array");
@@ -1824,7 +1694,7 @@ mod test {
 
     #[test]
     fn subdoc() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let event = Arc::new(ArcSwapOption::default());
         let event_c = event.clone();
         let _sub = doc.observe_subdocs(move |_, e| {
@@ -1854,7 +1724,7 @@ mod test {
 
         {
             let mut txn = doc.transact_mut();
-            let doc_a_ref = subdocs.get(&txn, "a").unwrap().cast::<Doc>().unwrap();
+            let mut doc_a_ref = subdocs.get(&txn, "a").unwrap().cast::<Doc>().unwrap();
             doc_a_ref.load(&mut txn);
         }
         let actual = event.swap(None);
@@ -1877,7 +1747,7 @@ mod test {
 
         {
             let mut txn = doc.transact_mut();
-            let doc_a_ref = subdocs.get(&txn, "a").unwrap().cast::<Doc>().unwrap();
+            let mut doc_a_ref = subdocs.get(&txn, "a").unwrap().cast::<Doc>().unwrap();
             doc_a_ref.load(&mut txn);
         }
         let actual = event.swap(None);
@@ -1901,7 +1771,7 @@ mod test {
 
         {
             let mut txn = doc.transact_mut();
-            let doc_b_ref = subdocs.get(&txn, "b").unwrap().cast::<Doc>().unwrap();
+            let mut doc_b_ref = subdocs.get(&txn, "b").unwrap().cast::<Doc>().unwrap();
             doc_b_ref.load(&mut txn);
         }
         let actual = event.swap(None);
@@ -1918,7 +1788,7 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            let doc_c_ref = subdocs.insert(&mut txn, "c", doc_c);
+            let mut doc_c_ref = subdocs.insert(&mut txn, "c", doc_c);
             doc_c_ref.load(&mut txn);
         }
         let actual = event.swap(None);
@@ -1938,7 +1808,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let doc2 = Doc::new();
+        let mut doc2 = Doc::new();
         let event = Arc::new(ArcSwapOption::default());
         let event_c = event.clone();
         let _sub = doc2.observe_subdocs(move |_, e| {
@@ -1963,7 +1833,7 @@ mod test {
         let subdocs = doc2.transact().get_map("mysubdocs").unwrap();
         {
             let mut txn = doc2.transact_mut();
-            let doc_ref = subdocs.get(&mut txn, "a").unwrap().cast::<Doc>().unwrap();
+            let mut doc_ref = subdocs.get(&mut txn, "a").unwrap().cast::<Doc>().unwrap();
             doc_ref.load(&mut txn);
         }
         let actual = event.swap(None);
@@ -1992,7 +1862,7 @@ mod test {
 
     #[test]
     fn subdoc_load_edge_cases() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("test");
         let subdoc_1 = Doc::new();
         let uuid_1 = subdoc_1.guid().clone();
@@ -2006,7 +1876,7 @@ mod test {
 
             event_c.store(Some(Arc::new((added, removed, loaded))));
         });
-        let doc_ref = {
+        let mut doc_ref = {
             let mut txn = doc.transact_mut();
             let doc_ref = array.insert(&mut txn, 0, subdoc_1);
             assert!(doc_ref.should_load());
@@ -2021,7 +1891,7 @@ mod test {
 
         // destroy and check whether lastEvent adds it again to added (it shouldn't)
         doc_ref.destroy(&mut doc.transact_mut());
-        let doc_ref_2 = array
+        let mut doc_ref_2 = array
             .get(&doc.transact(), 0)
             .unwrap()
             .cast::<Doc>()
@@ -2044,7 +1914,7 @@ mod test {
         );
 
         // apply from remote
-        let doc2 = Doc::with_client_id(2);
+        let mut doc2 = Doc::with_client_id(2);
         let event_c = event.clone();
         let _sub = doc2.observe_subdocs(move |_, e| {
             let added = e.added().map(|d| d.guid().clone()).collect();
@@ -2087,7 +1957,7 @@ mod test {
 
     #[test]
     fn subdoc_auto_load_edge_cases() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("test");
         let subdoc_1 = Doc::with_options({
             let mut o = Options::default();
@@ -2105,7 +1975,7 @@ mod test {
             event_c.store(Some(Arc::new((added, removed, loaded))));
         });
 
-        let subdoc_1 = {
+        let mut subdoc_1 = {
             let mut txn = doc.transact_mut();
             array.insert(&mut txn, 0, subdoc_1)
         };
@@ -2126,7 +1996,7 @@ mod test {
         // destroy and check whether lastEvent adds it again to added (it shouldn't)
         subdoc_1.destroy(&mut doc.transact_mut());
 
-        let subdoc_2 = array
+        let mut subdoc_2 = array
             .get(&doc.transact(), 0)
             .unwrap()
             .cast::<Doc>()
@@ -2152,7 +2022,7 @@ mod test {
         );
 
         // apply from remote
-        let doc2 = Doc::with_client_id(2);
+        let mut doc2 = Doc::with_client_id(2);
         let event_c = event.clone();
         let _sub = doc2.observe_subdocs(move |_, e| {
             let added = e.added().map(|d| d.guid()).collect();
@@ -2190,7 +2060,7 @@ mod test {
 
     #[test]
     fn to_json() {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
         let text = txn.get_or_insert_text("text");
         let array = txn.get_or_insert_array("array");
@@ -2207,9 +2077,9 @@ mod test {
         map.insert(&mut txn, "key1", "value1");
 
         // sub documents cannot use their parent's transaction
-        let sub_doc = Doc::new();
+        let mut sub_doc = Doc::new();
         let sub_text = sub_doc.get_or_insert_text("sub-text");
-        let sub_doc = map.insert(&mut txn, "sub-doc", sub_doc);
+        let mut sub_doc = map.insert(&mut txn, "sub-doc", sub_doc);
         let mut sub_txn = sub_doc.transact_mut();
         sub_text.push(&mut sub_txn, "sample");
 
@@ -2231,7 +2101,7 @@ mod test {
     #[test]
     fn apply_snapshot_updates() {
         let update = {
-            let doc = Doc::with_options(Options {
+            let mut doc = Doc::with_options(Options {
                 client_id: 1,
                 skip_gc: true,
                 offset_kind: OffsetKind::Utf16,
@@ -2250,7 +2120,7 @@ mod test {
             encoder.to_vec()
         };
 
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         let mut txn = doc.transact_mut();
         txn.apply_update(Update::decode_v1(&update).unwrap())
@@ -2263,7 +2133,7 @@ mod test {
     fn out_of_order_updates() {
         let updates = Arc::new(Mutex::new(vec![]));
 
-        let d1 = Doc::new();
+        let mut d1 = Doc::new();
         let _sub = {
             let updates = updates.clone();
             d1.observe_update_v1(move |_, e| {
@@ -2280,7 +2150,7 @@ mod test {
 
         assert_eq!(map.to_json(&d1.transact()), any!({"a": 1.1, "b": 2}));
 
-        let d2 = Doc::new();
+        let mut d2 = Doc::new();
 
         {
             let mut updates = updates.lock().unwrap();
@@ -2289,11 +2159,11 @@ mod test {
             let u1 = updates.pop().unwrap();
             let mut txn = d2.transact_mut();
             txn.apply_update(u1).unwrap();
-            assert!(txn.store.pending.is_none()); // applied
+            assert!(txn.doc.store.pending.is_none()); // applied
             txn.apply_update(u3).unwrap();
-            assert!(txn.store.pending.is_some()); // pending update waiting for u2
+            assert!(txn.doc.store.pending.is_some()); // pending update waiting for u2
             txn.apply_update(u2).unwrap();
-            assert!(txn.store.pending.is_none()); // applied after fixing the missing update
+            assert!(txn.doc.store.pending.is_none()); // applied after fixing the missing update
         }
 
         let map = d2.get_or_insert_map("map");
@@ -2347,7 +2217,7 @@ mod test {
 
     #[test]
     fn observe_after_transaction() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("text");
 
         let e = Arc::new(ArcSwapOption::default());
@@ -2358,8 +2228,7 @@ mod test {
                 txn.after_state.clone(),
                 txn.delete_set.clone(),
             ))));
-        })
-        .unwrap();
+        });
 
         txt1.insert(&mut d1.transact_mut(), 0, "hello world");
         let actual = e.swap(None);
@@ -2387,7 +2256,7 @@ mod test {
             )))
         );
 
-        d1.unobserve_after_transaction("key").unwrap();
+        d1.unobserve_after_transaction("key");
 
         txt1.insert(&mut d1.transact_mut(), 4, " the door");
         let actual = e.swap(None);
@@ -2396,7 +2265,7 @@ mod test {
 
     #[test]
     fn force_gc() {
-        let doc = Doc::with_options(Options {
+        let mut doc = Doc::with_options(Options {
             client_id: 1,
             skip_gc: true,
             ..Default::default()
