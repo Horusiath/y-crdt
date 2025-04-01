@@ -628,7 +628,7 @@ impl Doc {
             let parent_ref = item.clone();
             let is_deleted = item.is_deleted();
             if let ItemContent::Doc(_, content) = &mut item.content {
-                let mut options = (**content.store.options()).clone();
+                let mut options = &mut content.store.options;
                 options.should_load = false;
                 let new_ref = Doc::subdoc(parent_ref, options);
                 if !is_deleted {
@@ -891,7 +891,7 @@ pub(crate) struct DocAddr(usize);
 
 impl DocAddr {
     pub fn new(doc: &Doc) -> Self {
-        let ptr = doc.store.as_ptr();
+        let ptr = doc.as_raw();
         DocAddr(ptr as usize)
     }
 }
@@ -1197,13 +1197,12 @@ mod test {
         let delete_ref = delete_set.clone();
         // Subscribe callback
 
-        let sub: Subscription = doc
-            .observe_transaction_cleanup(move |_: &TransactionMut, event| {
+        let sub: Subscription =
+            doc.observe_transaction_cleanup(move |_: &TransactionMut, event| {
                 before_ref.store(Some(event.before_state.clone().into()));
                 after_ref.store(Some(event.after_state.clone().into()));
                 delete_ref.store(Some(event.delete_set.clone().into()));
-            })
-            .unwrap();
+            });
 
         {
             let mut txn = doc.transact_mut();
@@ -1410,7 +1409,7 @@ mod test {
             .unwrap();
         let state_diff = encoder.to_vec();
 
-        let remote_doc = Doc::with_options(options);
+        let mut remote_doc = Doc::with_options(options);
         let remote_txt = remote_doc.get_or_insert_text("name");
         let mut txn = remote_doc.transact_mut();
         let update = Update::decode_v1(&state_diff).unwrap();
@@ -1659,7 +1658,7 @@ mod test {
             root.push_back(&mut txn, ArrayPrelim::from(["A"]));
         }
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
 
         {
             let root = d2.get_or_insert_array("array");
@@ -1681,7 +1680,7 @@ mod test {
                 .unwrap();
         }
 
-        exchange_updates(&[&d1, &d2, &d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
 
         let r1 = d1.get_or_insert_array("array").to_json(&d1.transact());
         let r2 = d2.get_or_insert_array("array").to_json(&d2.transact());
@@ -1712,7 +1711,7 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            let doc_a_ref = subdocs.insert(&mut txn, "a", doc_a);
+            let mut doc_a_ref = subdocs.insert(&mut txn, "a", doc_a);
             doc_a_ref.load(&mut txn);
         }
 
@@ -1732,7 +1731,7 @@ mod test {
 
         {
             let mut txn = doc.transact_mut();
-            let doc_a_ref = subdocs.get(&txn, "a").unwrap().cast::<Doc>().unwrap();
+            let mut doc_a_ref = subdocs.get(&txn, "a").unwrap().cast::<Doc>().unwrap();
             doc_a_ref.destroy(&mut txn);
         }
         let actual = event.swap(None);
@@ -1928,7 +1927,7 @@ mod test {
                 .encode_state_as_update_v1(&StateVector::default()),
         );
         doc2.transact_mut().apply_update(u.unwrap()).unwrap();
-        let doc_ref_3 = {
+        let mut doc_ref_3 = {
             let array = doc2.get_or_insert_array("test");
             array
                 .get(&doc2.transact(), 0)
@@ -2140,7 +2139,6 @@ mod test {
                 let mut u = updates.lock().unwrap();
                 u.push(Update::decode_v1(&e.update).unwrap());
             })
-            .unwrap()
         };
 
         let map = d1.get_or_insert_map("map");

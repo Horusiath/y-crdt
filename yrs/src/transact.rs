@@ -1,5 +1,4 @@
-use crate::{Doc, Origin, Store, Transaction, TransactionMut};
-use std::future::Future;
+use crate::{Doc, Origin, Transaction, TransactionMut};
 
 impl Doc {
     /// Creates and returns a read-write capable transaction. This transaction can be used to

@@ -14,7 +14,6 @@ use crate::{
     Doc, Observer, OffsetKind, Snapshot, TransactionCleanupEvent, TransactionMut, UpdateEvent,
     Uuid, ID,
 };
-use arc_swap::{ArcSwap, DefaultStrategy, Guard};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};

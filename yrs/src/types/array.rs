@@ -488,7 +488,7 @@ impl From<BranchPtr> for ArrayRef {
 /// A preliminary array. It can be used to initialize an [ArrayRef], when it's about to be nested
 /// into another Yrs data collection, such as [Map] or another [ArrayRef].
 #[repr(transparent)]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default)]
 pub struct ArrayPrelim(Vec<In>);
 
 impl Deref for ArrayPrelim {
@@ -783,7 +783,7 @@ mod test {
             );
         }
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         let a2 = d2.get_or_insert_array("array");
         let t2 = d2.transact();
@@ -815,7 +815,7 @@ mod test {
             a.insert(&mut txn, 0, 2);
         }
 
-        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -842,7 +842,7 @@ mod test {
         let mut d2 = Doc::with_client_id(2);
         let mut d3 = Doc::with_client_id(3);
 
-        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
 
         {
             // start state: [x,y,z]
@@ -859,7 +859,7 @@ mod test {
             a3.insert(&mut t3, 1, 2); // [x,2,y,z]
         }
 
-        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
         // after exchange expected: [0,2,y]
 
         let a1 = to_array(&d1);
@@ -882,7 +882,7 @@ mod test {
         let mut d2 = Doc::with_client_id(2);
         let mut d3 = Doc::with_client_id(3);
 
-        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
 
         {
             let a1 = d1.get_or_insert_array("array");
@@ -897,7 +897,7 @@ mod test {
             a3.insert(&mut t3, 1, "user2");
         }
 
-        exchange_updates(&[&mut d1, &mut d2, &mut d3]);
+        exchange_updates([&mut d1, &mut d2, &mut d3]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -918,7 +918,7 @@ mod test {
         }
         let mut d2 = Doc::with_client_id(2);
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         {
             let a1 = d1.get_or_insert_array("array");
@@ -930,7 +930,7 @@ mod test {
             a1.remove_range(&mut t1, 0, 2);
         }
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -950,7 +950,7 @@ mod test {
         }
         let mut d2 = Doc::with_client_id(2);
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         {
             let a2 = d2.get_or_insert_array("array");
@@ -959,7 +959,7 @@ mod test {
             a2.remove_range(&mut t2, 0, 3);
         }
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         let a1 = to_array(&d1);
         let a2 = to_array(&d2);
@@ -1156,7 +1156,7 @@ mod test {
             let mut t1 = d1.transact_mut();
             a1.insert_range(&mut t1, 0, [1, 2]);
         }
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         assert_eq!(c1.swap(None), Some(Arc::new(a1.hook())));
         assert_eq!(c2.swap(None), Some(Arc::new(a2.hook())));
@@ -1367,7 +1367,7 @@ mod test {
         }
         assert_eq!(a1.to_json(&d1.transact()), vec![2, 1, 3].into());
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         assert_eq!(a2.to_json(&d2.transact()), vec![2, 1, 3].into());
         let actual = e2.load_full();
@@ -1429,7 +1429,7 @@ mod test {
             );
         }
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         assert_eq!(a2.to_json(&d2.transact()), vec![2, 1].into());
         {
@@ -1464,7 +1464,7 @@ mod test {
         let a2 = d2.get_or_insert_array("array");
 
         a1.insert_range(&mut d1.transact_mut(), 0, [1, 2, 3, 4]);
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         a1.move_range_to(&mut d1.transact_mut(), 0, Assoc::After, 1, Assoc::Before, 3);
         assert_eq!(a1.to_json(&d1.transact()), vec![3, 1, 2, 4].into());
@@ -1472,8 +1472,8 @@ mod test {
         a2.move_range_to(&mut d2.transact_mut(), 2, Assoc::After, 3, Assoc::Before, 1);
         assert_eq!(a2.to_json(&d2.transact()), vec![1, 3, 4, 2].into());
 
-        exchange_updates(&[&mut d1, &mut d2]);
-        exchange_updates(&[&mut d1, &mut d2]); // move cycles may not be detected within a single update exchange
+        exchange_updates([&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]); // move cycles may not be detected within a single update exchange
 
         assert_eq!(a1.len(&d1.transact()), 4);
         assert_eq!(a1.to_json(&d1.transact()), a2.to_json(&d2.transact()));
@@ -1738,9 +1738,10 @@ mod test {
         h3.join().unwrap();
         h2.join().unwrap();
 
-        let mut doc = doc.read().unwrap();
-        let array = doc.get_or_insert_array("test");
-        let len = array.len(&doc.transact());
+        let doc = doc.read().unwrap();
+        let txn = doc.transact();
+        let array = txn.get_array("test").unwrap();
+        let len = array.len(&txn);
         assert_eq!(len, 20);
     }
 

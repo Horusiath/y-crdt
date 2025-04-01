@@ -435,11 +435,11 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = Out> + 'a>;
 #[cfg(test)]
 mod test {
     use crate::{
-        any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out, ReadTxn, Transact,
+        any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out, ReadTxn,
     };
 
     fn mixed_sample() -> Doc {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let mut tx = doc.transact_mut();
         let users = tx.get_or_insert_array("users");
         users.insert(

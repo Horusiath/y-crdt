@@ -487,7 +487,7 @@ impl ItemPtr {
         let self_ptr = self.clone();
         let this = self.deref_mut();
         let store = txn.store_mut();
-        let encoding = store.offset_kind;
+        let encoding = store.options.offset_kind;
         if offset > 0 {
             // offset could be > 0 only in context of Update::integrate,
             // is such case offset kind in use always means Yjs-compatible offset (utf-16)

@@ -284,7 +284,7 @@ impl Branch {
     }
 
     pub fn as_subdoc_mut(&mut self) -> Option<&mut Doc> {
-        let item = self.item?;
+        let mut item = self.item?;
         if let ItemContent::Doc(_, doc) = &mut item.content {
             Some(doc)
         } else {

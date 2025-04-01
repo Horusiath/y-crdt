@@ -1134,7 +1134,7 @@ impl<T> From<Diff<T>> for Delta {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default)]
 pub struct DeltaPrelim(Vec<Delta<In>>);
 
 impl Deref for DeltaPrelim {
@@ -2381,12 +2381,12 @@ mod test {
         txt.insert(&mut d1.transact_mut(), 0, "😭😊");
 
         let mut d2 = Doc::new();
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         txt.remove_range(&mut d1.transact_mut(), 0, "😭".len() as u32);
         assert_eq!(txt.get_string(&d1.transact()).as_str(), "😊");
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
         let txt = d2.get_or_insert_text("test");
         assert_eq!(txt.get_string(&d2.transact()).as_str(), "😊");
     }
@@ -2399,12 +2399,12 @@ mod test {
         txt.insert(&mut d1.transact_mut(), 0, "⏰⏳");
 
         let mut d2 = Doc::new();
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         txt.remove_range(&mut d1.transact_mut(), 0, "⏰".len() as u32);
         assert_eq!(txt.get_string(&d1.transact()).as_str(), "⏳");
 
-        exchange_updates(&[&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]);
         let txt = d2.get_or_insert_text("test");
         assert_eq!(txt.get_string(&d2.transact()).as_str(), "⏳");
     }
@@ -2637,7 +2637,7 @@ mod test {
         h3.join().unwrap();
         h2.join().unwrap();
 
-        let mut doc = doc.read().unwrap();
+        let mut doc = doc.write().unwrap();
         let txt = doc.get_or_insert_text("test");
         let len = txt.len(&doc.transact());
         assert_eq!(len, 20);

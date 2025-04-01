@@ -14,13 +14,13 @@ use crate::{Doc, StateVector, Update};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";
 
-pub fn exchange_updates(docs: &[&mut Doc]) {
+pub fn exchange_updates<const N: usize>(mut docs: [&mut Doc; N]) {
     for i in 0..docs.len() {
         for j in 0..docs.len() {
             if i != j {
-                let a = docs[i];
+                let a = unsafe { docs.as_ptr().add(i).as_ref().unwrap() };
                 let ta = a.transact();
-                let b = docs[j];
+                let b = unsafe { docs.as_mut_ptr().add(i).as_mut().unwrap() };
                 let mut tb = b.transact_mut_with(EXCHANGE_UPDATES_ORIGIN);
 
                 let sv = tb.state_vector().encode_v1();

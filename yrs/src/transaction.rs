@@ -318,7 +318,7 @@ impl<'doc> Drop for TransactionMut<'doc> {
 }
 
 impl<'doc> TransactionMut<'doc> {
-    pub(crate) fn new(doc: &mut Doc, origin: Option<Origin>) -> Self {
+    pub(crate) fn new(doc: &'doc mut Doc, origin: Option<Origin>) -> Self {
         let begin_timestamp = doc.store.blocks.get_state_vector();
         TransactionMut {
             doc,

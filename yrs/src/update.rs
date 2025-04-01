@@ -1019,7 +1019,7 @@ impl Into<Store> for Update {
     fn into(self) -> Store {
         use crate::doc::Options;
 
-        let mut store = Store::new(&Options::with_client_id(0));
+        let mut store = Store::new(Options::with_client_id(0));
         for (_, vec) in self.blocks.clients {
             for block in vec {
                 if let BlockCarrier::Item(block) = block {
@@ -1207,7 +1207,7 @@ mod test {
         // the same output as sequence of updates applied individually
         let u12 = Update::merge_updates(vec![u1, u2]);
 
-        let d3 = Doc::with_client_id(3);
+        let mut d3 = Doc::with_client_id(3);
         let txt3 = d3.get_or_insert_text("test");
         let mut t3 = d3.transact_mut();
         t3.apply_update(u12).unwrap();
@@ -1332,7 +1332,6 @@ mod test {
                 let mut lock = server_updates.lock().unwrap();
                 lock.push(update.update.clone());
             })
-            .unwrap()
         };
         let txt = d0.get_or_insert_text("textBlock");
         txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("r")]);

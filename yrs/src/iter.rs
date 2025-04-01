@@ -547,11 +547,11 @@ where
 mod test {
     use crate::iter::{BlockIterator, BlockSliceIterator, IntoBlockIter, TxnIterator};
     use crate::test_utils::exchange_updates;
-    use crate::{Array, Assoc, Doc, StickyIndex, Transact, ID};
+    use crate::{Array, Assoc, Doc, StickyIndex, ID};
 
     #[test]
     fn move_last_elem_iter() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
         let mut txn = doc.transact_mut();
         array.insert_range(&mut txn, 0, [1, 2, 3]);
@@ -570,10 +570,10 @@ mod test {
 
     #[test]
     fn move_1() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let a2 = d2.get_or_insert_array("array");
 
         {
@@ -590,7 +590,7 @@ mod test {
             assert_eq!(i.next(&txn), None);
         }
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates([&mut d1, &mut d2]);
         {
             let txn = d2.transact();
             let mut i = a2.as_ref().start.to_iter().moved().slices().values();
@@ -614,10 +614,10 @@ mod test {
 
     #[test]
     fn move_2() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let a2 = d2.get_or_insert_array("array");
 
         a1.insert_range(&mut d1.transact_mut(), 0, [1, 2]);
@@ -630,7 +630,7 @@ mod test {
             assert_eq!(i.next(&txn), None);
         }
 
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         {
             let txn = d2.transact();
@@ -652,14 +652,14 @@ mod test {
 
     #[test]
     fn move_cycles() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let a1 = d1.get_or_insert_array("array");
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let a2 = d2.get_or_insert_array("array");
 
         a1.insert_range(&mut d1.transact_mut(), 0, [1, 2, 3, 4]);
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates([&mut d1, &mut d2]);
 
         a1.move_range_to(&mut d1.transact_mut(), 0, Assoc::After, 1, Assoc::Before, 3);
         {
@@ -683,8 +683,8 @@ mod test {
             assert_eq!(i.next(&txn), None);
         }
 
-        exchange_updates(&[&d1, &d2]);
-        exchange_updates(&[&d1, &d2]); // move cycles may not be detected within a single update exchange
+        exchange_updates([&mut d1, &mut d2]);
+        exchange_updates([&mut d1, &mut d2]); // move cycles may not be detected within a single update exchange
 
         let t1 = d1.transact();
         let v1: Vec<_> = a1
@@ -710,7 +710,7 @@ mod test {
 
     #[test]
     fn range_bounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -733,7 +733,7 @@ mod test {
 
     #[test]
     fn range_left_exclusive() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -756,7 +756,7 @@ mod test {
 
     #[test]
     fn range_left_exclusive_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -779,7 +779,7 @@ mod test {
 
     #[test]
     fn range_right_exclusive() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -802,7 +802,7 @@ mod test {
 
     #[test]
     fn range_right_exclusive_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -825,7 +825,7 @@ mod test {
 
     #[test]
     fn range_unbounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -851,7 +851,7 @@ mod test {
 
     #[test]
     fn range_left_unbounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -874,7 +874,7 @@ mod test {
 
     #[test]
     fn range_right_unbounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -897,7 +897,7 @@ mod test {
 
     #[test]
     fn range_single_slice() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
