@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::xml::XmlTextEvent;
-use yrs::types::TYPE_REFS_XML_TEXT;
+use yrs::types::{Attrs, TYPE_REFS_XML_TEXT};
 use yrs::{
     DeepObservable, GetString, Observable, Quotable, Text, Transaction as YTransaction, Xml,
     XmlTextRef,
@@ -378,7 +378,7 @@ impl YXmlText {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
             SharedCollection::Integrated(c) => c.transact(|c, txn| {
-                c.insert_attribute(txn, name, value);
+                c.insert_attribute(txn, name, Js::new(value));
                 Ok(())
             }),
         }
@@ -390,15 +390,16 @@ impl YXmlText {
     pub fn get_attribute(&self, name: &str) -> crate::Result<JsValue> {
         match &self.0 {
             SharedCollection::Integrated(c) => {
-                c.transact(|c, txn| Ok(c.get_attribute(txn, name)))?
-            }
-            SharedCollection::Integrated(c) => c.readonly(txn, |c, txn| {
-                let value = c.get_attribute(txn, name);
-                match value {
+                c.transact(|node, txn| match node.get_attribute(txn, name) {
                     None => Ok(JsValue::UNDEFINED),
-                    Some(any) => Ok(Js::from_value(&any, txn.doc()).into()),
-                }
-            }),
+                    Some(out) => Ok(Js::from_value(&out, &c.doc).into()),
+                })
+            }
+            SharedCollection::Prelim(c) => Ok(c
+                .attributes
+                .get(name)
+                .map(|value| Js::from_any(value).into())
+                .unwrap_or(JsValue::UNDEFINED)),
         }
     }
 
@@ -425,13 +426,13 @@ impl YXmlText {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(JsValue::from_serde(&c.attributes)
                 .map_err(|_| JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))?),
-            SharedCollection::Integrated(c) => c.transact(|c, txn| {
+            SharedCollection::Integrated(c) => c.transact(|node, txn| {
                 let map = js_sys::Object::new();
-                for (name, value) in c.attributes(txn) {
+                for (name, value) in node.attributes(txn) {
                     js_sys::Reflect::set(
                         &map,
                         &JsValue::from_str(name),
-                        &Js::from_value(&value, txn.doc()).into(),
+                        &Js::from_value(&value, &c.doc).into(),
                     )?;
                 }
                 Ok(map.into())

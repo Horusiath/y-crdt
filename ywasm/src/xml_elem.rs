@@ -272,7 +272,7 @@ impl YXmlElement {
                 }
             }
             SharedCollection::Integrated(c) => c.transact(|c, txn| {
-                c.insert_attribute(txn, name, value);
+                c.insert_attribute(txn, name, Js::new(value));
                 Ok(())
             }),
         }
@@ -283,14 +283,15 @@ impl YXmlElement {
     #[wasm_bindgen(js_name = getAttribute)]
     pub fn get_attribute(&self, name: &str) -> crate::Result<JsValue> {
         match &self.0 {
-            SharedCollection::Integrated(c) => {
-                c.transact(|c, txn| Ok(c.get_attribute(txn, name)))?
-            }
-            SharedCollection::Integrated(c) => c.readonly(txn, |c, txn| {
-                let value = c.get_attribute(txn, name);
+            SharedCollection::Prelim(c) => match c.attributes.get(name) {
+                None => Ok(JsValue::UNDEFINED),
+                Some(value) => Ok(Js::from_any(value).into()),
+            },
+            SharedCollection::Integrated(c) => c.transact(|node, txn| {
+                let value = node.get_attribute(txn, name);
                 match value {
                     None => Ok(JsValue::UNDEFINED),
-                    Some(out) => Ok(Js::from_value(&out, txn.doc()).into()),
+                    Some(out) => Ok(Js::from_value(&out, &c.doc).into()),
                 }
             }),
         }
@@ -319,13 +320,13 @@ impl YXmlElement {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(JsValue::from_serde(&c.attributes)
                 .map_err(|_| JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))?),
-            SharedCollection::Integrated(c) => c.transact(|c, txn| {
+            SharedCollection::Integrated(c) => c.transact(|node, txn| {
                 let map = js_sys::Object::new();
-                for (name, value) in c.attributes(txn) {
+                for (name, value) in node.attributes(txn) {
                     js_sys::Reflect::set(
                         &map,
                         &JsValue::from_str(name),
-                        &Js::from_value(&value, txn.doc()).into(),
+                        &Js::from_value(&value, &c.doc).into(),
                     )?;
                 }
                 Ok(map.into())

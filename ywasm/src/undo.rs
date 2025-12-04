@@ -21,14 +21,14 @@ pub struct YUndoManager {
 }
 
 impl YUndoManager {
-    fn get_scope(doc: &crate::Doc, js: &JsValue) -> Result<BranchPtr> {
+    fn get_scope(doc: &mut crate::Doc, js: &JsValue) -> Result<BranchPtr> {
         let shared = Shared::from_ref(js)?;
         let branch_id = if let Some(id) = shared.branch_id() {
             id
         } else {
             return Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP));
         };
-        let doc = doc.instance.borrow_mut();
+        let doc = doc.borrow_mut();
         let txn = doc.transact();
         match branch_id.get_branch(&txn) {
             Some(branch) if !branch.is_deleted() => Ok(branch),
@@ -40,7 +40,7 @@ impl YUndoManager {
 #[wasm_bindgen]
 impl YUndoManager {
     #[wasm_bindgen(constructor)]
-    pub fn new(doc: &crate::Doc, scope: JsValue, options: JsValue) -> Result<YUndoManager> {
+    pub fn new(doc: &mut crate::Doc, scope: JsValue, options: JsValue) -> Result<YUndoManager> {
         let scope = Self::get_scope(doc, &scope)?;
         let mut o = yrs::undo::Options {
             capture_timeout_millis: 500,
@@ -68,11 +68,7 @@ impl YUndoManager {
         }
         let doc = doc.clone();
 
-        let manager = yrs::undo::UndoManager::with_scope_and_options(
-            &mut doc.instance.borrow_mut(),
-            &scope,
-            o,
-        );
+        let manager = yrs::undo::UndoManager::with_scope_and_options(doc.borrow_mut(), &scope, o);
         Ok(Self { manager, doc })
     }
 
@@ -97,8 +93,8 @@ impl YUndoManager {
 
     #[wasm_bindgen(js_name = clear)]
     pub fn clear(&mut self) {
-        let doc = self.doc.instance.borrow();
-        self.manager.clear(&doc);
+        let doc = self.doc.borrow();
+        self.manager.clear(doc);
     }
 
     #[wasm_bindgen(js_name = stopCapturing)]
@@ -108,14 +104,14 @@ impl YUndoManager {
 
     #[wasm_bindgen(js_name = undo)]
     pub fn undo(&mut self) -> bool {
-        let mut doc = self.doc.instance.borrow_mut();
-        self.manager.undo(&mut doc)
+        let mut doc = self.doc.borrow_mut();
+        self.manager.undo(doc)
     }
 
     #[wasm_bindgen(js_name = redo)]
     pub fn redo(&mut self) -> bool {
-        let mut doc = self.doc.instance.borrow_mut();
-        self.manager.redo(&mut doc)
+        let mut doc = self.doc.borrow_mut();
+        self.manager.redo(doc)
     }
 
     #[wasm_bindgen(getter, js_name = canUndo)]

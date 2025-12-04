@@ -26,7 +26,7 @@ impl Awareness {
 
     #[wasm_bindgen(getter, js_name = doc)]
     pub fn doc(&self) -> Doc {
-        Doc(self.inner.doc().clone())
+        self.inner.doc().clone()
     }
 
     #[wasm_bindgen(getter, js_name = meta)]

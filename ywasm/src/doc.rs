@@ -427,9 +427,9 @@ impl Doc {
         let jpath = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let result: Vec<_> =
             self.transact(JsValue::UNDEFINED, |txn| txn.json_path(&jpath).collect());
-        let mut array = js_sys::Array::new();
+        let array = js_sys::Array::new();
         for res in result {
-            array.push(&Js::from_value(&res, self.clone()).into());
+            array.push(&Js::from_value(&res, self).into());
         }
         Ok(array)
     }
@@ -454,7 +454,7 @@ impl Doc {
         let jpath = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let result = self.transact(JsValue::UNDEFINED, |txn| txn.json_path(&jpath).next());
         match result {
-            Some(value) => Ok(Js::from_value(&value, self.clone()).into()),
+            Some(value) => Ok(Js::from_value(&value, self).into()),
             None => Ok(JsValue::UNDEFINED),
         }
     }
@@ -471,15 +471,15 @@ pub struct YSubdocsEvent {
 impl YSubdocsEvent {
     fn new(e: &yrs::SubdocsEvent) -> Self {
         let added = js_sys::Array::from_iter(e.added().into_iter().map(|doc| {
-            let js: JsValue = Doc::from(doc.clone()).into();
+            let js: JsValue = Doc::from(doc).into();
             js
         }));
         let removed = js_sys::Array::from_iter(e.removed().into_iter().map(|doc| {
-            let js: JsValue = Doc::from(doc.clone()).into();
+            let js: JsValue = Doc::from(doc).into();
             js
         }));
         let loaded = js_sys::Array::from_iter(e.loaded().into_iter().map(|doc| {
-            let js: JsValue = Doc::from(doc.clone()).into();
+            let js: JsValue = Doc::from(doc).into();
             js
         }));
         YSubdocsEvent {

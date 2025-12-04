@@ -185,13 +185,10 @@ impl YArray {
                 Some(item) => Ok(item.clone()),
                 None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
             },
-            SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| match c.get(txn, index) {
-                    Some(item) => Ok(Js::from_value(&item, doc).into()),
-                    None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
-                })
-            }
+            SharedCollection::Integrated(c) => c.transact(|node, txn| match node.get(txn, index) {
+                Some(item) => Ok(Js::from_value(&item, &c.doc).into()),
+                None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
+            }),
         }
     }
 
@@ -245,16 +242,13 @@ impl YArray {
     pub fn values(&self) -> Result<JsValue> {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(js_sys::Array::from_iter(c).into()),
-            SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
-                    let a = js_sys::Array::new();
-                    for item in c.iter(txn) {
-                        a.push(&Js::from_value(&item, doc.clone()));
-                    }
-                    Ok(a.into())
-                })
-            }
+            SharedCollection::Integrated(c) => c.transact(|node, txn| {
+                let a = js_sys::Array::new();
+                for item in node.iter(txn) {
+                    a.push(&Js::from_value(&item, &c.doc));
+                }
+                Ok(a.into())
+            }),
         }
     }
 

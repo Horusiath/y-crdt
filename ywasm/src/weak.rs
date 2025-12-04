@@ -88,20 +88,17 @@ impl YWeakLink {
                     .transact(JsValue::UNDEFINED, |tx| weak_ref.try_deref_raw(tx));
                 match value {
                     None => Ok(JsValue::UNDEFINED),
-                    Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
+                    Some(value) => Ok(Js::from_value(&value, &c.doc).into()),
                 }
             }
-            SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|weak_ref, txn| {
-                    let weak_ref: WeakRef<MapRef> = WeakRef::from(weak_ref.clone());
-                    let value = weak_ref.try_deref_value(txn);
-                    match value {
-                        None => Ok(JsValue::UNDEFINED),
-                        Some(value) => Ok(Js::from_value(&value, doc).into()),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.transact(|weak_ref, txn| {
+                let weak_ref: WeakRef<MapRef> = WeakRef::from(weak_ref.clone());
+                let value = weak_ref.try_deref_value(txn);
+                match value {
+                    None => Ok(JsValue::UNDEFINED),
+                    Some(value) => Ok(Js::from_value(&value, &c.doc).into()),
+                }
+            }),
         }
     }
 
@@ -112,25 +109,21 @@ impl YWeakLink {
 
         match &self.0 {
             SharedCollection::Prelim(c) => {
-                let doc = c.doc.clone();
                 let weak_ref: WeakPrelim<ArrayRef> = WeakPrelim::from(c.prelim.clone());
                 c.doc.transact(JsValue::UNDEFINED, |tx| {
                     let values = weak_ref
                         .unquote(tx)
-                        .map(|value| Js::from_value(&value, doc.clone()));
+                        .map(|value| Js::from_value(&value, &c.doc));
                     Ok(js_sys::Array::from_iter(values))
                 })
             }
-            SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|weak_ref, txn| {
-                    let weak_ref: WeakRef<ArrayRef> = WeakRef::from(weak_ref.clone());
-                    let iter = weak_ref
-                        .unquote(txn)
-                        .map(|value| Js::from_value(&value, doc.clone()));
-                    Ok(js_sys::Array::from_iter(iter))
-                })
-            }
+            SharedCollection::Integrated(c) => c.transact(|weak_ref, txn| {
+                let weak_ref: WeakRef<ArrayRef> = WeakRef::from(weak_ref.clone());
+                let iter = weak_ref
+                    .unquote(txn)
+                    .map(|value| Js::from_value(&value, &c.doc));
+                Ok(js_sys::Array::from_iter(iter))
+            }),
         }
     }
 

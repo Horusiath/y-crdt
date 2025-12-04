@@ -148,16 +148,13 @@ impl YMap {
                 let value = c.get(key);
                 Ok(value.cloned().unwrap_or(JsValue::UNDEFINED))
             }
-            SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
-                    let value = c.get(txn, key);
-                    match value {
-                        None => Ok(JsValue::UNDEFINED),
-                        Some(value) => Ok(Js::from_value(&value, doc).into()),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.transact(|node, txn| {
+                let value = node.get(txn, key);
+                match value {
+                    None => Ok(JsValue::UNDEFINED),
+                    Some(value) => Ok(Js::from_value(&value, &c.doc).into()),
+                }
+            }),
         }
     }
 
@@ -211,17 +208,14 @@ impl YMap {
                 }
                 Ok(map.into())
             }
-            SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
-                    let map = js_sys::Object::new();
-                    for (k, v) in c.iter(txn) {
-                        let value = Js::from_value(&v, doc.clone());
-                        js_sys::Reflect::set(&map, &k.into(), &value.into())?;
-                    }
-                    Ok(map.into())
-                })
-            }
+            SharedCollection::Integrated(c) => c.transact(|node, txn| {
+                let map = js_sys::Object::new();
+                for (k, v) in node.iter(txn) {
+                    let value = Js::from_value(&v, &c.doc);
+                    js_sys::Reflect::set(&map, &k.into(), &value.into())?;
+                }
+                Ok(map.into())
+            }),
         }
     }
 

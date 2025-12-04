@@ -17,6 +17,7 @@ use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::{Branch, BranchPtr};
+use yrs::out::FromOut;
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
     TypeRef, TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
@@ -93,21 +94,27 @@ impl Js {
         })
     }
 
-    pub fn from_value(value: &Out, doc: crate::Doc) -> Self {
+    pub fn from_value(value: &Out, doc: &crate::Doc) -> Self {
         match value {
             Out::Any(any) => Self::from_any(any),
-            Out::Text(c) => Js(YText(SharedCollection::integrated(c.clone(), doc)).into()),
-            Out::Map(c) => Js(YMap(SharedCollection::integrated(c.clone(), doc)).into()),
-            Out::Array(c) => Js(YArray(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::Text(c) => Js(YText(SharedCollection::integrated(c.clone(), doc.clone())).into()),
+            Out::Map(c) => Js(YMap(SharedCollection::integrated(c.clone(), doc.clone())).into()),
+            Out::Array(c) => {
+                Js(YArray(SharedCollection::integrated(c.clone(), doc.clone())).into())
+            }
             Out::SubDoc(doc) => Js(Doc(doc).into()),
-            Out::WeakLink(c) => Js(YWeakLink(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::WeakLink(c) => {
+                Js(YWeakLink(SharedCollection::integrated(c.clone(), doc.clone())).into())
+            }
             Out::XmlElement(c) => {
-                Js(YXmlElement(SharedCollection::integrated(c.clone(), doc)).into())
+                Js(YXmlElement(SharedCollection::integrated(c.clone(), doc.clone())).into())
             }
             Out::XmlFragment(c) => {
-                Js(YXmlFragment(SharedCollection::integrated(c.clone(), doc)).into())
+                Js(YXmlFragment(SharedCollection::integrated(c.clone(), doc.clone())).into())
             }
-            Out::XmlText(c) => Js(YXmlText(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::XmlText(c) => {
+                Js(YXmlText(SharedCollection::integrated(c.clone(), doc.clone())).into())
+            }
             Out::UndefinedRef(_) => Js(JsValue::UNDEFINED),
         }
     }
@@ -376,7 +383,7 @@ impl Prelim for Shared {
         let doc = txn.doc().clone();
         match self {
             Shared::Text(mut cell) => {
-                let text = TextRef::from(inner_ref);
+                let text = TextRef::from_item(inner_ref, txn).unwrap();
                 if let YText(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YText(SharedCollection::Integrated(Integrated::new(
@@ -402,7 +409,7 @@ impl Prelim for Shared {
                 }
             }
             Shared::Array(mut cell) => {
-                let array = ArrayRef::from(inner_ref);
+                let array = ArrayRef::from_item(inner_ref, txn).unwrap();
                 if let YArray(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YArray(SharedCollection::Integrated(Integrated::new(
@@ -597,7 +604,7 @@ pub(crate) mod convert {
         match change {
             Change::Added(values) => {
                 let mut array = js_sys::Array::new();
-                array.extend(values.iter().map(|v| Js::from_value(v, doc)));
+                array.extend(values.iter().map(|v| Js::from_value(v, doc.clone())));
                 js_sys::Reflect::set(&result, &JsValue::from("insert"), &array).unwrap();
             }
             Change::Removed(len) => {

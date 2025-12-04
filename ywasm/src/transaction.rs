@@ -204,7 +204,7 @@ impl Transaction {
                 }
                 TypeRef::SubDoc => match b.as_subdoc() {
                     None => JsValue::UNDEFINED,
-                    Some(doc) => Doc(doc).into(),
+                    Some(doc) => crate::Doc::from(doc).into(),
                 },
                 TypeRef::XmlHook | TypeRef::Undefined => JsValue::UNDEFINED,
             },
@@ -216,7 +216,7 @@ impl Transaction {
     /// ywasm transactions are auto-committed when they are `free`d.
     #[wasm_bindgen(js_name = commit)]
     pub fn commit(&mut self) -> Result<()> {
-        self.execute_deref(|tx| tx.commit());
+        self.inner.execute_deref(|tx| tx.commit());
         Ok(())
     }
 
@@ -360,7 +360,8 @@ impl Transaction {
     }
 
     fn try_apply(&mut self, update: Update) -> Result<()> {
-        self.execute_deref(|tx| tx.apply_update(update))
+        self.inner
+            .execute_deref(|tx| tx.apply_update(update))
             .map_err(|e| JsValue::from(e.to_string()))
     }
 
@@ -416,8 +417,7 @@ impl Transaction {
     /// with `gc` option turned on or off.
     #[wasm_bindgen(js_name = gc)]
     pub fn gc(&mut self) -> Result<()> {
-        let txn = self.as_mut()?;
-        txn.gc(None);
+        self.inner.execute_deref(|tx| tx.gc(None));
         Ok(())
     }
 
@@ -468,11 +468,12 @@ impl Transaction {
     #[wasm_bindgen(js_name = selectOne)]
     pub fn select_one(&self, json_path: &str) -> Result<JsValue> {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let doc = self.doc().clone();
         let txn = self.as_deref();
         let mut iter = txn.json_path(&query);
         match iter.next() {
             None => Ok(JsValue::UNDEFINED),
-            Some(value) => Ok(Js::from_value(&value, txn.doc()).into()),
+            Some(value) => Ok(Js::from_value(&value, doc).into()),
         }
     }
 }
