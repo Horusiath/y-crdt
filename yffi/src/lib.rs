@@ -623,7 +623,7 @@ pub unsafe extern "C" fn ytransaction_subdocs(
 ) -> *mut *mut Doc {
     let txn = txn.as_ref().unwrap();
     let subdocs: Vec<_> = txn
-        .subdocs()
+        .subdoc_refs()
         .map(|doc| doc.deref() as *const Doc as *mut Doc)
         .collect();
     let out = subdocs.into_boxed_slice();

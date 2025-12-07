@@ -439,12 +439,12 @@ impl Transaction {
     #[wasm_bindgen(js_name = selectAll)]
     pub fn select_all(&self, json_path: &str) -> Result<js_sys::Array> {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let doc = self.doc().doc.clone();
+        let doc = self.doc();
         let txn = self.as_deref();
         let mut iter = txn.json_path(&query);
         let result = js_sys::Array::new();
         while let Some(value) = iter.next() {
-            let value: JsValue = Js::from_value(&value, doc.clone()).into();
+            let value: JsValue = Js::from_value(&value, &doc.doc).into();
             result.push(&value);
         }
         Ok(result)
@@ -473,7 +473,7 @@ impl Transaction {
         let mut iter = txn.json_path(&query);
         match iter.next() {
             None => Ok(JsValue::UNDEFINED),
-            Some(value) => Ok(Js::from_value(&value, doc).into()),
+            Some(value) => Ok(Js::from_value(&value, &doc.doc).into()),
         }
     }
 }

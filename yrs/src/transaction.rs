@@ -1,7 +1,7 @@
 use crate::block::{Item, ItemContent, ItemPosition, ItemPtr, Prelim, ID};
 use crate::branch::{Branch, BranchPtr};
 use crate::cell::Cell;
-use crate::doc::{SubDocHook, SubdocsIter};
+use crate::doc::{SubDocHook, SubdocRefs};
 use crate::error::{Error, UpdateError};
 use crate::event::SubdocsEvent;
 use crate::gc::GCCollector;
@@ -488,9 +488,9 @@ impl<'a> Transaction<&'a Doc> {
     }
 
     /// Returns a collection of sub documents linked within the structures of this document store.
-    pub fn subdocs(&self) -> SubdocsIter<'_> {
+    pub fn subdoc_refs(&self) -> SubdocRefs<'_> {
         let doc = self.doc();
-        SubdocsIter::new(&self, &doc.subdocs)
+        SubdocRefs::new(&self, &doc.subdocs)
     }
 
     /// Returns a [TextRef] data structure stored under a given `name`. Text structures are used for

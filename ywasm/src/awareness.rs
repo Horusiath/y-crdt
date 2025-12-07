@@ -14,18 +14,19 @@ use crate::js::{Callback, Js};
 #[wasm_bindgen]
 pub struct Awareness {
     inner: YAwareness,
+    doc: crate::Doc,
 }
 
 #[wasm_bindgen]
 impl Awareness {
     #[wasm_bindgen(constructor)]
     pub fn new(doc: crate::Doc) -> Awareness {
-        let inner = YAwareness::with_clock(doc.clone(), JsClock);
-        Awareness { inner }
+        let inner = YAwareness::with_clock(doc, JsClock);
+        Awareness { inner, doc }
     }
 
     #[wasm_bindgen(getter, js_name = doc)]
-    pub fn doc(&self) -> Doc {
+    pub fn doc(&self) -> crate::Doc {
         self.inner.doc().clone()
     }
 

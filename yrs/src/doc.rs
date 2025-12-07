@@ -601,7 +601,7 @@ impl std::fmt::Display for DocId {
 
 pub struct SubDoc<'tx> {
     parent_txn: &'tx Transaction<'tx>,
-    subdoc: CellRef<'tx, Box<dyn DocLike>>,
+    subdoc_ref: CellRef<'tx, Box<dyn DocLike>>,
 }
 
 impl<'tx> SubDoc<'tx> {
@@ -609,7 +609,10 @@ impl<'tx> SubDoc<'tx> {
         parent_txn: &'tx Transaction<'tx>,
         subdoc: CellRef<'tx, Box<dyn DocLike>>,
     ) -> Self {
-        SubDoc { parent_txn, subdoc }
+        SubDoc {
+            parent_txn,
+            subdoc_ref: subdoc,
+        }
     }
 
     pub fn parent_txn(&self) -> &'tx Transaction<'tx> {
@@ -621,7 +624,7 @@ impl<'tx> Deref for SubDoc<'tx> {
     type Target = Doc;
 
     fn deref(&self) -> &Self::Target {
-        self.subdoc.deref().doc()
+        self.subdoc_ref.deref().doc()
     }
 }
 
@@ -666,24 +669,24 @@ impl<'tx> DerefMut for SubDocMut<'tx> {
     }
 }
 
-pub struct SubdocsIter<'tx> {
+pub struct SubdocRefs<'tx> {
     txn: &'tx Transaction<'tx>,
     inner: std::collections::hash_set::Iter<'tx, (DocId, ID)>,
 }
 
-impl<'tx> SubdocsIter<'tx> {
+impl<'tx> SubdocRefs<'tx> {
     pub(crate) fn new(
         txn: &'tx Transaction,
         subdocs: &'tx std::collections::HashSet<(DocId, ID)>,
     ) -> Self {
-        SubdocsIter {
+        SubdocRefs {
             txn,
             inner: subdocs.iter(),
         }
     }
 }
 
-impl<'tx> Iterator for SubdocsIter<'tx> {
+impl<'tx> Iterator for SubdocRefs<'tx> {
     type Item = SubDoc<'tx>;
 
     fn next(&mut self) -> Option<Self::Item> {
