@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{hash_map, HashMap};
 use std::fmt::Formatter;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use thiserror::Error;
 
 use crate::block::ClientID;
+use crate::doc::DocLike;
 use crate::sync::{Clock, Timestamp};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
@@ -34,6 +36,10 @@ type AwarenessUpdateFn = Box<dyn Fn(&Awareness, &Event, Option<&Origin>) + 'stat
 /// Before a client disconnects, it should propagate a `null` state with an updated clock.
 pub struct Awareness {
     doc: Doc,
+    state: AwarenessState,
+}
+
+pub struct AwarenessState {
     states: HashMap<ClientID, ClientState>,
     clock: Arc<dyn Clock>,
     on_update: Observer<AwarenessUpdateFn>,
@@ -56,13 +62,13 @@ impl Awareness {
     where
         C: Clock + 'static,
     {
-        Awareness {
-            doc,
+        let state = AwarenessState {
             states: HashMap::new(),
             clock: Arc::new(clock),
             on_update: Observer::new(),
             on_change: Observer::new(),
-        }
+        };
+        Awareness { doc, state }
     }
 
     /// Returns a channel receiver for an incoming awareness events. This channel can be cloned.
@@ -157,16 +163,6 @@ impl Awareness {
         self.on_change.unsubscribe(&key.into())
     }
 
-    /// Returns a read-only reference to an underlying [Doc].
-    pub fn doc(&self) -> &Doc {
-        &self.doc
-    }
-
-    /// Returns a read-write reference to an underlying [Doc].
-    pub fn doc_mut(&mut self) -> &mut Doc {
-        &mut self.doc
-    }
-
     /// Returns a globally unique client ID of an underlying [Doc].
     pub fn client_id(&self) -> ClientID {
         self.doc.client_id()
@@ -194,7 +190,7 @@ impl Awareness {
 
     /// Clears out a state of a given client, effectively marking it as disconnected.
     pub fn remove_state(&mut self, client_id: ClientID) {
-        let is_removed = match self.states.entry(client_id) {
+        let is_removed = match self.state.states.entry(client_id) {
             Entry::Occupied(mut e) => {
                 let state = e.get_mut();
                 state.data = None;
@@ -202,7 +198,7 @@ impl Awareness {
                 true
             }
             Entry::Vacant(e) => {
-                e.insert(ClientState::new(1, self.clock.now(), None));
+                e.insert(ClientState::new(1, self.state.clock.now(), None));
                 false
             }
         };
@@ -229,8 +225,7 @@ impl Awareness {
     /// Clears out a state of a current client (see: [Awareness::client_id]),
     /// effectively marking it as disconnected.
     pub fn clean_local_state(&mut self) {
-        let client_id = self.doc.client_id();
-        self.remove_state(client_id);
+        self.remove_state(self.doc.client_id());
     }
 
     /// Sets a current [Awareness] instance state to a corresponding JSON string. This state will
@@ -405,7 +400,7 @@ impl Awareness {
             } else {
                 Some(entry.json)
             };
-            match self.states.entry(client_id) {
+            match self.state.states.entry(client_id) {
                 Entry::Occupied(mut e) => {
                     let state: &mut ClientState = e.get_mut();
                     let is_removed = state.clock == clock && new.is_none() && state.data.is_some();
@@ -476,6 +471,34 @@ impl Awareness {
         } else {
             Ok(None)
         }
+    }
+}
+
+impl Deref for Awareness {
+    type Target = AwarenessState;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for Awareness {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl DocLike for Awareness {
+    #[inline]
+    fn doc(&self) -> &Doc {
+        &self.doc
+    }
+
+    #[inline]
+    fn doc_mut(&mut self) -> &mut Doc {
+        &mut self.doc
     }
 }
 

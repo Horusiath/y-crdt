@@ -205,3 +205,100 @@ impl<S> Cell<S> {
         std::rc::Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
+
+pub trait RefProvider<T> {
+    type Ref<'a>: Deref<Target = T>
+    where
+        Self: 'a;
+
+    fn get_ref(&self) -> Self::Ref<'_>;
+}
+
+pub trait MutProvider<T>: RefProvider<T> {
+    type Mut<'a>: DerefMut<Target = T>
+    where
+        Self: 'a;
+
+    fn get_mut(&mut self) -> Self::Mut<'_>;
+}
+
+impl<T> RefProvider<T> for T {
+    type Ref<'a>
+        = &'a T
+    where
+        Self: 'a;
+
+    #[inline]
+    fn get_ref(&self) -> Self::Ref<'_> {
+        self
+    }
+}
+
+impl<T> MutProvider<T> for T {
+    type Mut<'a>
+        = &'a mut T
+    where
+        Self: 'a;
+
+    #[inline]
+    fn get_mut(&mut self) -> Self::Mut<'_> {
+        self
+    }
+}
+
+impl<'t, T> RefProvider<T> for &'t T {
+    type Ref<'a>
+        = &'a T
+    where
+        Self: 'a;
+
+    #[inline]
+    fn get_ref(&self) -> Self::Ref<'_> {
+        self
+    }
+}
+
+impl<'t, T> RefProvider<T> for &'t mut T {
+    type Ref<'a>
+        = &'a T
+    where
+        Self: 'a;
+
+    #[inline]
+    fn get_ref(&self) -> Self::Ref<'_> {
+        self
+    }
+}
+impl<'t, T> MutProvider<T> for &'t mut T {
+    type Mut<'a>
+        = &'a mut T
+    where
+        Self: 'a;
+
+    #[inline]
+    fn get_mut(&mut self) -> Self::Mut<'_> {
+        self
+    }
+}
+
+impl<T> RefProvider<T> for Cell<T> {
+    type Ref<'a>
+        = CellRef<'a, T>
+    where
+        Self: 'a;
+
+    fn get_ref(&self) -> Self::Ref<'_> {
+        self.borrow()
+    }
+}
+
+impl<T> MutProvider<T> for Cell<T> {
+    type Mut<'a>
+        = CellMut<'a, T>
+    where
+        Self: 'a;
+
+    fn get_mut(&mut self) -> Self::Mut<'_> {
+        self.borrow_mut()
+    }
+}

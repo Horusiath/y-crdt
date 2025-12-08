@@ -19,7 +19,7 @@ use wasm_bindgen::JsValue;
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options};
+use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDoc};
 
 /// A ywasm document type. Documents are most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
@@ -96,6 +96,10 @@ impl DerefMut for DocState {
 }
 
 impl Doc {
+    pub fn from_subdoc(subdoc: &SubDocHook, parent: crate::Doc) -> Self {
+        todo!()
+    }
+
     pub(crate) fn transact<F, T>(&self, origin: JsValue, f: F) -> T
     where
         F: FnOnce(&mut YTransaction<&mut yrs::Doc>) -> T,

@@ -1,10 +1,11 @@
+use crate::doc::DocLike;
 use crate::encoding::read;
 use crate::encoding::read::Cursor;
 use crate::error::UpdateError;
 use crate::sync::{awareness, Awareness, AwarenessUpdate};
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{StateVector, Update};
+use crate::{Doc, StateVector, Update};
 use smallvec::SmallVec;
 use thiserror::Error;
 /*
@@ -32,45 +33,50 @@ use thiserror::Error;
  stringify[messageType] stringifies a message definition (messageType is already read from the buffer)
 */
 
-/// A default implementation of y-sync [Protocol].
-#[derive(Debug, Copy, Clone, Default)]
-pub struct DefaultProtocol;
+impl Protocol for Awareness {
+    #[inline]
+    fn awareness(&self) -> &Awareness {
+        self
+    }
 
-impl Protocol for DefaultProtocol {}
+    #[inline]
+    fn awareness_mut(&mut self) -> &mut Awareness {
+        self
+    }
+}
 
 /// Trait implementing a y-sync protocol. The default implementation can be found in
 /// [DefaultProtocol], but its implementation steps can be potentially changed by the user if
 /// necessary.
-pub trait Protocol {
+pub trait Protocol: DocLike {
+    fn awareness(&self) -> &Awareness;
+    fn awareness_mut(&mut self) -> &mut Awareness;
+
     /// To be called whenever a new connection has been accepted. Returns an encoded list of
     /// messages to be sent back to initiator. This binary may contain multiple messages inside,
     /// stored one after another.
-    fn start<E>(&self, awareness: &mut Awareness, encoder: &mut E) -> Result<(), Error>
+    fn start<E>(&mut self, reply: &mut E) -> Result<(), Error>
     where
         E: Encoder,
     {
         let (sv, update) = {
-            let sv = awareness.doc().transact().state_vector().clone();
-            let update = awareness.update()?;
+            let sv = self.doc().transact().state_vector().clone();
+            let update = self.awareness().update()?;
             (sv, update)
         };
-        Message::Sync(SyncMessage::SyncStep1(sv)).encode(encoder);
-        Message::Awareness(update).encode(encoder);
+        Message::Sync(SyncMessage::SyncStep1(sv)).encode(reply);
+        Message::Awareness(update).encode(reply);
         Ok(())
     }
 
     /// Y-sync protocol message handler.
-    fn handle(
-        &self,
-        awareness: &mut Awareness,
-        data: &[u8],
-    ) -> Result<SmallVec<[Message; 1]>, Error> {
+    fn handle(&mut self, data: &[u8]) -> Result<SmallVec<[Message; 1]>, Error> {
         let mut decoder = DecoderV1::new(Cursor::new(data));
         let mut reader = MessageReader::new(&mut decoder);
         let mut responses = SmallVec::new();
         while let Some(result) = reader.next() {
             let message = result?;
-            if let Some(response) = self.handle_message(awareness, message)? {
+            if let Some(response) = self.handle_message(message)? {
                 responses.push(response);
             }
         }
@@ -79,70 +85,50 @@ pub trait Protocol {
 
     /// Handles incoming y-sync [Message] within the context of current awareness structure.
     /// Returns an optional reply message that should be sent back to message sender.
-    fn handle_message(
-        &self,
-        awareness: &mut Awareness,
-        message: Message,
-    ) -> Result<Option<Message>, Error> {
+    fn handle_message(&mut self, message: Message) -> Result<Option<Message>, Error> {
         match message {
             Message::Sync(SyncMessage::SyncStep1(state_vector)) => {
-                self.handle_sync_step1(awareness, state_vector)
+                self.handle_sync_step1(state_vector)
             }
             Message::Sync(SyncMessage::SyncStep2(update)) => {
                 let update = Update::decode_v1(&update)?;
-                self.handle_sync_step2(awareness, update)
+                self.handle_sync_step2(update)
             }
             Message::Sync(SyncMessage::Update(update)) => {
                 let update = Update::decode_v1(&update)?;
-                self.handle_update(awareness, update)
+                self.handle_update(update)
             }
-            Message::Auth(deny_reason) => self.handle_auth(awareness, deny_reason),
-            Message::AwarenessQuery => self.handle_awareness_query(awareness),
-            Message::Awareness(update) => self.handle_awareness_update(awareness, update),
-            Message::Custom(tag, data) => self.missing_handle(awareness, tag, data),
+            Message::Auth(deny_reason) => self.handle_auth(deny_reason),
+            Message::AwarenessQuery => self.handle_awareness_query(),
+            Message::Awareness(update) => self.handle_awareness_update(update),
+            Message::Custom(tag, data) => self.missing_handle(tag, data),
         }
     }
 
     /// Y-sync protocol sync-step-1 - given a [StateVector] of a remote side, calculate missing
     /// updates. Returns a sync-step-2 message containing a calculated update.
-    fn handle_sync_step1(
-        &self,
-        awareness: &mut Awareness,
-        sv: StateVector,
-    ) -> Result<Option<Message>, Error> {
-        let update = awareness.doc().transact().encode_state_as_update_v1(&sv);
+    fn handle_sync_step1(&mut self, sv: StateVector) -> Result<Option<Message>, Error> {
+        let update = self.doc().transact().encode_state_as_update_v1(&sv);
         Ok(Some(Message::Sync(SyncMessage::SyncStep2(update))))
     }
 
     /// Handle reply for a sync-step-1 send from this replica previously. By default just apply
     /// an update to current `awareness` document instance.
-    fn handle_sync_step2(
-        &self,
-        awareness: &mut Awareness,
-        update: Update,
-    ) -> Result<Option<Message>, Error> {
-        let mut txn = awareness.doc_mut().transact_mut();
+    fn handle_sync_step2(&mut self, update: Update) -> Result<Option<Message>, Error> {
+        let mut txn = self.doc_mut().transact_mut();
         txn.apply_update(update)?;
         Ok(None)
     }
 
     /// Handle continuous update send from the client. By default just apply an update to a current
     /// `awareness` document instance.
-    fn handle_update(
-        &self,
-        awareness: &mut Awareness,
-        update: Update,
-    ) -> Result<Option<Message>, Error> {
-        self.handle_sync_step2(awareness, update)
+    fn handle_update(&mut self, update: Update) -> Result<Option<Message>, Error> {
+        self.handle_sync_step2(update)
     }
 
     /// Handle authorization message. By default if reason for auth denial has been provided,
     /// send back [Error::PermissionDenied].
-    fn handle_auth(
-        &self,
-        _awareness: &mut Awareness,
-        deny_reason: Option<String>,
-    ) -> Result<Option<Message>, Error> {
+    fn handle_auth(&mut self, deny_reason: Option<String>) -> Result<Option<Message>, Error> {
         if let Some(reason) = deny_reason {
             Err(Error::PermissionDenied { reason })
         } else {
@@ -152,30 +138,24 @@ pub trait Protocol {
 
     /// Returns an [AwarenessUpdate] which is a serializable representation of a current `awareness`
     /// instance.
-    fn handle_awareness_query(&self, awareness: &mut Awareness) -> Result<Option<Message>, Error> {
-        let update = awareness.update()?;
+    fn handle_awareness_query(&mut self) -> Result<Option<Message>, Error> {
+        let update = self.awareness().update()?;
         Ok(Some(Message::Awareness(update)))
     }
 
     /// Reply to awareness query or just incoming [AwarenessUpdate], where current `awareness`
     /// instance is being updated with incoming data.
     fn handle_awareness_update(
-        &self,
-        awareness: &mut Awareness,
+        &mut self,
         update: AwarenessUpdate,
     ) -> Result<Option<Message>, Error> {
-        awareness.apply_update(update)?;
+        self.awareness_mut().apply_update(update)?;
         Ok(None)
     }
 
     /// Y-sync protocol enables to extend its own settings with custom handles. These can be
     /// implemented here. By default, it returns an [Error::Unsupported].
-    fn missing_handle(
-        &self,
-        _awareness: &mut Awareness,
-        tag: u8,
-        _data: Vec<u8>,
-    ) -> Result<Option<Message>, Error> {
+    fn missing_handle(&mut self, tag: u8, _data: Vec<u8>) -> Result<Option<Message>, Error> {
         Err(Error::Unsupported(tag))
     }
 }
@@ -373,7 +353,10 @@ impl<'a, D: Decoder> Iterator for MessageReader<'a, D> {
 
 #[cfg(test)]
 mod test {
+    use crate::block::ClientID;
+    use crate::doc::DocLike;
     use crate::encoding::read::Cursor;
+    use crate::sync::awareness::AwarenessState;
     use crate::sync::protocol::MessageReader;
     use crate::sync::{Awareness, Protocol};
     use crate::updates::decoder::{Decode, DecoderV1};
@@ -428,9 +411,8 @@ mod test {
     #[test]
     fn protocol_init() {
         let mut awareness = Awareness::default();
-        let protocol = crate::sync::DefaultProtocol;
         let mut encoder = EncoderV1::new();
-        protocol.start(&mut awareness, &mut encoder).unwrap();
+        awareness.start(&mut encoder).unwrap();
         let data = encoder.to_vec();
         let mut decoder = DecoderV1::new(Cursor::new(&data));
         let mut reader = MessageReader::new(&mut decoder);
@@ -450,10 +432,8 @@ mod test {
 
     #[test]
     fn protocol_sync_steps() {
-        let protocol = crate::sync::DefaultProtocol;
-
-        let mut a1 = Awareness::new(Doc::with_client_id(1));
-        let mut a2 = Awareness::new(Doc::with_client_id(2));
+        let mut a1 = Awareness::default();
+        let mut a2 = Awareness::default();
 
         let expected = {
             let txt = a1.doc_mut().get_or_insert_text("test");
@@ -462,8 +442,8 @@ mod test {
             txn.encode_state_as_update_v1(&StateVector::default())
         };
 
-        let result = protocol
-            .handle_sync_step1(&mut a1, a2.doc().state_vector().clone())
+        let result = a1
+            .handle_sync_step1(a2.doc().state_vector().clone())
             .unwrap();
 
         assert_eq!(
@@ -474,8 +454,8 @@ mod test {
         );
 
         if let Some(crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep2(u))) = result {
-            let result2 = protocol
-                .handle_sync_step2(&mut a2, Update::decode_v1(&u).unwrap())
+            let result2 = a2
+                .handle_sync_step2(Update::decode_v1(&u).unwrap())
                 .unwrap();
 
             assert!(result2.is_none());
@@ -487,49 +467,45 @@ mod test {
 
     #[test]
     fn protocol_sync_step_update() {
-        let protocol = crate::sync::DefaultProtocol;
-
-        let mut a1 = Awareness::new(Doc::with_client_id(1));
-        let mut a2 = Awareness::new(Doc::with_client_id(2));
+        let mut p1 = Awareness::default();
+        let mut p2 = Awareness::default();
 
         let data = {
-            let txt = a1.doc_mut().get_or_insert_text("test");
-            let mut txn = a1.doc_mut().transact_mut();
+            let txt = p1.doc_mut().get_or_insert_text("test");
+            let mut txn = p1.doc_mut().transact_mut();
             txt.push(&mut txn, "hello");
             txn.encode_update_v1()
         };
 
-        let result = protocol
-            .handle_update(&mut a2, Update::decode_v1(&data).unwrap())
-            .unwrap();
+        let result = p2.handle_update(Update::decode_v1(&data).unwrap()).unwrap();
 
         assert!(result.is_none());
 
-        let txt = a2.doc().transact().get_text("test").unwrap();
-        assert_eq!(txt.get_string(&a2.doc().transact()), "hello".to_owned());
+        let txt = p2.doc().transact().get_text("test").unwrap();
+        assert_eq!(txt.get_string(&p2.doc().transact()), "hello".to_owned());
     }
 
     #[test]
     fn protocol_awareness_sync() {
-        let protocol = crate::sync::DefaultProtocol;
+        let mut p1 = Awareness::new(Doc::with_client_id(1));
+        let mut p2 = Awareness::new(Doc::with_client_id(2));
 
-        let mut a1 = Awareness::new(Doc::with_client_id(1));
-        let mut a2 = Awareness::new(Doc::with_client_id(2));
-
-        a1.set_local_state(json!({"x":3})).unwrap();
-        let result = protocol.handle_awareness_query(&mut a1).unwrap();
+        p1.set_local_state(json!({"x":3})).unwrap();
+        let result = p1.handle_awareness_query().unwrap();
 
         assert_eq!(
             result,
-            Some(crate::sync::Message::Awareness(a1.update().unwrap()))
+            Some(crate::sync::Message::Awareness(
+                p1.awareness().update().unwrap()
+            ))
         );
 
         if let Some(crate::sync::Message::Awareness(u)) = result {
-            let result = protocol.handle_awareness_update(&mut a2, u).unwrap();
+            let result = p2.handle_awareness_update(u).unwrap();
             assert!(result.is_none());
         }
 
-        let a2_clients: HashMap<_, _> = a2
+        let a2_clients: HashMap<_, _> = p2
             .iter()
             .flat_map(|(id, state)| state.data.clone().map(|data| (*id, data)))
             .collect();
