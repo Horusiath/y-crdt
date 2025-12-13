@@ -1,6 +1,7 @@
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
 use serde::Serialize;
+use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, TryFromJsValue};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
@@ -14,20 +15,21 @@ use crate::js::{Callback, Js};
 #[wasm_bindgen]
 pub struct Awareness {
     inner: YAwareness,
-    doc: crate::Doc,
+    doc: JsValue,
 }
 
 #[wasm_bindgen]
 impl Awareness {
     #[wasm_bindgen(constructor)]
-    pub fn new(doc: crate::Doc) -> Awareness {
-        let inner = YAwareness::with_clock(doc, JsClock);
-        Awareness { inner, doc }
+    pub fn new(doc: JsValue) -> crate::Result<Awareness> {
+        let ydoc = unsafe { crate::Doc::ref_from_abi(doc.clone().into_abi()) };
+        let inner = YAwareness::with_clock(ydoc.state.borrow().client_id(), JsClock);
+        Ok(Awareness { inner, doc })
     }
 
     #[wasm_bindgen(getter, js_name = doc)]
-    pub fn doc(&self) -> crate::Doc {
-        self.inner.doc().clone()
+    pub fn doc(&self) -> JsValue {
+        self.doc.clone()
     }
 
     #[wasm_bindgen(getter, js_name = meta)]
@@ -74,7 +76,7 @@ impl Awareness {
     }
 
     #[wasm_bindgen(js_name = setLocalStateField)]
-    pub fn set_field(&self, key: &str, value: JsValue) -> crate::Result<()> {
+    pub fn set_field(&mut self, key: &str, value: JsValue) -> crate::Result<()> {
         let state = self.local_state()?;
         js_sys::Reflect::set(&state, &JsValue::from_str(key), &value)?;
         self.set_local_state(state)
@@ -130,8 +132,9 @@ impl Awareness {
 
 #[wasm_bindgen(js_name = removeAwarenessStates)]
 pub fn remove_states(awareness: &Awareness, clients: Vec<u64>) -> crate::Result<()> {
+    let awareness: &mut YAwareness = unsafe { std::mem::transmute(&awareness.inner) }; // it's safe: "trust me bro"
     for client_id in clients {
-        awareness.inner.remove_state(client_id);
+        awareness.remove_state(client_id);
     }
     Ok(())
 }
@@ -172,8 +175,9 @@ pub fn apply_update(
 ) -> crate::Result<()> {
     let update = AwarenessUpdate::decode_v1(&update.to_vec())
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let awareness: &mut YAwareness = unsafe { std::mem::transmute(&awareness.inner) }; // it's safe: "trust me bro"
     awareness
-        .inner
         .apply_update(update)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(())

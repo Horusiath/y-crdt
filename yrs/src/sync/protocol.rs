@@ -33,15 +33,50 @@ use thiserror::Error;
  stringify[messageType] stringifies a message definition (messageType is already read from the buffer)
 */
 
-impl Protocol for Awareness {
+#[derive(Debug)]
+pub struct DefaultProtocol {
+    doc: Doc,
+    awareness: Awareness,
+}
+
+impl DefaultProtocol {
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    pub fn new(doc: Doc) -> Self {
+        let client_id = doc.client_id();
+        Self::with_awareness(doc, Awareness::new(client_id))
+    }
+    pub fn with_awareness(doc: Doc, awareness: Awareness) -> Self {
+        DefaultProtocol { doc, awareness }
+    }
+}
+
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+impl Default for DefaultProtocol {
+    fn default() -> Self {
+        Self::new(Doc::new())
+    }
+}
+
+impl DocLike for DefaultProtocol {
+    #[inline]
+    fn doc(&self) -> &Doc {
+        &self.doc
+    }
+    #[inline]
+    fn doc_mut(&mut self) -> &mut Doc {
+        &mut self.doc
+    }
+}
+
+impl Protocol for DefaultProtocol {
     #[inline]
     fn awareness(&self) -> &Awareness {
-        self
+        &self.awareness
     }
 
     #[inline]
     fn awareness_mut(&mut self) -> &mut Awareness {
-        self
+        &mut self.awareness
     }
 }
 
@@ -353,12 +388,10 @@ impl<'a, D: Decoder> Iterator for MessageReader<'a, D> {
 
 #[cfg(test)]
 mod test {
-    use crate::block::ClientID;
     use crate::doc::DocLike;
     use crate::encoding::read::Cursor;
-    use crate::sync::awareness::AwarenessState;
     use crate::sync::protocol::MessageReader;
-    use crate::sync::{Awareness, Protocol};
+    use crate::sync::{Awareness, DefaultProtocol, Protocol};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{Doc, GetString, StateVector, Text, Update};
@@ -370,8 +403,9 @@ mod test {
         let mut doc = Doc::new();
         let txt = doc.get_or_insert_text("text");
         txt.push(&mut doc.transact_mut(), "hello world");
-        let mut awareness = Awareness::new(doc);
-        awareness
+        let mut protocol = DefaultProtocol::new(doc);
+        protocol
+            .awareness_mut()
             .set_local_state(json!({
               "user":{
                 "name": "Anonymous 50",
@@ -383,15 +417,15 @@ mod test {
 
         let messages = [
             crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep1(
-                awareness.doc().transact().state_vector().clone(),
+                protocol.doc().transact().state_vector().clone(),
             )),
             crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep2(
-                awareness
+                protocol
                     .doc()
                     .transact()
                     .encode_state_as_update_v1(&StateVector::default()),
             )),
-            crate::sync::Message::Awareness(awareness.update().unwrap()),
+            crate::sync::Message::Awareness(protocol.awareness().update().unwrap()),
             crate::sync::Message::Auth(Some(
                 "reason
             }"
@@ -410,9 +444,9 @@ mod test {
 
     #[test]
     fn protocol_init() {
-        let mut awareness = Awareness::default();
+        let mut protocol = DefaultProtocol::new(Doc::new());
         let mut encoder = EncoderV1::new();
-        awareness.start(&mut encoder).unwrap();
+        protocol.start(&mut encoder).unwrap();
         let data = encoder.to_vec();
         let mut decoder = DecoderV1::new(Cursor::new(&data));
         let mut reader = MessageReader::new(&mut decoder);
@@ -424,7 +458,7 @@ mod test {
 
         assert_eq!(
             reader.next().unwrap().unwrap(),
-            crate::sync::Message::Awareness(awareness.update().unwrap())
+            crate::sync::Message::Awareness(protocol.awareness().update().unwrap())
         );
 
         assert!(reader.next().is_none());
@@ -432,8 +466,8 @@ mod test {
 
     #[test]
     fn protocol_sync_steps() {
-        let mut a1 = Awareness::default();
-        let mut a2 = Awareness::default();
+        let mut a1 = DefaultProtocol::default();
+        let mut a2 = DefaultProtocol::default();
 
         let expected = {
             let txt = a1.doc_mut().get_or_insert_text("test");
@@ -467,8 +501,8 @@ mod test {
 
     #[test]
     fn protocol_sync_step_update() {
-        let mut p1 = Awareness::default();
-        let mut p2 = Awareness::default();
+        let mut p1 = DefaultProtocol::default();
+        let mut p2 = DefaultProtocol::default();
 
         let data = {
             let txt = p1.doc_mut().get_or_insert_text("test");
@@ -487,10 +521,10 @@ mod test {
 
     #[test]
     fn protocol_awareness_sync() {
-        let mut p1 = Awareness::new(Doc::with_client_id(1));
-        let mut p2 = Awareness::new(Doc::with_client_id(2));
+        let mut p1 = DefaultProtocol::new(Doc::with_client_id(1));
+        let mut p2 = DefaultProtocol::new(Doc::with_client_id(2));
 
-        p1.set_local_state(json!({"x":3})).unwrap();
+        p1.awareness_mut().set_local_state(json!({"x":3})).unwrap();
         let result = p1.handle_awareness_query().unwrap();
 
         assert_eq!(
@@ -506,6 +540,7 @@ mod test {
         }
 
         let a2_clients: HashMap<_, _> = p2
+            .awareness()
             .iter()
             .flat_map(|(id, state)| state.data.clone().map(|data| (*id, data)))
             .collect();

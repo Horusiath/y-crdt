@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "build": "wasm-pack build --target nodejs ../ywasm",
-    "test": "node  --experimental-wasm-modules index.js"
+    "test": "node --experimental-wasm-modules index.js"
   },
   "contributors": [
     "Bartosz Sypytkowski <b.sypytkowski@gmail.com>",

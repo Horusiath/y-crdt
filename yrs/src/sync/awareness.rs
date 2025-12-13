@@ -8,6 +8,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::block::ClientID;
+use crate::cell::Cell;
 use crate::doc::DocLike;
 use crate::sync::{Clock, Timestamp};
 use crate::updates::decoder::{Decode, Decoder};
@@ -35,11 +36,7 @@ type AwarenessUpdateFn = Box<dyn Fn(&Awareness, &Event, Option<&Origin>) + 'stat
 ///
 /// Before a client disconnects, it should propagate a `null` state with an updated clock.
 pub struct Awareness {
-    doc: Doc,
-    state: AwarenessState,
-}
-
-pub struct AwarenessState {
+    client_id: ClientID,
     states: HashMap<ClientID, ClientState>,
     clock: Arc<dyn Clock>,
     on_update: Observer<AwarenessUpdateFn>,
@@ -51,24 +48,24 @@ impl Awareness {
     /// Awareness instance has full ownership of that document. If necessary it can be accessed
     /// using either [Awareness::doc] or [Awareness::doc_mut] methods.
     #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-    pub fn new(doc: Doc) -> Self {
-        Self::with_clock(doc, crate::sync::time::SystemClock)
+    pub fn new(client_id: ClientID) -> Self {
+        Self::with_clock(client_id, crate::sync::time::SystemClock)
     }
 
     /// Creates a new instance of [Awareness] struct, which operates over a given document.
     /// Awareness instance has full ownership of that document. If necessary it can be accessed
     /// using either [Awareness::doc] or [Awareness::doc_mut] methods.
-    pub fn with_clock<C>(doc: Doc, clock: C) -> Self
+    pub fn with_clock<C>(client_id: ClientID, clock: C) -> Self
     where
         C: Clock + 'static,
     {
-        let state = AwarenessState {
+        Self {
+            client_id,
             states: HashMap::new(),
             clock: Arc::new(clock),
             on_update: Observer::new(),
             on_change: Observer::new(),
-        };
-        Awareness { doc, state }
+        }
     }
 
     /// Returns a channel receiver for an incoming awareness events. This channel can be cloned.
@@ -165,7 +162,7 @@ impl Awareness {
 
     /// Returns a globally unique client ID of an underlying [Doc].
     pub fn client_id(&self) -> ClientID {
-        self.doc.client_id()
+        self.client_id
     }
 
     /// Returns a state map of all the clients tracked by current [Awareness] instance. Those
@@ -183,14 +180,14 @@ impl Awareness {
 
     /// Returns a JSON string state representation of a current [Awareness] instance.
     pub fn local_state_raw(&self) -> Option<Arc<str>> {
-        let e = self.states.get(&self.doc.client_id())?;
+        let e = self.states.get(&self.client_id)?;
         let json_str = e.clone().data?;
         Some(json_str)
     }
 
     /// Clears out a state of a given client, effectively marking it as disconnected.
     pub fn remove_state(&mut self, client_id: ClientID) {
-        let is_removed = match self.state.states.entry(client_id) {
+        let is_removed = match self.states.entry(client_id) {
             Entry::Occupied(mut e) => {
                 let state = e.get_mut();
                 state.data = None;
@@ -198,7 +195,7 @@ impl Awareness {
                 true
             }
             Entry::Vacant(e) => {
-                e.insert(ClientState::new(1, self.state.clock.now(), None));
+                e.insert(ClientState::new(1, self.clock.now(), None));
                 false
             }
         };
@@ -225,7 +222,7 @@ impl Awareness {
     /// Clears out a state of a current client (see: [Awareness::client_id]),
     /// effectively marking it as disconnected.
     pub fn clean_local_state(&mut self) {
-        self.remove_state(self.doc.client_id());
+        self.remove_state(self.client_id);
     }
 
     /// Sets a current [Awareness] instance state to a corresponding JSON string. This state will
@@ -241,7 +238,7 @@ impl Awareness {
     /// be replicated to other clients as part of the [AwarenessUpdate] and it will trigger an event
     /// to be emitted if current instance was created using [Awareness::with_observer] method.
     pub fn set_local_state_raw<S: Into<Arc<str>>>(&mut self, json: S) {
-        let client_id = self.doc.client_id();
+        let client_id = self.client_id;
         let now = self.clock.now();
         let json = json.into();
         let prev = match self.states.entry(client_id) {
@@ -400,7 +397,7 @@ impl Awareness {
             } else {
                 Some(entry.json)
             };
-            match self.state.states.entry(client_id) {
+            match self.states.entry(client_id) {
                 Entry::Occupied(mut e) => {
                     let state: &mut ClientState = e.get_mut();
                     let is_removed = state.clock == clock && new.is_none() && state.data.is_some();
@@ -408,7 +405,7 @@ impl Awareness {
                         match new {
                             None => {
                                 // never let a remote client remove this local state
-                                if client_id == self.doc.client_id() && state.data.is_some() {
+                                if client_id == self.client_id && state.data.is_some() {
                                     // remote client removed the local state. Do not remove state. Broadcast a message indicating
                                     // that this client still exists by increasing the clock
                                     clock += 1;
@@ -474,45 +471,10 @@ impl Awareness {
     }
 }
 
-impl Deref for Awareness {
-    type Target = AwarenessState;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.state
-    }
-}
-
-impl DerefMut for Awareness {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.state
-    }
-}
-
-impl DocLike for Awareness {
-    #[inline]
-    fn doc(&self) -> &Doc {
-        &self.doc
-    }
-
-    #[inline]
-    fn doc_mut(&mut self) -> &mut Doc {
-        &mut self.doc
-    }
-}
-
-#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-impl Default for Awareness {
-    fn default() -> Self {
-        Awareness::new(Doc::new())
-    }
-}
-
 impl std::fmt::Debug for Awareness {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Awareness");
-        s.field("doc", &self.doc);
+        s.field("client_id", &self.client_id);
         s.field("states", &self.states);
         s.finish()
     }
@@ -686,7 +648,7 @@ mod test {
             }
         }
 
-        let mut local = Awareness::new(Doc::with_client_id(1));
+        let mut local = Awareness::new(1);
         let last_change_local = Arc::new(ArcSwapOption::default());
         let update = Arc::new(ArcSwapOption::default());
         let _sub_update = {
@@ -698,7 +660,7 @@ mod test {
             local.on_change(move |_, e, _| last_change_local.store(Some(Arc::new(e.clone()))))
         };
 
-        let mut remote = Awareness::new(Doc::with_client_id(2));
+        let mut remote = Awareness::new(2);
         let last_change_remote = Arc::new(ArcSwapOption::default());
         let _sub_remote = {
             let last_change_remote = last_change_remote.clone();
@@ -749,8 +711,8 @@ mod test {
 
     #[test]
     fn awareness_summary() -> Result<(), Box<dyn std::error::Error>> {
-        let mut local = Awareness::new(Doc::with_client_id(1));
-        let mut remote = Awareness::new(Doc::with_client_id(2));
+        let mut local = Awareness::new(1);
+        let mut remote = Awareness::new(2);
 
         local.set_local_state(json!({"x":3})).unwrap();
         let update = local.update_with_clients([local.client_id()])?;
