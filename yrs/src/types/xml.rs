@@ -5,8 +5,8 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
-use crate::cell::MutProvider;
 use crate::block_iter::BlockIter;
+use crate::cell::{MutProvider, RefProvider};
 use crate::lazy::Lazy;
 use crate::out::FromOut;
 use crate::transaction::TransactionState;
@@ -195,7 +195,7 @@ impl TryFrom<BranchPtr> for XmlOut {
 }
 
 impl FromOut for XmlOut {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -207,7 +207,7 @@ impl FromOut for XmlOut {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -334,7 +334,7 @@ impl From<BranchPtr> for XmlElementRef {
 }
 
 impl FromOut for XmlElementRef {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -344,7 +344,7 @@ impl FromOut for XmlElementRef {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -356,7 +356,7 @@ impl FromOut for XmlElementRef {
 impl AsPrelim for XmlElementRef {
     type Prelim = XmlElementPrelim;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let attributes: HashMap<Arc<str>, String> = self
             .0
             .map
@@ -618,7 +618,7 @@ impl From<BranchPtr> for XmlTextRef {
 }
 
 impl FromOut for XmlTextRef {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -628,7 +628,7 @@ impl FromOut for XmlTextRef {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -640,7 +640,7 @@ impl FromOut for XmlTextRef {
 impl AsPrelim for XmlTextRef {
     type Prelim = XmlDeltaPrelim;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let attributes: HashMap<Arc<str>, String> = self
             .0
             .map
@@ -858,7 +858,7 @@ impl From<BranchPtr> for XmlFragmentRef {
 }
 
 impl FromOut for XmlFragmentRef {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -868,7 +868,7 @@ impl FromOut for XmlFragmentRef {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -880,7 +880,7 @@ impl FromOut for XmlFragmentRef {
 impl AsPrelim for XmlFragmentRef {
     type Prelim = XmlFragmentPrelim;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let children: Vec<_> = self
             .children(txn)
             .map(|v| match v {

@@ -1,6 +1,6 @@
 use crate::block::{ClientID, Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
-use crate::cell::{Cell, CellMut, CellRef, MutProvider};
+use crate::cell::{Cell, CellMut, CellRef, MutProvider, RefProvider};
 use crate::encoding::read::Error;
 use crate::out::FromOut;
 use crate::store::DocEvents;
@@ -851,7 +851,7 @@ pub enum OffsetKind {
 }
 
 impl FromOut for SubDocHook {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -861,7 +861,7 @@ impl FromOut for SubDocHook {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {

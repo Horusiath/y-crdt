@@ -1,5 +1,5 @@
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::MutProvider;
+use crate::cell::{MutProvider, RefProvider};
 use crate::doc::{OffsetKind, SubDocHook};
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
@@ -2182,7 +2182,7 @@ pub struct Unused;
 
 impl FromOut for Unused {
     #[inline]
-    fn from_out(_: Out, _: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(_: Out, _: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -2190,7 +2190,7 @@ impl FromOut for Unused {
     }
 
     #[inline]
-    fn from_item(_: ItemPtr, _: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(_: ItemPtr, _: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {

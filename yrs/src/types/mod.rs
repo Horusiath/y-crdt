@@ -10,7 +10,7 @@ pub use text::TextRef;
 
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::RefProvider;
+use crate::cell::{MutProvider, RefProvider};
 use crate::encoding::read::Error;
 use crate::transaction::TransactionState;
 use crate::types::array::ArrayEvent;
@@ -337,7 +337,7 @@ pub trait Observable: AsRef<Branch> {
     /// Returns a [Subscription] which, when dropped, will unsubscribe current callback.
     fn observe<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&Transaction, &Self::Event) + 'static,
+        F: Fn(&Transaction<&Doc>, &Self::Event) + 'static,
         Event: AsRef<Self::Event>,
     {
         let mut branch = BranchPtr::from(self.as_ref());
@@ -359,7 +359,7 @@ pub trait Observable: AsRef<Branch> {
     fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &Self::Event) + 'static,
+        F: Fn(&Transaction<&Doc>, &Self::Event) + 'static,
         Event: AsRef<Self::Event>,
     {
         let mut branch = BranchPtr::from(self.as_ref());
@@ -417,7 +417,7 @@ pub trait AsPrelim {
 
     /// Converts current type contents into a [Prelim] type that can be used to create a new
     /// type that's a deep copy equivalent of a current type.
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim;
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim;
 }
 
 /// Trait which allows to generate a [Prelim]-compatible type that - when integrated - will be
@@ -497,7 +497,7 @@ pub trait DeepObservable: AsRef<Branch> {
     /// when dropped.
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&Transaction, &Events) + 'static,
+        F: Fn(&Transaction<&Doc>, &Events) + 'static,
     {
         let branch = self.as_ref();
         branch.deep_observers.subscribe(Box::new(f))
@@ -516,7 +516,7 @@ pub trait DeepObservable: AsRef<Branch> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &Events) + 'static,
+        F: Fn(&Transaction<Doc>, &Events) + 'static,
     {
         let branch = self.as_ref();
         branch
@@ -637,13 +637,13 @@ impl std::fmt::Display for Branch {
 }
 
 #[derive(Debug)]
-pub(crate) struct Entries<'a> {
+pub(crate) struct Entries<'a, D: RefProvider<Doc>> {
     iter: std::collections::hash_map::Iter<'a, Arc<str>, ItemPtr>,
-    txn: &'a Transaction<'a>,
+    txn: &'a Transaction<D>,
 }
 
-impl<'a> Entries<'a> {
-    pub fn new(source: &'a HashMap<Arc<str>, ItemPtr>, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D: RefProvider<Doc>> Entries<'a, D> {
+    pub fn new(source: &'a HashMap<Arc<str>, ItemPtr>, txn: &'a Transaction<D>) -> Self {
         Entries {
             iter: source.iter(),
             txn,
@@ -651,13 +651,13 @@ impl<'a> Entries<'a> {
     }
 }
 
-impl<'a> Entries<'a> {
-    pub fn from_ref(source: &'a HashMap<Arc<str>, ItemPtr>, txn: &'a Transaction) -> Self {
+impl<'a, D: RefProvider<Doc>> Entries<'a, D> {
+    pub fn from_ref(source: &'a HashMap<Arc<str>, ItemPtr>, txn: &'a Transaction<D>) -> Self {
         Entries::new(source, txn)
     }
 }
 
-impl<'a> Iterator for Entries<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for Entries<'a, D> {
     type Item = (&'a str, &'a Item);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1231,5 +1231,5 @@ impl Event {
 
 pub trait ToJson {
     /// Converts all contents of a current type into a JSON-like representation.
-    fn to_json(&self, txn: &Transaction) -> Any;
+    fn to_json<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Any;
 }

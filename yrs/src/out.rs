@@ -1,5 +1,6 @@
 use crate::block::{ItemContent, ItemPtr};
 use crate::branch::{Branch, BranchPtr};
+use crate::cell::RefProvider;
 use crate::doc::SubDocHook;
 use crate::types::{AsPrelim, ToJson};
 use crate::{
@@ -47,14 +48,14 @@ impl Default for Out {
 
 impl FromOut for Out {
     #[inline]
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
         Ok(value)
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -135,7 +136,7 @@ impl TryFrom<ItemPtr> for Out {
 impl AsPrelim for Out {
     type Prelim = In;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         match self {
             Out::Any(any) => In::Any(any.clone()),
             Out::Text(v) => In::Text(v.as_prelim(txn)),
@@ -191,16 +192,12 @@ where
     }
 }
 
-pub trait FromOut {
+pub trait FromOut: Sized {
     /// Converts [Out] value into a type that implements this trait.
-    fn from_out(value: Out, txn: &Transaction) -> Result<Self, Out>
-    where
-        Self: Sized;
+    fn from_out<D: RefProvider<Doc>>(value: Out, txn: &Transaction<D>) -> Result<Self, Out>;
 
     /// Converts [Out] value into a type that implements this trait.
-    fn from_item(item: ItemPtr, txn: &Transaction) -> Option<Self>
-    where
-        Self: Sized;
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, txn: &Transaction<D>) -> Option<Self>;
 }
 
 //FIXME: what we would like to have is an automatic trait implementation of TryFrom<Value> for
@@ -208,7 +205,7 @@ pub trait FromOut {
 macro_rules! impl_from_out {
     ($t:ty) => {
         impl FromOut for $t {
-            fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out> {
+            fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out> {
                 use std::convert::TryInto;
                 match value {
                     Out::Any(any) => any.try_into().map_err(Out::Any),
@@ -216,7 +213,7 @@ macro_rules! impl_from_out {
                 }
             }
 
-            fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+            fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
             where
                 Self: Sized,
             {

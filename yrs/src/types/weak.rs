@@ -313,7 +313,7 @@ where
 {
     type Prelim = WeakPrelim<V>;
 
-    fn as_prelim(&self, _txn: &Transaction<D>) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> Self::Prelim {
         let source = self.try_source().unwrap();
         WeakPrelim::with_source(source.clone())
     }

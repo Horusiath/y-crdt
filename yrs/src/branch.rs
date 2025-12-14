@@ -1,4 +1,5 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::cell::RefProvider;
 use crate::doc::SubDocHook;
 use crate::out::FromOut;
 use crate::types::array::ArrayEvent;
@@ -9,7 +10,7 @@ use crate::types::{
     Entries, Event, Events, Path, PathSegment, RootRef, SharedRef, TypePtr, TypeRef,
 };
 use crate::{
-    ArrayRef, MapRef, Observer, Origin, Out, Subscription, TextRef, Transaction, XmlElementRef,
+    ArrayRef, Doc, MapRef, Observer, Origin, Out, Subscription, TextRef, Transaction, XmlElementRef,
     XmlFragmentRef, XmlTextRef, ID,
 };
 use serde::{Deserialize, Serialize};
@@ -49,7 +50,7 @@ impl BranchPtr {
 }
 
 impl FromOut for BranchPtr {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -59,7 +60,7 @@ impl FromOut for BranchPtr {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {

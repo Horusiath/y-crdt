@@ -1,5 +1,5 @@
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim, Unused};
-use crate::cell::MutProvider;
+use crate::cell::{MutProvider, RefProvider};
 use crate::lazy::{Lazy, Once};
 use crate::out::FromOut;
 use crate::transaction::TransactionState;
@@ -134,7 +134,7 @@ impl GetString for TextRef {
 }
 
 impl FromOut for TextRef {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -144,7 +144,7 @@ impl FromOut for TextRef {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -455,7 +455,7 @@ impl AsRef<Branch> for TextRef {
 impl AsPrelim for TextRef {
     type Prelim = DeltaPrelim;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let delta: Vec<Delta<In>> = self
             .diff(txn, YChange::identity)
             .into_iter()

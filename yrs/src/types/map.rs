@@ -1,5 +1,5 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPosition, ItemPtr, Prelim};
-use crate::cell::MutProvider;
+use crate::cell::{MutProvider, RefProvider};
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
 use crate::lazy::{Lazy, Once};
@@ -76,7 +76,7 @@ impl Observable for MapRef {
 }
 
 impl ToJson for MapRef {
-    fn to_json(&self, txn: &Transaction) -> Any {
+    fn to_json(&self, txn: &Transaction<D>) -> Any {
         let inner = self.0;
         let mut res = HashMap::new();
         for (key, item) in inner.map.iter() {
@@ -103,7 +103,7 @@ impl PartialEq for MapRef {
 }
 
 impl FromOut for MapRef {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -113,7 +113,7 @@ impl FromOut for MapRef {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -125,7 +125,7 @@ impl FromOut for MapRef {
 impl AsPrelim for MapRef {
     type Prelim = MapPrelim;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let mut prelim = HashMap::with_capacity(self.len(txn) as usize);
         for (key, &ptr) in self.0.map.iter() {
             if !ptr.is_deleted() {
@@ -149,7 +149,7 @@ impl DefaultPrelim for MapRef {
 
 pub trait Map: AsRef<Branch> + Sized {
     /// Returns a number of entries stored within current map.
-    fn len(&self, _txn: &Transaction) -> u32 {
+    fn len<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         let mut len = 0;
         let inner = self.as_ref();
         for item in inner.map.values() {
@@ -163,31 +163,32 @@ pub trait Map: AsRef<Branch> + Sized {
 
     /// Returns an iterator that enables to traverse over all keys of entries stored within
     /// current map. These keys are not ordered.
-    fn keys<'a>(&'a self, txn: &'a Transaction) -> Keys<'a> {
+    fn keys<'a, D: RefProvider<Doc>>(&'a self, txn: &'a Transaction<D>) -> Keys<'a, D> {
         Keys::new(self.as_ref(), txn)
     }
 
     /// Returns an iterator that enables to traverse over all values stored within current map.
-    fn values<'a>(&'a self, txn: &'a Transaction) -> Values<'a> {
+    fn values<'a, D: RefProvider<Doc>>(&'a self, txn: &'a Transaction<D>) -> Values<'a, D> {
         Values::new(self.as_ref(), txn)
     }
 
     /// Returns an iterator that enables to traverse over all entries - tuple of key-value pairs -
     /// stored within current map.
-    fn iter<'a>(&'a self, txn: &'a Transaction) -> MapIter<'a> {
+    fn iter<'a, D: RefProvider<Doc>>(&'a self, txn: &'a Transaction<D>) -> MapIter<'a, D> {
         MapIter::new(self.as_ref(), txn)
     }
 
-    fn into_iter<'a>(self, txn: &'a Transaction) -> MapIntoIter<'a> {
+    fn into_iter<D: RefProvider<Doc>>(self, txn: &Transaction<D>) -> MapIntoIter<D> {
         let branch_ptr = BranchPtr::from(self.as_ref());
         MapIntoIter::new(branch_ptr, txn)
     }
 
     /// Inserts a new `value` under given `key` into current map. Returns an integrated value.
-    fn insert<K, V>(&self, txn: &mut TransactionMut, key: K, value: V) -> V::Return
+    fn insert<K, V, D>(&self, txn: &mut Transaction<D>, key: K, value: V) -> V::Return
     where
         K: Into<Arc<str>>,
         V: Prelim,
+        D: MutProvider<Doc>,
     {
         let key = key.into();
         let pos = {
@@ -233,10 +234,11 @@ pub trait Map: AsRef<Branch> + Sized {
     /// assert!(!map.try_update(&mut txn, "key", 1)); // unchanged value doesn't trigger inserts...
     /// assert!(map.try_update(&mut txn, "key", 2)); // ... but changed one does
     /// ```
-    fn try_update<K, V>(&self, txn: &mut TransactionMut, key: K, value: V) -> bool
+    fn try_update<K, V, D>(&self, txn: &mut Transaction<D>, key: K, value: V) -> bool
     where
         K: Into<Arc<str>>,
         V: Into<Any>,
+        D: MutProvider<Doc>,
     {
         let key = key.into();
         let value = value.into();
@@ -260,10 +262,11 @@ pub trait Map: AsRef<Branch> + Sized {
     /// Returns an existing instance of a type stored under a given `key` within current map.
     /// If the given entry was not found, has been deleted or its type is different from expected,
     /// that entry will be reset to a given type and its reference will be returned.
-    fn get_or_init<K, V>(&self, txn: &mut TransactionMut, key: K) -> V
+    fn get_or_init<K, V, D>(&self, txn: &mut Transaction<D>, key: K) -> V
     where
         K: Into<Arc<str>>,
         V: DefaultPrelim + FromOut,
+        D: MutProvider<Doc>,
     {
         let key = key.into();
         let branch = self.as_ref();
@@ -285,14 +288,18 @@ pub trait Map: AsRef<Branch> + Sized {
     /// all of its contents will also be deleted recursively. A returned value will contain a
     /// reference to a current removed shared type (which will be empty due to all of its elements
     /// being deleted), **not** the content prior the removal.
-    fn remove(&self, txn: &mut TransactionMut, key: &str) -> Option<Out> {
+    fn remove<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, key: &str) -> Option<Out> {
         let ptr = BranchPtr::from(self.as_ref());
         ptr.remove(txn, key)
     }
 
     /// Returns [WeakPrelim] to a given `key`, if it exists in a current map.
     #[cfg(feature = "weak")]
-    fn link(&self, _txn: &Transaction, key: &str) -> Option<crate::WeakPrelim<Self>> {
+    fn link<D: MutProvider<Doc>>(
+        &self,
+        _txn: &Transaction<D>,
+        key: &str,
+    ) -> Option<crate::WeakPrelim<Self>> {
         let ptr = BranchPtr::from(self.as_ref());
         let block = ptr.map.get(key)?;
         let start = StickyIndex::from_id(block.id().clone(), Assoc::Before);
@@ -303,7 +310,7 @@ pub trait Map: AsRef<Branch> + Sized {
 
     /// Returns a value stored under a given `key` within current map, or `None` if no entry
     /// with such `key` existed.
-    fn get<R: FromOut>(&self, txn: &Transaction, key: &str) -> Option<R> {
+    fn get<R: FromOut, D: RefProvider<Doc>>(&self, txn: &Transaction<D>, key: &str) -> Option<R> {
         let ptr = BranchPtr::from(self.as_ref());
         let out = ptr.get(txn, key)?;
         R::from_out(out, txn).ok()
@@ -362,9 +369,10 @@ pub trait Map: AsRef<Branch> + Sized {
     /// let bob: Option<Person> = map.get_as(&txn, "Bob").unwrap();
     /// assert_eq!(bob, None);
     /// ```
-    fn get_as<V>(&self, txn: &Transaction, key: &str) -> Result<V, Error>
+    fn get_as<V, D>(&self, txn: &Transaction<D>, key: &str) -> Result<V, Error>
     where
         V: DeserializeOwned,
+        D: RefProvider<Doc>,
     {
         let ptr = BranchPtr::from(self.as_ref());
         let out = ptr.get(txn, key).unwrap_or(Out::Any(Any::Null));
@@ -374,7 +382,7 @@ pub trait Map: AsRef<Branch> + Sized {
     }
 
     /// Checks if an entry with given `key` can be found within current map.
-    fn contains_key(&self, _txn: &Transaction, key: &str) -> bool {
+    fn contains_key(&self, _txn: &Transaction<D>, key: &str) -> bool {
         if let Some(item) = self.as_ref().map.get(key) {
             !item.is_deleted()
         } else {
@@ -383,23 +391,23 @@ pub trait Map: AsRef<Branch> + Sized {
     }
 
     /// Clears the contents of current map, effectively removing all of its entries.
-    fn clear(&self, txn: &mut TransactionMut) {
+    fn clear(&self, txn: &mut Transaction<D>) {
         for (_, ptr) in self.as_ref().map.iter() {
             txn.delete(ptr.clone());
         }
     }
 }
 
-pub struct MapIter<'a>(Entries<'a>);
+pub struct MapIter<'a, D>(Entries<'a, D>);
 
-impl<'a> MapIter<'a> {
-    pub fn new(branch: &'a Branch, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D: RefProvider<Doc>> MapIter<'a, D> {
+    pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
         let entries = Entries::new(&branch.map, txn);
         MapIter(entries)
     }
 }
 
-impl<'a> Iterator for MapIter<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for MapIter<'a, D> {
     type Item = (&'a str, Out);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -412,19 +420,19 @@ impl<'a> Iterator for MapIter<'a> {
     }
 }
 
-pub struct MapIntoIter<'a> {
-    _txn: &'a Transaction<'a>,
+pub struct MapIntoIter<'a, D: RefProvider<Doc>> {
+    _txn: &'a Transaction<D>,
     entries: std::collections::hash_map::IntoIter<Arc<str>, ItemPtr>,
 }
 
-impl<'a> MapIntoIter<'a> {
-    fn new(map: BranchPtr, txn: &'a Transaction) -> Self {
+impl<'a, D: RefProvider<Doc>> MapIntoIter<'a, D> {
+    fn new(map: BranchPtr, txn: &'a Transaction<D>) -> Self {
         let entries = map.map.clone().into_iter();
         MapIntoIter { _txn: txn, entries }
     }
 }
 
-impl<'a> Iterator for MapIntoIter<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for MapIntoIter<'a, D> {
     type Item = (Arc<str>, Out);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -439,10 +447,10 @@ impl<'a> Iterator for MapIntoIter<'a> {
 
 /// An unordered iterator over the keys of a [Map].
 #[derive(Debug)]
-pub struct Keys<'a>(Entries<'a>);
+pub struct Keys<'a, D>(Entries<'a, D>);
 
-impl<'a> Keys<'a> {
-    pub fn new(branch: &'a Branch, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D: RefProvider<Doc>> Keys<'a, D> {
+    pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
         let entries = Entries::new(&branch.map, txn);
         Keys(entries)
     }
@@ -459,16 +467,16 @@ impl<'a> Iterator for Keys<'a> {
 
 /// Iterator over the values of a [Map].
 #[derive(Debug)]
-pub struct Values<'a>(Entries<'a>);
+pub struct Values<'a, D>(Entries<'a, D>);
 
-impl<'a> Values<'a> {
-    pub fn new(branch: &'a Branch, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D> Values<'a, D> {
+    pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
         let entries = Entries::new(&branch.map, txn);
         Values(entries)
     }
 }
 
-impl<'a> Iterator for Values<'a> {
+impl<'a, D> Iterator for Values<'a, D> {
     type Item = Vec<Out>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -688,7 +696,7 @@ mod test {
         //m1m.insert(&mut t1, "y-text".to_owned(), m1a);
 
         //TODO: YArray within YMap
-        fn compare_all(m: &MapRef, txn: &Transaction) {
+        fn compare_all(m: &MapRef, txn: &Transaction<D>) {
             assert_eq!(m.len(txn), 5);
             assert_eq!(m.get(txn, &"number".to_owned()), Some(Out::from(1f64)));
             assert_eq!(m.get(txn, &"boolean0".to_owned()), Some(Out::from(false)));

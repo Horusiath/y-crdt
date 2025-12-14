@@ -1,6 +1,6 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
-use crate::cell::MutProvider;
 use crate::block_iter::BlockIter;
+use crate::cell::{MutProvider, RefProvider};
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
 use crate::lazy::{Lazy, Once};
@@ -137,7 +137,7 @@ impl TryFrom<ItemPtr> for ArrayRef {
 }
 
 impl FromOut for ArrayRef {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -147,7 +147,7 @@ impl FromOut for ArrayRef {
         }
     }
 
-    fn from_item(item: ItemPtr, _txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -159,7 +159,7 @@ impl FromOut for ArrayRef {
 impl AsPrelim for ArrayRef {
     type Prelim = ArrayPrelim;
 
-    fn as_prelim(&self, txn: &Transaction) -> Self::Prelim {
+    fn as_prelim<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let mut prelim = Vec::with_capacity(self.len(txn) as usize);
         for value in self.iter(txn) {
             prelim.push(value.as_prelim(txn));
