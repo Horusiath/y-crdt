@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 use yrs::block::{ClientID, EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::BranchPtr;
+use yrs::cell::MutProvider;
 use yrs::doc::SubDocHook;
 use yrs::encoding::read::Error;
 use yrs::error::UpdateError;
@@ -25,10 +26,11 @@ use yrs::undo::EventKind;
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use yrs::{
-    uuid_v4, Any, Array, ArrayRef, Assoc, BranchID, DeleteSet, DocId, GetString, JsonPath,
+    uuid_v4, Any, Array, ArrayRef, Assoc, BranchID, DeleteSet, Doc, DocId, GetString, JsonPath,
     JsonPathEval, Map, MapRef, Observable, OffsetKind, Options, Origin, Out, Quotable, Snapshot,
-    StateVector, StickyIndex, SubdocsEvent, Text, TextRef, TransactionCleanupEvent, Update, Uuid,
-    Xml, XmlElementPrelim, XmlElementRef, XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
+    StateVector, StickyIndex, SubdocsEvent, Text, TextRef, Transaction, TransactionCleanupEvent,
+    Update, Uuid, Xml, XmlElementPrelim, XmlElementRef, XmlFragmentRef, XmlTextPrelim, XmlTextRef,
+    ID,
 };
 
 /// Flag used by `YInput` to pass JSON string for an object that should be deserialized and
@@ -2767,7 +2769,10 @@ impl Drop for YInput {
 impl Prelim for YInput {
     type Return = Unused;
 
-    fn into_content(self, _: &mut yrs::TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         unsafe {
             if self.tag <= 0 {
                 (ItemContent::Any(vec![self.into()]), None)
@@ -2798,7 +2803,7 @@ impl Prelim for YInput {
         }
     }
 
-    fn integrate(self, txn: &mut yrs::TransactionMut, item_ptr: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, item_ptr: ItemPtr) {
         let inner_ref = if let Some(branch) = item_ptr.as_branch() {
             branch
         } else {

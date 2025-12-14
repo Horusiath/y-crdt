@@ -10,6 +10,7 @@ pub use text::TextRef;
 
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
+use crate::cell::RefProvider;
 use crate::encoding::read::Error;
 use crate::transaction::TransactionState;
 use crate::types::array::ArrayEvent;
@@ -378,7 +379,7 @@ pub trait Observable: AsRef<Branch> {
 /// Trait implemented by shared types to display their contents in string format.
 pub trait GetString {
     /// Displays the content of a current collection in string format.
-    fn get_string(&self, txn: &Transaction) -> String;
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String;
 }
 
 /// A subset of [SharedRef] used to mark collaborative collections that can be used as a

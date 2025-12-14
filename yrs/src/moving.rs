@@ -1,11 +1,12 @@
 use crate::block::{ItemContent, ItemPtr, Prelim, Unused};
 use crate::block_iter::BlockIter;
 use crate::branch::{Branch, BranchPtr};
+use crate::cell::{MutProvider, RefProvider};
 use crate::encoding::read::Error;
 use crate::transaction::TransactionState;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{BranchID, Doc, Transaction, TransactionMut, ID};
+use crate::{BranchID, Doc, Transaction, ID};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -334,7 +335,10 @@ impl Prelim for Move {
     type Return = Unused;
 
     #[inline]
-    fn into_content(self, _: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         (ItemContent::Move(Box::new(self)), None)
     }
 }
@@ -949,7 +953,12 @@ impl Decode for Assoc {
 pub trait IndexedSequence: AsRef<Branch> {
     /// Returns a [StickyIndex] equivalent to a human-readable `index`.
     /// Returns `None` if `index` is beyond the length of current sequence.
-    fn sticky_index(&self, txn: &Transaction, index: u32, assoc: Assoc) -> Option<StickyIndex> {
+    fn sticky_index<D: RefProvider<Doc>>(
+        &self,
+        txn: &Transaction<D>,
+        index: u32,
+        assoc: Assoc,
+    ) -> Option<StickyIndex> {
         StickyIndex::at(txn, BranchPtr::from(self.as_ref()), index, assoc)
     }
 }

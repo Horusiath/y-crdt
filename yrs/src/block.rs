@@ -1,4 +1,5 @@
 use crate::branch::{Branch, BranchPtr};
+use crate::cell::MutProvider;
 use crate::doc::{OffsetKind, SubDocHook};
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
@@ -14,7 +15,7 @@ use crate::undo::{StackItem, UndoStackExt};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
-use crate::{Any, DeleteSet, Doc, Options, Out, Transaction, TransactionMut};
+use crate::{Any, DeleteSet, Doc, Options, Out, Transaction};
 use serde::{Deserialize, Serialize};
 use smallstr::SmallString;
 use std::collections::HashSet;
@@ -2132,12 +2133,15 @@ pub trait Prelim: Sized {
     /// Since this method may decide to consume `self` or not, a second optional return parameter
     /// is used when `self` was not consumed - which is the case for complex types creation such as
     /// YMap or YArray. In such case it will be passed later on to [Self::integrate] method.
-    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>);
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>);
 
     /// Method called once an original item filled with content from [Self::into_content] has been
     /// added to block store. This method is used by complex types such as maps or arrays to append
     /// the original contents of prelim struct into YMap, YArray etc.
-    fn integrate(self, _txn: &mut TransactionMut, _item: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, _txn: &mut Transaction<D>, _item: ItemPtr) {
         // do nothing by default
     }
 }
@@ -2148,7 +2152,10 @@ where
 {
     type Return = Unused;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let value: Any = self.into();
         (ItemContent::Any(vec![value]), None)
     }
@@ -2160,7 +2167,10 @@ pub(crate) struct PrelimString(pub SmallString<[u8; 8]>);
 impl Prelim for PrelimString {
     type Return = Unused;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         (ItemContent::String(self.0.into()), None)
     }
 }
@@ -2201,7 +2211,10 @@ where
 {
     type Return = T::Return;
 
-    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         match self {
             EmbedPrelim::Primitive(any) => (ItemContent::Embed(any), None),
             EmbedPrelim::Shared(prelim) => {
@@ -2216,7 +2229,7 @@ where
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, item: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, item: ItemPtr) {
         if let EmbedPrelim::Shared(carrier) = self {
             carrier.integrate(txn, item)
         }

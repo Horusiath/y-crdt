@@ -1,4 +1,5 @@
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim, Unused};
+use crate::cell::MutProvider;
 use crate::lazy::{Lazy, Once};
 use crate::out::FromOut;
 use crate::transaction::TransactionState;
@@ -488,7 +489,10 @@ where
 {
     type Return = Unused;
 
-    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let (content, rest) = self.0.into_content(txn);
         match content {
             ItemContent::Any(mut any) if any.len() == 1 => match any.pop().unwrap() {
@@ -499,7 +503,7 @@ where
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         self.0.integrate(txn, inner_ref)
     }
 }
@@ -1136,11 +1140,14 @@ impl Deref for DeltaPrelim {
 impl Prelim for DeltaPrelim {
     type Return = TextRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         (ItemContent::Type(Branch::new(TypeRef::Text)), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         let text_ref = TextRef::from(inner_ref.as_branch().unwrap());
         text_ref.apply_delta(txn, self.0);
     }
@@ -1497,12 +1504,15 @@ impl From<TextPrelim> for In {
 impl Prelim for TextPrelim {
     type Return = TextRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::Text);
         (ItemContent::Type(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         if !self.0.is_empty() {
             let text = TextRef::from(inner_ref.as_branch().unwrap());
             text.push(txn, &self.0);

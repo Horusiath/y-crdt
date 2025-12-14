@@ -1,6 +1,6 @@
 use crate::block::{ClientID, Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
-use crate::cell::{Cell, CellMut, CellRef};
+use crate::cell::{Cell, CellMut, CellRef, MutProvider};
 use crate::encoding::read::Error;
 use crate::out::FromOut;
 use crate::store::DocEvents;
@@ -10,7 +10,7 @@ use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::{
     uuid_v4, uuid_v4_from, ArrayRef, MapRef, Out, RootRefs, StateVector, Store, TextRef,
-    Transaction, TransactionMut, Uuid, XmlFragmentRef, ID,
+    Transaction, Uuid, XmlFragmentRef, ID,
 };
 use crate::{Any, SharedRef};
 use std::collections::HashMap;
@@ -223,11 +223,11 @@ impl Doc {
     ///
     /// Only one read-write transaction can be active at the same time. If any other transaction -
     /// be it a read-write or read-only one - is active at the same time, this method will panic.
-    pub fn transact_mut_with<T>(&mut self, origin: T) -> TransactionMut<'_>
+    pub fn transact_mut_with<T>(&mut self, origin: T) -> Transaction<&mut Self>
     where
         T: Into<Origin>,
     {
-        TransactionMut::new(self, Some(origin.into()))
+        Transaction::new(self, Some(origin.into()))
     }
 
     /// Creates and returns a read-write capable transaction. This transaction can be used to
@@ -238,8 +238,8 @@ impl Doc {
     ///
     /// Only one read-write transaction can be active at the same time. If any other transaction -
     /// be it a read-write or read-only one - is active at the same time, this method will panic.
-    pub fn transact_mut(&mut self) -> TransactionMut<'_> {
-        TransactionMut::new(self, None)
+    pub fn transact_mut(&mut self) -> Transaction<&mut Self> {
+        Transaction::new(self, None)
     }
 
     /// Creates and returns a lightweight read-only transaction.
@@ -249,7 +249,7 @@ impl Doc {
     /// While it's possible to have multiple read-only transactions active at the same time,
     /// this method will panic whenever called while a read-write transaction
     /// (see: [Self::transact_mut]) is active at the same time.
-    pub fn transact(&self) -> Transaction<'_> {
+    pub fn transact(&self) -> Transaction<&Self> {
         Transaction::new(self, None)
     }
 
@@ -875,7 +875,10 @@ impl FromOut for SubDocHook {
 impl Prelim for Doc {
     type Return = SubDocHook;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let subdoc = SubDocHook::from(self);
         (ItemContent::Doc(subdoc), None)
     }
@@ -916,7 +919,7 @@ impl SubDocHook {
         SubDoc::new(parent_txn, self.inner.borrow())
     }
 
-    pub fn as_mut<'tx>(&'tx mut self, parent_tx: &'tx mut TransactionMut) -> SubDocMut<'tx> {
+    pub fn as_mut<'tx>(&'tx mut self, parent_tx: &'tx mut Transaction) -> SubDocMut<'tx> {
         let (_, state) = parent_tx.split_mut();
         SubDocMut::new(&mut state.subdocs, self.borrow_mut())
     }
@@ -969,8 +972,8 @@ mod test {
     use crate::{
         any, uuid_v4, Any, Array, ArrayPrelim, ArrayRef, DeleteSet, Doc, DocId, GetString, Map,
         MapRef, OffsetKind, Options, StateVector, Subscription, Text, TextPrelim, TextRef,
-        Transaction, TransactionMut, Uuid, XmlElementPrelim, XmlFragment, XmlFragmentRef,
-        XmlTextPrelim, XmlTextRef, ID,
+        Transaction, Uuid, XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlTextPrelim,
+        XmlTextRef, ID,
     };
     use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
@@ -2344,7 +2347,7 @@ mod test {
         assert!(actual.is_none());
     }
 
-    fn init_test_data<const N: usize>(txn: &mut TransactionMut, data: [&str; N]) -> TextRef {
+    fn init_test_data<const N: usize>(txn: &mut Transaction, data: [&str; N]) -> TextRef {
         let map = txn.get_or_insert_map("map");
         let txt = map.insert(txn, "text", TextPrelim::default());
         for ch in data {

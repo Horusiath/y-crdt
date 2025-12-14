@@ -1,11 +1,10 @@
 use crate::block::{ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
+use crate::cell::MutProvider;
 use crate::types::text::DeltaPrelim;
 use crate::types::xml::XmlDeltaPrelim;
 use crate::types::TypeRef;
-use crate::{
-    Any, ArrayPrelim, MapPrelim, Out, TransactionMut, XmlElementPrelim, XmlFragmentPrelim,
-};
+use crate::{Any, ArrayPrelim, Doc, MapPrelim, Out, Transaction, XmlElementPrelim, XmlFragmentPrelim};
 
 /// A wrapper around [Out] type that enables it to be used as a type to be inserted into
 /// shared collections. If [In] contains a shared type, it will be inserted as a deep
@@ -28,7 +27,10 @@ pub enum In {
 impl Prelim for In {
     type Return = Out;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         match self {
             In::Any(any) => (ItemContent::Any(vec![any]), None),
             other => {
@@ -49,7 +51,7 @@ impl Prelim for In {
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         match self {
             In::Text(prelim) => prelim.integrate(txn, inner_ref),
             In::Array(prelim) => prelim.integrate(txn, inner_ref),

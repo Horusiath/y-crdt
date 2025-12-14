@@ -1,4 +1,5 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
+use crate::cell::MutProvider;
 use crate::block_iter::BlockIter;
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
@@ -10,9 +11,7 @@ use crate::types::{
     event_change_set, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim, In, Out, Path,
     RootRef, SharedRef, ToJson, TypeRef,
 };
-use crate::{
-    Any, Assoc, DeepObservable, Doc, IndexedSequence, Observable, Transaction, TransactionMut, ID,
-};
+use crate::{Any, Assoc, DeepObservable, Doc, IndexedSequence, Observable, Transaction, ID};
 use serde::de::DeserializeOwned;
 use std::collections::HashSet;
 use std::convert::TryFrom;
@@ -193,7 +192,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Panics
     ///
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
-    fn insert<V>(&self, txn: &mut TransactionMut, index: u32, value: V) -> V::Return
+    fn insert<V>(&self, txn: &mut Transaction, index: u32, value: V) -> V::Return
     where
         V: Prelim,
     {
@@ -215,7 +214,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Panics
     ///
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
-    fn insert_range<T, V>(&self, txn: &mut TransactionMut, index: u32, values: T)
+    fn insert_range<T, V>(&self, txn: &mut Transaction, index: u32, values: T)
     where
         T: IntoIterator<Item = V>,
         V: Into<Any>,
@@ -229,7 +228,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Inserts given `value` at the end of the current array.
     ///
     /// Returns a reference to an integrated preliminary input.
-    fn push_back<V>(&self, txn: &mut TransactionMut, value: V) -> V::Return
+    fn push_back<V>(&self, txn: &mut Transaction, value: V) -> V::Return
     where
         V: Prelim,
     {
@@ -240,7 +239,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Inserts given `value` at the beginning of the current array.
     ///
     /// Returns a reference to an integrated preliminary input.
-    fn push_front<V>(&self, txn: &mut TransactionMut, content: V) -> V::Return
+    fn push_front<V>(&self, txn: &mut Transaction, content: V) -> V::Return
     where
         V: Prelim,
     {
@@ -248,7 +247,7 @@ pub trait Array: AsRef<Branch> + Sized {
     }
 
     /// Removes a single element at provided `index`.
-    fn remove(&self, txn: &mut TransactionMut, index: u32) {
+    fn remove(&self, txn: &mut Transaction, index: u32) {
         self.remove_range(txn, index, 1)
     }
 
@@ -256,7 +255,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// a particular number described by `len` has been deleted. This method panics in case when
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
-    fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
+    fn remove_range(&self, txn: &mut Transaction, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             walker.delete(txn, len)
@@ -347,7 +346,7 @@ pub trait Array: AsRef<Branch> + Sized {
     ///
     /// This method panics if either `source` or `target` indexes are greater than current array's
     /// length.
-    fn move_to(&self, txn: &mut TransactionMut, source: u32, target: u32) {
+    fn move_to(&self, txn: &mut Transaction, source: u32, target: u32) {
         if source == target || source + 1 == target {
             // It doesn't make sense to move a range into the same range (it's basically a no-op).
             return;
@@ -393,7 +392,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// array's length.
     fn move_range_to(
         &self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction,
         start: u32,
         assoc_start: Assoc,
         end: u32,
@@ -522,12 +521,15 @@ where
 impl Prelim for ArrayPrelim {
     type Return = ArrayRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::Array);
         (ItemContent::Type(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, item: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, item: ItemPtr) {
         let array = ArrayRef::from(item.as_branch().unwrap());
         for value in self.0 {
             array.push_back(txn, value);
@@ -565,7 +567,10 @@ impl RangePrelim {
 impl Prelim for RangePrelim {
     type Return = Unused;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         (ItemContent::Any(self.0), None)
     }
 }

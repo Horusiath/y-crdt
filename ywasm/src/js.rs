@@ -17,6 +17,7 @@ use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::{Branch, BranchPtr};
+use yrs::cell::MutProvider;
 use yrs::out::FromOut;
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
@@ -24,8 +25,8 @@ use yrs::types::{
     TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_FRAGMENT, TYPE_REFS_XML_TEXT,
 };
 use yrs::{
-    Any, ArrayRef, BranchID, Map, MapRef, Origin, Out, Text, TextRef,
-    TransactionMut as YTransaction, WeakRef, Xml, XmlElementRef, XmlFragment, XmlFragmentRef,
+    Any, ArrayRef, BranchID, Doc, Map, MapRef, Origin, Out, Text, TextRef,
+    Transaction, WeakRef, Xml, XmlElementRef, XmlFragment, XmlFragmentRef,
     XmlOut, XmlTextRef,
 };
 
@@ -237,7 +238,10 @@ impl XmlPrelim for Js {}
 impl Prelim for Js {
     type Return = Unused;
 
-    fn into_content(self, txn: &mut YTransaction) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         match self.as_value().unwrap() {
             ValueRef::Any(any) => (ItemContent::Any(vec![any]), None),
             ValueRef::Shared(shared) => {
@@ -258,7 +262,7 @@ impl Prelim for Js {
         }
     }
 
-    fn integrate(self, txn: &mut YTransaction, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         match self.as_value().unwrap() {
             ValueRef::Any(_) => { /* nothing to do */ }
             ValueRef::Shared(shared) => shared.integrate(txn, inner_ref),
@@ -350,7 +354,7 @@ impl Shared {
         }
     }
 
-    fn type_ref(&self, txn: &YTransaction) -> TypeRef {
+    fn type_ref<D: MutProvider<Doc>>(&self, txn: &Transaction<D>) -> TypeRef {
         match self {
             Shared::Text(_) => TypeRef::Text,
             Shared::Map(_) => TypeRef::Map,
@@ -373,13 +377,16 @@ impl Shared {
 impl Prelim for Shared {
     type Return = Unused;
 
-    fn into_content(self, txn: &mut YTransaction) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let type_ref = self.type_ref(txn);
         let branch = Branch::new(type_ref);
         (ItemContent::Type(branch), Some(self))
     }
 
-    fn integrate(self, txn: &mut YTransaction, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         let doc = txn.doc().clone();
         match self {
             Shared::Text(mut cell) => {

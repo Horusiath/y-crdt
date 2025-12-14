@@ -8,6 +8,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim};
+use crate::cell::{MutProvider, RefProvider};
 use crate::iter::{
     AsIter, BlockIterator, BlockSliceIterator, IntoBlockIter, MoveIter, RangeIter, TxnIterator,
     Values,
@@ -17,7 +18,7 @@ use crate::transaction::TransactionState;
 use crate::types::{AsPrelim, Branch, BranchPtr, Out, Path, SharedRef, TypeRef};
 use crate::{
     Array, Assoc, DeepObservable, Doc, GetString, In, IndexScope, Map, Observable, StickyIndex,
-    TextRef, Transaction, TransactionMut, XmlTextRef, ID,
+    TextRef, Transaction, XmlTextRef, ID,
 };
 
 /// Weak link reference represents a reference to a single element or consecutive range of elements
@@ -137,7 +138,7 @@ impl<P> FromOut for WeakRef<P>
 where
     P: FromOut + From<BranchPtr>,
 {
-    fn from_out(value: Out, _txn: &Transaction) -> Result<Self, Out>
+    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
     where
         Self: Sized,
     {
@@ -147,7 +148,7 @@ where
         }
     }
 
-    fn from_item(item: ItemPtr, txn: &Transaction) -> Option<Self>
+    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, txn: &Transaction<D>) -> Option<Self>
     where
         Self: Sized,
     {
@@ -194,7 +195,7 @@ impl GetString for WeakRef<TextRef> {
     /// // check the quoted fragment
     /// assert_eq!(link.get_string(&txn), "hello ".to_string());
     /// ```
-    fn get_string(&self, txn: &Transaction) -> String {
+    fn get_string(&self, txn: &Transaction<D>) -> String {
         self.source().to_string(txn.doc())
     }
 }
@@ -227,8 +228,9 @@ impl GetString for WeakRef<XmlTextRef> {
     /// // check the quoted fragment
     /// assert_eq!(link.get_string(&txn), "<b>old</b>, <i>itali</i>".to_string());
     /// ```
-    fn get_string(&self, txn: &Transaction) -> String {
-        self.source().to_xml_string(txn.doc())
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
+        let doc = txn.doc();
+        self.source().to_xml_string(&*doc)
     }
 }
 
@@ -247,7 +249,7 @@ where
     /// returned.
     ///
     /// Use [WeakRef::try_deref_value] if conversion is not possible or desired at the current moment.
-    pub fn try_deref<V>(&self, txn: &Transaction) -> Option<V>
+    pub fn try_deref<V>(&self, txn: &Transaction<D>) -> Option<V>
     where
         V: FromOut,
     {
@@ -278,7 +280,7 @@ where
     /// map.insert(&mut txn, "A", "other");
     /// assert_eq!(link.try_deref_value(&txn), Some("other".into()));
     /// ```
-    pub fn try_deref_value(&self, txn: &Transaction) -> Option<Out> {
+    pub fn try_deref_value(&self, txn: &Transaction<D>) -> Option<Out> {
         let source = self.try_source()?;
         let item = source.quote_start.get_item(txn.doc());
         let last = item.to_iter().last()?;
@@ -296,7 +298,7 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakRef] quotation
     /// range.
-    pub fn unquote<'a>(&self, txn: &'a Transaction) -> Unquote<'a> {
+    pub fn unquote<'a>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
         if let Some(source) = self.try_source() {
             source.unquote(txn.doc())
         } else {
@@ -311,7 +313,7 @@ where
 {
     type Prelim = WeakPrelim<V>;
 
-    fn as_prelim(&self, _txn: &Transaction) -> Self::Prelim {
+    fn as_prelim(&self, _txn: &Transaction<D>) -> Self::Prelim {
         let source = self.try_source().unwrap();
         WeakPrelim::with_source(source.clone())
     }
@@ -358,7 +360,7 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakPrelim] quotation
     /// range.
-    pub fn unquote<'a>(&self, txn: &'a Transaction) -> Unquote<'a> {
+    pub fn unquote<'a>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
         self.source.unquote(txn.doc())
     }
 }
@@ -367,11 +369,11 @@ impl<P> WeakPrelim<P>
 where
     P: SharedRef + Map,
 {
-    pub fn try_deref_raw(&self, txn: &Transaction) -> Option<Out> {
+    pub fn try_deref_raw(&self, txn: &Transaction<D>) -> Option<Out> {
         self.source.unquote(txn.doc()).next()
     }
 
-    pub fn try_deref<V>(&self, txn: &Transaction) -> Result<V, Option<V::Error>>
+    pub fn try_deref<V>(&self, txn: &Transaction<D>) -> Result<V, Option<V::Error>>
     where
         V: TryFrom<Out>,
     {
@@ -387,13 +389,13 @@ where
 }
 
 impl GetString for WeakPrelim<TextRef> {
-    fn get_string(&self, txn: &Transaction) -> String {
+    fn get_string(&self, txn: &Transaction<D>) -> String {
         self.source.to_string(txn.doc())
     }
 }
 
 impl GetString for WeakPrelim<XmlTextRef> {
-    fn get_string(&self, txn: &Transaction) -> String {
+    fn get_string(&self, txn: &Transaction<D>) -> String {
         self.source.to_xml_string(txn.doc())
     }
 }
@@ -427,7 +429,10 @@ where
 {
     type Return = WeakRef<P>;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::WeakLink(self.source.clone()));
         (ItemContent::Type(inner), Some(self))
     }
@@ -692,8 +697,9 @@ pub trait Quotable: AsRef<Branch> + Sized {
     /// let quoted: Vec<_> = quote.unquote(&doc.transact()).collect();
     /// assert_eq!(quoted, vec![2.into(), 3.into()]);
     /// ```
-    fn quote<R>(&self, txn: &Transaction, range: R) -> Result<WeakPrelim<Self>, QuoteError>
+    fn quote<D, R>(&self, txn: &Transaction<D>, range: R) -> Result<WeakPrelim<Self>, QuoteError>
     where
+        D: RefProvider<Doc>,
         R: RangeBounds<u32>,
     {
         let this = BranchPtr::from(self.as_ref());
@@ -796,7 +802,7 @@ pub enum QuoteError {
     OutOfBounds,
 }
 
-pub(crate) fn join_linked_range(mut block: ItemPtr, txn: &mut TransactionMut) {
+pub(crate) fn join_linked_range(mut block: ItemPtr, txn: &mut Transaction<D>) {
     let item = block.deref_mut();
     // this item may exists within a quoted range
     item.info.set_linked();

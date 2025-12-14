@@ -1,6 +1,6 @@
 use crate::block::{Item, ItemContent, ItemPosition, ItemPtr, Prelim, ID};
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::Cell;
+use crate::cell::{Cell, MutProvider, RefProvider};
 use crate::doc::{SubDocHook, SubdocRefs};
 use crate::error::{Error, UpdateError};
 use crate::event::SubdocsEvent;
@@ -76,7 +76,7 @@ fn merge_pending_v2(update: Vec<u8>, store: &Store) -> Vec<u8> {
 #[derive(Debug)]
 pub struct Transaction<D>
 where
-    D: Deref<Target = Doc>,
+    D: RefProvider<Doc>,
 {
     doc: D,
     state: Option<Box<TransactionState>>,
@@ -269,30 +269,21 @@ impl TransactionState {
 
 impl<D> Drop for Transaction<D>
 where
-    D: Deref<Target = Doc>,
+    D: RefProvider<Doc>,
 {
     fn drop(&mut self) {
         // we cannot restrict Drop fot only transactions with mutable Doc references,
         // so we cast them and execute, since only those transactions will have state
         // initialized anyway
-        if let Some(state) = self.state.take() {
-            let doc = unsafe {
-                (self.doc.deref() as *const Doc as *mut Doc)
-                    .as_mut()
-                    .unwrap()
-            };
-            let mut tx = Transaction {
-                doc,
-                state: Some(state),
-            };
-            tx.commit();
+        if self.state.is_some() {
+            self.commit();
         }
     }
 }
 
 impl<D> Transaction<D>
 where
-    D: Deref<Target = Doc>,
+    D: RefProvider<Doc>,
 {
     pub fn new(doc: D, origin: Option<Origin>) -> Self {
         let state = match origin {
@@ -300,7 +291,7 @@ where
             // we preinitialize the transaction state with the origin, since origin doesn't have
             // much sense to work in read-only transactions
             origin => {
-                let doc = doc.deref();
+                let doc = doc.get_ref();
                 Some(TransactionState::new(
                     doc.store.blocks.state_vector().clone(),
                     origin,
@@ -310,39 +301,15 @@ where
         Transaction { doc, state }
     }
 
-    pub fn doc(&self) -> &D {
-        &self.doc
+    #[inline]
+    pub fn doc(&self) -> D::Ref<'_> {
+        self.doc.get_ref()
     }
 
     /// Checks if transaction requires commiting because it was used to introduce changes
     /// in the corresponding document.
     pub fn is_dirty(&self) -> bool {
         self.state.is_some()
-    }
-
-    pub fn as_deref(&self) -> Transaction<&Doc> {
-        Transaction {
-            doc: self.doc.deref(),
-            state: None,
-        }
-    }
-}
-
-impl<D> Transaction<D>
-where
-    D: DerefMut<Target = Doc>,
-{
-    pub fn execute_deref<T, F>(&mut self, f: F) -> T
-    where
-        F: FnOnce(&mut crate::TransactionMut) -> T,
-    {
-        let mut tx = Transaction {
-            doc: self.doc.deref_mut(),
-            state: self.state.take(),
-        };
-        let result = f(&mut tx);
-        self.state = tx.state.take();
-        result
     }
 }
 
@@ -354,10 +321,13 @@ impl<'a> Deref for Transaction<&'a mut Doc> {
     }
 }
 
-impl<'a> Transaction<&'a Doc> {
+impl<D> Transaction<D>
+where
+    D: RefProvider<Doc>,
+{
     /// Returns state vector describing current state of the updates.
-    pub fn state_vector(&self) -> &StateVector {
-        self.doc().state_vector()
+    pub fn state_vector(&self) -> StateVector {
+        self.doc().state_vector().clone()
     }
 
     /// Returns a snapshot which describes a current state of updates and removals made within
@@ -464,7 +434,8 @@ impl<'a> Transaction<&'a Doc> {
         let mut encoder = EncoderV1::new();
         self.encode_state_as_update(sv, &mut encoder);
         // check for pending data
-        merge_pending_v1(encoder.to_vec(), self.doc())
+        let doc = self.doc();
+        merge_pending_v1(encoder.to_vec(), &*doc)
     }
 
     /// Encodes the difference between remote peer state given its `state_vector` and the state
@@ -484,7 +455,8 @@ impl<'a> Transaction<&'a Doc> {
         self.encode_state_as_update(sv, &mut encoder);
 
         // check for pending data
-        merge_pending_v2(encoder.to_vec(), self.doc())
+        let doc = self.doc();
+        merge_pending_v2(encoder.to_vec(), &*doc)
     }
 
     /// Returns a collection of sub documents linked within the structures of this document store.
@@ -553,7 +525,8 @@ impl<'a> Transaction<&'a Doc> {
     }
 
     pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
-        let value = self.doc().types.get(name.as_ref())?;
+        let doc = self.doc();
+        let value = doc.types.get(name.as_ref())?;
         let ptr = BranchPtr::from(&*value);
         match &ptr.type_ref {
             TypeRef::Array => Some(Out::Array(ArrayRef::from(ptr))),
@@ -577,23 +550,19 @@ impl<'a> Transaction<&'a Doc> {
         store.pending.is_some() || store.pending_ds.is_some()
     }
 
-    pub fn events(&self) -> Option<&DocEvents> {
-        self.doc().events.as_deref()
-    }
-
     /// Corresponding document's state vector at the moment when current transaction was created.
-    pub fn before_state(&self) -> &StateVector {
+    pub fn before_state(&self) -> StateVector {
         match &self.state {
-            None => self.doc.state_vector(),
-            Some(state) => &state.before_state,
+            None => self.doc.get_ref().state_vector().clone(),
+            Some(state) => state.before_state.clone(),
         }
     }
 
     /// State vector of the transaction after [Transaction::commit] has been called.
-    pub fn after_state(&self) -> &StateVector {
+    pub fn after_state(&self) -> StateVector {
         match &self.state {
-            None => self.doc.state_vector(),
-            Some(state) => &state.after_state,
+            None => self.doc.get_ref().state_vector().clone(),
+            Some(state) => state.after_state.clone(),
         }
     }
 
@@ -614,8 +583,8 @@ impl<'a> Transaction<&'a Doc> {
         }
     }
 
-    pub(crate) fn split(&self) -> (&Doc, Option<&TransactionState>) {
-        (&self.doc, self.state.as_deref())
+    pub(crate) fn split(&self) -> (D::Ref<'_>, Option<&TransactionState>) {
+        (self.doc.get_ref(), self.state.as_deref())
     }
     /// Returns a list of root level types changed in a scope of the current transaction. This
     /// list is not filled right away, but as a part of [Transaction::commit] process.
@@ -664,7 +633,7 @@ impl<'a> Transaction<&'a Doc> {
     ///   is extracted and integrated into the document structure.
     pub fn encode_update<E: Encoder>(&self, encoder: &mut E) {
         let doc = self.doc();
-        doc.write_blocks_from(self.before_state(), encoder);
+        doc.write_blocks_from(&self.before_state(), encoder);
         match &self.state {
             None => DeleteSet::default().encode(encoder),
             Some(state) => state.delete_set.encode(encoder),
@@ -672,33 +641,31 @@ impl<'a> Transaction<&'a Doc> {
     }
 }
 
-impl<'a> Transaction<&'a mut Doc> {
-    pub fn as_readonly(&self) -> Transaction<&Doc> {
-        Transaction {
-            doc: self.doc,
-            state: None,
-        }
-    }
-
-    pub fn doc_mut(&mut self) -> &mut Doc {
-        &mut *self.doc
+impl<D> Transaction<D>
+where
+    D: MutProvider<Doc>,
+{
+    #[inline]
+    pub fn doc_mut(&mut self) -> D::Mut<'_> {
+        self.doc.get_mut()
     }
 
     #[inline(never)]
     fn init_state(&mut self) {
         self.state = {
+            let doc = self.doc();
             Some(TransactionState::new(
-                self.doc.store.blocks.state_vector().clone(),
+                doc.blocks.state_vector().clone(),
                 None,
             ))
         }
     }
-    pub(crate) fn split_mut(&mut self) -> (&mut Doc, &mut TransactionState) {
+    pub(crate) fn split_mut(&mut self) -> (D::Mut<'_>, &mut TransactionState) {
         if self.state.is_none() {
             self.init_state();
         }
         let state = unsafe { self.state.as_mut().unwrap_unchecked() }.deref_mut();
-        (&mut *self.doc, state)
+        (self.doc.get_mut(), state)
     }
 
     pub fn subdocs_mut(&mut self, mut f: impl FnMut(SubDocMut<'_>)) {
@@ -784,11 +751,11 @@ impl<'a> Transaction<&'a mut Doc> {
     /// Returns `None` if current document didn't have any pending updates.
     pub fn prune_pending(&mut self) -> Option<Update> {
         let mut merge = Vec::with_capacity(2);
-        let store = &mut *self.doc;
-        if let Some(pending) = store.pending.take() {
+        let mut doc = self.doc_mut();
+        if let Some(pending) = doc.pending.take() {
             merge.push(pending.update);
         }
-        if let Some(pending_ds) = store.pending_ds.take() {
+        if let Some(pending_ds) = doc.pending_ds.take() {
             let mut u = Update::new();
             u.delete_set = pending_ds.clone();
             merge.push(u);
@@ -876,7 +843,7 @@ impl<'a> Transaction<&'a mut Doc> {
                                                         index += 1;
                                                     }
                                                 }
-                                                state.delete_item(doc, item);
+                                                state.delete_item(&mut *doc, item);
                                                 blocks = doc.blocks.get_client_mut(client).unwrap();
                                                 // just to make the borrow checker happy
                                             }
@@ -911,8 +878,8 @@ impl<'a> Transaction<&'a mut Doc> {
     /// Delete item under given pointer.
     /// Returns true if block was successfully deleted, false if it was already deleted in the past.
     pub(crate) fn delete(&mut self, item: ItemPtr) -> bool {
-        let (doc, state) = self.split_mut();
-        state.delete_item(doc, item)
+        let (mut doc, state) = self.split_mut();
+        state.delete_item(&mut *doc, item)
     }
 
     /// Applies a deserialized [Update] contents into a document owning current transaction. Update
@@ -928,12 +895,12 @@ impl<'a> Transaction<&'a mut Doc> {
     pub fn apply_update(&mut self, update: Update) -> Result<(), UpdateError> {
         let (remaining, remaining_ds) = update.integrate(self)?;
         let mut retry = false;
+        let doc = self.doc.get_mut();
         {
-            let store = &mut *self.doc;
-            store.pending = if let Some(mut pending) = store.pending.take() {
+            doc.pending = if let Some(mut pending) = doc.pending.take() {
                 // check if we can apply something
                 for (client, &clock) in pending.missing.iter() {
-                    if clock < store.blocks.get_clock(client) {
+                    if clock < doc.blocks.get_clock(client) {
                         retry = true;
                         break;
                     }
@@ -951,7 +918,7 @@ impl<'a> Transaction<&'a mut Doc> {
                 remaining
             };
         }
-        if let Some(pending) = self.doc.pending_ds.take() {
+        if let Some(pending) = doc.pending_ds.take() {
             let ds2 = self.apply_delete(&pending);
             let ds = match (remaining_ds, ds2) {
                 (Some(mut a), Some(b)) => {
@@ -962,14 +929,14 @@ impl<'a> Transaction<&'a mut Doc> {
                 (_, Some(x)) => Some(x),
                 _ => None,
             };
-            self.doc.pending_ds = ds;
+            doc.pending_ds = ds;
         } else {
-            self.doc.pending_ds = remaining_ds.map(|update| update.delete_set);
+            doc.pending_ds = remaining_ds.map(|update| update.delete_set);
         }
 
         if retry {
-            if let Some(pending) = self.doc.pending.take() {
-                let ds = self.doc.pending_ds.take().unwrap_or_default();
+            if let Some(pending) = doc.pending.take() {
+                let ds = doc.pending_ds.take().unwrap_or_default();
                 let mut ds_update = Update::new();
                 ds_update.delete_set = ds;
                 self.apply_update(pending.update)?;
@@ -987,7 +954,7 @@ impl<'a> Transaction<&'a mut Doc> {
         parent_sub: Option<Arc<str>>,
     ) -> Option<ItemPtr> {
         let (left, right, origin, id) = {
-            let store = &mut *self.doc;
+            let store = self.doc_mut();
             let left = pos.left;
             let right = pos.right;
             let origin = if let Some(item) = pos.left.as_deref() {
@@ -1078,13 +1045,13 @@ impl<'a> Transaction<&'a mut Doc> {
     /// After commit, transaction returns to initial state and can be used for subsequent changes
     /// for the purposes of next committable action.
     pub fn commit(&mut self) -> Option<Box<TransactionState>> {
-        let mut state = self.state.as_deref_mut()?;
+        let (doc, mut state) = self.split_mut();
 
         // 1. sort and merge delete set
         state.delete_set.squash();
-        state.after_state = self.doc.blocks.state_vector().clone(); //TODO: not necessary
-                                                                    // 2. emit 'beforeObserverCalls'
-                                                                    // 3. for each change observed by the transaction call 'afterTransaction'
+        state.after_state = doc.blocks.state_vector().clone(); //TODO: not necessary
+                                                               // 2. emit 'beforeObserverCalls'
+                                                               // 3. for each change observed by the transaction call 'afterTransaction'
         let collections_modified = !state.changed.is_empty();
         if collections_modified {
             let mut changed_parents: HashMap<BranchPtr, Vec<usize>> = HashMap::new();
@@ -1098,7 +1065,7 @@ impl<'a> Transaction<&'a mut Doc> {
                         state = unsafe { self.state.as_deref_mut().unwrap_unchecked() };
                         Self::call_type_observers(
                             &mut state.changed_parent_types,
-                            &self.doc.linked_by,
+                            &doc.linked_by,
                             branch,
                             &mut changed_parents,
                             &event_cache,
@@ -1129,20 +1096,20 @@ impl<'a> Transaction<&'a mut Doc> {
             }
         }
 
-        if let Some(events) = self.doc.events.take() {
+        if let Some(events) = doc.events.take() {
             events.emit_after_transaction(self);
-            self.doc.events = Some(events);
+            doc.events = Some(events);
         }
 
         // 4. try GC delete set
 
-        let (doc, state) = self.split_mut();
+        let (mut doc, state) = self.split_mut();
         if !doc.options.skip_gc {
-            GCCollector::collect(doc, &state);
+            GCCollector::collect(&mut *doc, &state);
         }
 
         // 5. try merge delete set
-        state.delete_set.try_squash_with(doc);
+        state.delete_set.try_squash_with(&mut *doc);
 
         // 6. get transaction after state and try to merge to left
         for (client, &clock) in state.after_state.iter() {
@@ -1171,7 +1138,7 @@ impl<'a> Transaction<&'a mut Doc> {
             }
         }
 
-        if let Some(events) = self.doc.events.as_ref() {
+        if let Some(events) = doc.events.as_ref() {
             // 8. emit 'afterTransactionCleanup'
             events.emit_transaction_cleanup(self);
             // 9. emit 'update'
@@ -1184,8 +1151,8 @@ impl<'a> Transaction<&'a mut Doc> {
         let state = unsafe { self.state.as_deref_mut().unwrap_unchecked() };
         if let Some(mut subdocs) = state.subdocs.take() {
             // inherit client_id and collection_id for all subdocs
-            let client_id = self.doc.options.client_id;
-            let collection_id = self.doc.collection_id();
+            let client_id = doc.options.client_id;
+            let collection_id = doc.collection_id();
             for subdoc in subdocs.added.iter_mut() {
                 // subdoc must be already present in the document since it was added
                 // during integration of the ItemContent::Doc
@@ -1197,7 +1164,7 @@ impl<'a> Transaction<&'a mut Doc> {
                 }
             }
 
-            let removed = if let Some(events) = self.doc.events.as_ref() {
+            let removed = if let Some(events) = doc.events.as_ref() {
                 if events.subdocs.has_subscribers() {
                     let mut e = SubdocsEvent::new(subdocs.added, subdocs.removed, subdocs.loaded);
                     events.subdocs.trigger(|cb| cb(&mut e));
@@ -1228,17 +1195,16 @@ impl<'a> Transaction<&'a mut Doc> {
 
     pub(crate) fn split_by_snapshot(&mut self, snapshot: &Snapshot) {
         let mut merge_blocks: Vec<ID> = Vec::new();
-        let blocks = &mut self.doc.blocks;
+        let (mut doc, state) = self.split_mut();
+        let blocks = &mut doc.blocks;
         for (&client, &clock) in snapshot.state_map.iter() {
             if let Some(ptr) = blocks.get_item(&ID::new(client, clock)) {
                 let ptr_clock = ptr.id.clock;
                 if ptr_clock < clock {
                     if let Some(right) = blocks.split_block_inner(ptr, clock - ptr_clock) {
                         if right.moved.is_some() {
-                            if let Some(state) = &mut self.state {
-                                if let Some(&prev_moved) = state.prev_moved.get(&ptr) {
-                                    state.prev_moved.insert(right, prev_moved);
-                                }
+                            if let Some(&prev_moved) = state.prev_moved.get(&ptr) {
+                                state.prev_moved.insert(right, prev_moved);
                             }
                         }
 
@@ -1248,10 +1214,9 @@ impl<'a> Transaction<&'a mut Doc> {
             }
         }
 
-        let (doc, state) = self.split_mut();
         state.merge_blocks.append(&mut merge_blocks);
         let mut deleted = snapshot.delete_set.deleted_blocks();
-        while let Some(slice) = deleted.next(doc) {
+        while let Some(slice) = deleted.next(&*doc) {
             if let BlockSlice::Item(slice) = slice {
                 //TODO: we technically don't need to physically split underlying item in two
                 // if we were to use block slices all the way down.

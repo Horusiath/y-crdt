@@ -2,7 +2,7 @@ use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
 use crate::moving::{Move, StickyIndex};
 use crate::types::TypePtr;
-use crate::{Assoc, Out, Transaction, TransactionMut, ID};
+use crate::{Assoc, Out, Transaction, ID};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.

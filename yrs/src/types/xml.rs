@@ -5,6 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::cell::MutProvider;
 use crate::block_iter::BlockIter;
 use crate::lazy::Lazy;
 use crate::out::FromOut;
@@ -18,7 +19,7 @@ use crate::types::{
 };
 use crate::{
     Any, ArrayRef, BranchID, DeepObservable, Doc, GetString, In, IndexedSequence, Map, Observable,
-    OffsetKind, StickyIndex, Text, TextRef, Transaction, TransactionMut, ID,
+    OffsetKind, StickyIndex, Text, TextRef, Transaction, ID,
 };
 
 pub trait XmlPrelim: Prelim {}
@@ -65,7 +66,10 @@ impl XmlPrelim for XmlIn {}
 impl Prelim for XmlIn {
     type Return = XmlOut;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let type_ref = match &self {
             XmlIn::Text(_) => TypeRef::XmlText,
             XmlIn::Element(prelim) => TypeRef::XmlElement(prelim.tag.clone()),
@@ -74,7 +78,7 @@ impl Prelim for XmlIn {
         (ItemContent::Type(Branch::new(type_ref)), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         match self {
             XmlIn::Text(prelim) => prelim.integrate(txn, inner_ref),
             XmlIn::Element(prelim) => prelim.integrate(txn, inner_ref),
@@ -422,12 +426,15 @@ impl XmlPrelim for XmlElementPrelim {}
 impl Prelim for XmlElementPrelim {
     type Return = XmlElementRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::XmlElement(self.tag.clone()));
         (ItemContent::Type(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         let xml = XmlElementRef::from(inner_ref.as_branch().unwrap());
         for (key, value) in self.attributes {
             xml.insert_attribute(txn, key, value);
@@ -700,12 +707,15 @@ impl XmlPrelim for XmlTextPrelim {}
 impl Prelim for XmlTextPrelim {
     type Return = XmlTextRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::XmlText);
         (ItemContent::Type(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         if !self.is_empty() {
             let text = XmlTextRef::from(inner_ref.as_branch().unwrap());
             text.push(txn, &self.0);
@@ -745,11 +755,14 @@ impl Deref for XmlDeltaPrelim {
 impl Prelim for XmlDeltaPrelim {
     type Return = XmlTextRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         (ItemContent::Type(Branch::new(TypeRef::XmlText)), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         let text_ref = XmlTextRef::from(inner_ref.as_branch().unwrap());
         for (key, value) in self.attributes {
             text_ref.insert_attribute(txn, key, value);
@@ -906,12 +919,15 @@ impl XmlFragmentPrelim {
 impl Prelim for XmlFragmentPrelim {
     type Return = XmlFragmentRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::XmlFragment);
         (ItemContent::Type(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         let xml = XmlFragmentRef::from(inner_ref.as_branch().unwrap());
         for value in self.0 {
             xml.push_back(txn, value);
@@ -980,7 +996,7 @@ pub trait Xml: AsRef<Branch> {
     }
 
     /// Removes an attribute recognized by an `attr_name` from a current XML element.
-    fn remove_attribute<K>(&self, txn: &mut TransactionMut, attr_name: &K)
+    fn remove_attribute<K>(&self, txn: &mut Transaction, attr_name: &K)
     where
         K: AsRef<str>,
     {
@@ -988,7 +1004,7 @@ pub trait Xml: AsRef<Branch> {
     }
 
     /// Inserts an attribute entry into current XML element.
-    fn insert_attribute<K, V>(&self, txn: &mut TransactionMut, key: K, value: V) -> V::Return
+    fn insert_attribute<K, V>(&self, txn: &mut Transaction, key: K, value: V) -> V::Return
     where
         K: Into<Arc<str>>,
         V: Prelim,
@@ -1065,7 +1081,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// that value at the end of it.
     ///
     /// Using `index` value that's higher than current array length results in panic.
-    fn insert<V>(&self, txn: &mut TransactionMut, index: u32, xml_node: V) -> V::Return
+    fn insert<V>(&self, txn: &mut Transaction, index: u32, xml_node: V) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1074,7 +1090,7 @@ pub trait XmlFragment: AsRef<Branch> {
     }
 
     /// Inserts given `value` at the end of the current array.
-    fn push_back<V>(&self, txn: &mut TransactionMut, xml_node: V) -> V::Return
+    fn push_back<V>(&self, txn: &mut Transaction, xml_node: V) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1083,7 +1099,7 @@ pub trait XmlFragment: AsRef<Branch> {
     }
 
     /// Inserts given `value` at the beginning of the current array.
-    fn push_front<V>(&self, txn: &mut TransactionMut, xml_node: V) -> V::Return
+    fn push_front<V>(&self, txn: &mut Transaction, xml_node: V) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1091,7 +1107,7 @@ pub trait XmlFragment: AsRef<Branch> {
     }
 
     /// Removes a single element at provided `index`.
-    fn remove(&self, txn: &mut TransactionMut, index: u32) {
+    fn remove(&self, txn: &mut Transaction, index: u32) {
         self.remove_range(txn, index, 1)
     }
 
@@ -1099,7 +1115,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// a particular number described by `len` has been deleted. This method panics in case when
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside the bounds of an array.
-    fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
+    fn remove_range(&self, txn: &mut Transaction, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             walker.delete(txn, len)

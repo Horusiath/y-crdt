@@ -699,8 +699,7 @@ pub use crate::types::RootRef;
 pub use crate::types::SharedRef;
 pub use crate::update::Update;
 
-pub type Transaction<'a> = crate::transaction::Transaction<&'a Doc>;
-pub type TransactionMut<'a> = crate::transaction::Transaction<&'a mut Doc>;
+pub type Transaction<D> = crate::transaction::Transaction<D>;
 
 #[deprecated(since = "0.19.0", note = "Use `yrs::Out` instead")]
 pub type Value = Out;

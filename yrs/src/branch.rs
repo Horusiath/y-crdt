@@ -9,8 +9,8 @@ use crate::types::{
     Entries, Event, Events, Path, PathSegment, RootRef, SharedRef, TypePtr, TypeRef,
 };
 use crate::{
-    ArrayRef, MapRef, Observer, Origin, Out, Subscription, TextRef, Transaction, TransactionMut,
-    XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
+    ArrayRef, MapRef, Observer, Origin, Out, Subscription, TextRef, Transaction, XmlElementRef,
+    XmlFragmentRef, XmlTextRef, ID,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;

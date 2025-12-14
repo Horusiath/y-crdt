@@ -1,4 +1,5 @@
 use crate::block::{EmbedPrelim, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::cell::MutProvider;
 use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
 use crate::lazy::{Lazy, Once};
@@ -548,12 +549,15 @@ where
 impl Prelim for MapPrelim {
     type Return = MapRef;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content<D: MutProvider<Doc>>(
+        self,
+        _txn: &mut Transaction<D>,
+    ) -> (ItemContent, Option<Self>) {
         let inner = Branch::new(TypeRef::Map);
         (ItemContent::Type(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
         let map = MapRef::from(inner_ref.as_branch().unwrap());
         for (key, value) in self.0 {
             map.insert(txn, key, value);

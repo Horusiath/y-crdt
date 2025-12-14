@@ -48,7 +48,7 @@ use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDoc};
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct Doc {
-    pub(crate) state: Rc<WasmRefCell<DocState>>,
+    pub(crate) state: Rc<RefCell<DocState>>,
 }
 
 pub(crate) struct DocState {
@@ -96,7 +96,7 @@ impl DerefMut for DocState {
 }
 
 impl Doc {
-    pub fn from_subdoc(subdoc: &SubDocHook, parent: crate::Doc) -> Self {
+    pub fn from_subdoc(subdoc: SubDocHook, parent: crate::Doc) -> Self {
         todo!()
     }
 
@@ -144,7 +144,7 @@ impl Doc {
         let doc = yrs::Doc::with_options(options);
 
         Ok(Self {
-            state: Rc::new(WasmRefCell::new(DocState {
+            state: Rc::new(RefCell::new(DocState {
                 current_transaction: None,
                 doc,
                 parent_doc: None,

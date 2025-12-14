@@ -204,7 +204,7 @@ impl Transaction {
                 }
                 TypeRef::SubDoc => match b.as_subdoc() {
                     None => JsValue::UNDEFINED,
-                    Some(doc) => crate::Doc::from(doc).into(),
+                    Some(doc) => crate::Doc::from_subdoc(doc).into(),
                 },
                 TypeRef::XmlHook | TypeRef::Undefined => JsValue::UNDEFINED,
             },
