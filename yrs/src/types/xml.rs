@@ -287,7 +287,7 @@ impl XmlElementRef {
 impl GetString for XmlElementRef {
     /// Converts current XML node into a textual representation. This representation if flat, it
     /// doesn't include any indentation.
-    fn get_string(&self, txn: &Transaction) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
         let tag: &str = self.tag();
         let inner = self.0;
         let mut s = String::new();
@@ -593,7 +593,7 @@ impl Observable for XmlTextRef {
 }
 
 impl GetString for XmlTextRef {
-    fn get_string(&self, _txn: &Transaction) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> String {
         XmlTextRef::get_string_fragment(self.0.start, None, None)
     }
 }
@@ -819,7 +819,7 @@ impl AsRef<ArrayRef> for XmlFragmentRef {
 impl GetString for XmlFragmentRef {
     /// Converts current XML node into a textual representation. This representation if flat, it
     /// doesn't include any indentation.
-    fn get_string(&self, txn: &Transaction) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
         let inner = self.0;
         let mut s = String::new();
         for i in inner.iter(txn) {
@@ -956,7 +956,7 @@ pub struct XmlHookRef(BranchPtr);
 impl Map for XmlHookRef {}
 
 impl ToJson for XmlHookRef {
-    fn to_json(&self, txn: &Transaction) -> Any {
+    fn to_json<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Any {
         let map: &MapRef = self.as_ref();
         map.to_json(txn)
     }
@@ -1204,18 +1204,18 @@ impl<'a> Iterator for Attributes<'a> {
     }
 }
 
-pub struct XmlNodes<'a> {
+pub struct XmlNodes<'a, D: RefProvider<Doc>> {
     iter: BlockIter,
-    txn: &'a Transaction<'a>,
+    txn: &'a Transaction<D>,
 }
 
-impl<'a> XmlNodes<'a> {
-    fn new(iter: BlockIter, txn: &'a Transaction) -> Self {
+impl<'a, D: RefProvider<Doc>> XmlNodes<'a, D> {
+    fn new(iter: BlockIter, txn: &'a Transaction<D>) -> Self {
         XmlNodes { iter, txn }
     }
 }
 
-impl<'a> Iterator for XmlNodes<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for XmlNodes<'a, D> {
     type Item = XmlOut;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1225,15 +1225,15 @@ impl<'a> Iterator for XmlNodes<'a> {
 }
 
 /// An iterator over [XmlElement] successors, working in a recursive depth-first manner.
-pub struct TreeWalker<'a> {
+pub struct TreeWalker<'a, D: RefProvider<Doc>> {
     current: Option<&'a Item>,
     root: TypePtr,
     first_call: bool,
-    _txn: &'a Transaction<'a>,
+    _txn: &'a Transaction<D>,
 }
 
-impl<'a> TreeWalker<'a> {
-    pub fn new(root: &'a Branch, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D: RefProvider<Doc>> TreeWalker<'a, D> {
+    pub fn new(root: &'a Branch, txn: &'a Transaction<D>) -> Self {
         TreeWalker {
             current: root.start.as_deref(),
             root: TypePtr::Branch(BranchPtr::from(root)),
@@ -1243,7 +1243,7 @@ impl<'a> TreeWalker<'a> {
     }
 }
 
-impl<'a> Iterator for TreeWalker<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for TreeWalker<'a, D> {
     type Item = XmlOut;
 
     /// Tree walker used depth-first search to move over the xml tree.
@@ -1354,18 +1354,18 @@ impl XmlTextEvent {
     }
 }
 
-pub struct Siblings<'a> {
+pub struct Siblings<'a, D: RefProvider<Doc>> {
     current: Option<ItemPtr>,
-    _txn: &'a Transaction<'a>,
+    _txn: &'a Transaction<D>,
 }
 
-impl<'a> Siblings<'a> {
-    fn new(current: Option<ItemPtr>, txn: &'a Transaction) -> Self {
+impl<'a, D: RefProvider<Doc>> Siblings<'a, D> {
+    fn new(current: Option<ItemPtr>, txn: &'a Transaction<D>) -> Self {
         Siblings { current, _txn: txn }
     }
 }
 
-impl<'a> Iterator for Siblings<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for Siblings<'a, D> {
     type Item = XmlOut;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1385,7 +1385,7 @@ impl<'a> Iterator for Siblings<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Siblings<'a> {
+impl<'a, D: RefProvider<Doc>> DoubleEndedIterator for Siblings<'a, D> {
     fn next_back(&mut self) -> Option<Self::Item> {
         while let Some(item) = self.current.as_deref() {
             self.current = item.left;

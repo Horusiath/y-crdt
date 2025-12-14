@@ -624,18 +624,18 @@ impl Branch {
     }
 }
 
-pub(crate) struct Iter<'a> {
+pub(crate) struct Iter<'a, D: RefProvider<Doc>> {
     ptr: Option<&'a ItemPtr>,
-    _txn: &'a Transaction<'a>,
+    _txn: &'a Transaction<D>,
 }
 
-impl<'a> Iter<'a> {
-    fn new(ptr: Option<&'a ItemPtr>, txn: &'a Transaction) -> Self {
+impl<'a, D: RefProvider<Doc>> Iter<'a, D> {
+    fn new(ptr: Option<&'a ItemPtr>, txn: &'a Transaction<D>) -> Self {
         Iter { ptr, _txn: txn }
     }
 }
 
-impl<'a> Iterator for Iter<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for Iter<'a, D> {
     type Item = &'a Item;
 
     fn next(&mut self) -> Option<Self::Item> {

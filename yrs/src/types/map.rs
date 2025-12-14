@@ -76,7 +76,7 @@ impl Observable for MapRef {
 }
 
 impl ToJson for MapRef {
-    fn to_json(&self, txn: &Transaction<D>) -> Any {
+    fn to_json<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Any {
         let inner = self.0;
         let mut res = HashMap::new();
         for (key, item) in inner.map.iter() {

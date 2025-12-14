@@ -195,7 +195,7 @@ impl GetString for WeakRef<TextRef> {
     /// // check the quoted fragment
     /// assert_eq!(link.get_string(&txn), "hello ".to_string());
     /// ```
-    fn get_string(&self, txn: &Transaction<D>) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
         self.source().to_string(txn.doc())
     }
 }
@@ -389,13 +389,13 @@ where
 }
 
 impl GetString for WeakPrelim<TextRef> {
-    fn get_string(&self, txn: &Transaction<D>) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
         self.source.to_string(txn.doc())
     }
 }
 
 impl GetString for WeakPrelim<XmlTextRef> {
-    fn get_string(&self, txn: &Transaction<D>) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
         self.source.to_xml_string(txn.doc())
     }
 }

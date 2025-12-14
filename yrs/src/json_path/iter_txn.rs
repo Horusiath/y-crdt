@@ -1,6 +1,7 @@
 use crate::any::AnyArrayIter;
+use crate::cell::RefProvider;
 use crate::json_path::JsonPathToken;
-use crate::{Any, Array, JsonPath, JsonPathEval, Map, Out, Transaction, Xml, XmlFragment};
+use crate::{Any, Array, Doc, JsonPath, JsonPathEval, Map, Out, Transaction, Xml, XmlFragment};
 
 impl<'tx> JsonPathEval for Transaction<'tx> {
     type Iter<'a>
@@ -193,14 +194,14 @@ fn index_union_iter<'a>(
     }
 }
 
-pub struct JsonPathIter<'a> {
-    txn: &'a Transaction<'a>,
+pub struct JsonPathIter<'a, D: RefProvider<Doc>> {
+    txn: &'a Transaction<D>,
     pattern: &'a [JsonPathToken<'a>],
     frame: ExecutionFrame<'a>,
 }
 
-impl<'a> JsonPathIter<'a> {
-    fn new(txn: &'a Transaction, path: &'a [JsonPathToken<'a>]) -> Self {
+impl<'a, D: RefProvider<Doc>> JsonPathIter<'a, D> {
+    fn new(txn: &'a Transaction<D>, path: &'a [JsonPathToken<'a>]) -> Self {
         Self {
             txn,
             pattern: path.as_ref(),
@@ -209,7 +210,7 @@ impl<'a> JsonPathIter<'a> {
     }
 }
 
-impl<'a> Iterator for JsonPathIter<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for JsonPathIter<'a, D> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {

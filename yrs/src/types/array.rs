@@ -89,7 +89,7 @@ impl IndexedSequence for ArrayRef {}
 impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
-    fn to_json(&self, txn: &Transaction) -> Any {
+    fn to_json<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Any {
         let mut walker = BlockIter::new(self.0);
         let len = self.0.len();
         let mut buf = vec![Out::default(); len as usize];
@@ -426,20 +426,20 @@ pub trait Array: AsRef<Branch> + Sized {
     }
 }
 
-pub struct ArrayIter<'a> {
+pub struct ArrayIter<'a, D: RefProvider<Doc>> {
     inner: BlockIter,
-    txn: &'a Transaction<'a>,
+    txn: &'a Transaction<D>,
 }
 
-impl<'a> ArrayIter<'a> {
-    pub fn from(array: &ArrayRef, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D: RefProvider<Doc>> ArrayIter<'a, D> {
+    pub fn from(array: &ArrayRef, txn: &'a Transaction<D>) -> Self {
         ArrayIter {
             inner: BlockIter::new(array.0),
             txn,
         }
     }
 
-    pub fn from_ref(array: &Branch, txn: &'a Transaction<'a>) -> Self {
+    pub fn from_ref(array: &Branch, txn: &'a Transaction<D>) -> Self {
         ArrayIter {
             inner: BlockIter::new(BranchPtr::from(array)),
             txn,
@@ -447,7 +447,7 @@ impl<'a> ArrayIter<'a> {
     }
 }
 
-impl<'a> Iterator for ArrayIter<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for ArrayIter<'a, D> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {

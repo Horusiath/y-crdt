@@ -118,7 +118,7 @@ impl GetString for TextRef {
     /// Converts context of this text data structure into a single string value. This method doesn't
     /// render formatting attributes or embedded content. In order to retrieve it, use
     /// [TextRef::diff] method.
-    fn get_string(&self, _txn: &Transaction) -> String {
+    fn get_string<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> String {
         let mut start = self.0.start;
         let mut s = String::new();
         while let Some(item) = start.as_deref() {

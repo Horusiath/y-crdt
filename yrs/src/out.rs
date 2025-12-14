@@ -253,7 +253,7 @@ impl ToJson for Out {
     /// - [Out::Map] is converted into JSON-like object map.
     /// - [Out::Text], [Out::XmlText] and [Out::XmlElement] are converted into strings
     ///   (XML types are stringified XML representation).
-    fn to_json(&self, txn: &Transaction) -> Any {
+    fn to_json<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Any {
         match self {
             Out::Any(a) => a.clone(),
             Out::Text(v) => Any::from(v.get_string(txn)),
