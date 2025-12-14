@@ -1,5 +1,5 @@
 use crate::block::{BlockCell, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
-use crate::cell::RefProvider;
+use crate::cell::{MutProvider, RefProvider};
 use crate::doc::SubDocHook;
 use crate::out::FromOut;
 use crate::types::array::ArrayEvent;
@@ -377,7 +377,7 @@ impl Branch {
 
     /// Removes an entry under given `key` of a map component of a current root type, returning
     /// a materialized representation of value stored underneath if entry existed prior deletion.
-    pub(crate) fn remove(&self, txn: &mut TransactionMut, key: &str) -> Option<Out> {
+    pub(crate) fn remove<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, key: &str) -> Option<Out> {
         let item = *self.map.get(key)?;
         let prev = if !item.is_deleted() {
             item.content.get_last()
@@ -413,8 +413,8 @@ impl Branch {
     ///
     /// If `index` is outside the range of an array component of current branch node, both tuple
     /// values will be `None`.
-    fn index_to_ptr(
-        txn: &mut TransactionMut,
+    fn index_to_ptr<D: MutProvider<Doc>>(
+        txn: &mut Transaction<D>,
         mut ptr: Option<ItemPtr>,
         mut index: u32,
     ) -> (Option<ItemPtr>, Option<ItemPtr>) {
@@ -452,9 +452,9 @@ impl Branch {
 
     /// Inserts a preliminary `value` into a current branch indexed sequence component at the given
     /// `index`. Returns an item reference created as a result of this operation.
-    pub(crate) fn insert_at<V: Prelim>(
+    pub(crate) fn insert_at<D: MutProvider<Doc>, V: Prelim>(
         &self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
         index: u32,
         value: V,
     ) -> Option<ItemPtr> {
@@ -689,7 +689,7 @@ impl<S: RootRef> Root<S> {
 
     /// Returns a reference to a shared root-level collection current [Root] represents, or creates
     /// it if it wasn't instantiated before.
-    pub fn get_or_create(&self, txn: &mut TransactionMut) -> S {
+    pub fn get_or_create<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>) -> S {
         let store = txn.doc_mut();
         let branch = store.get_or_create_type(self.name.clone(), S::type_ref());
         S::from(branch)

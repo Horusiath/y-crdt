@@ -6,9 +6,9 @@ use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{DeleteSet, Doc, Observer, Transaction, TransactionMut, ID};
+use crate::{DeleteSet, Doc, Observer, Transaction, ID};
 
-use crate::cell::{Cell, CellRef};
+use crate::cell::{Cell, CellRef, MutProvider};
 use std::collections::HashSet;
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
@@ -720,10 +720,10 @@ where
         changed
     }
 
-    fn pop(
+    fn pop<D: MutProvider<Doc>>(
         stack: &mut Vec<StackItem<M>>,
         other: &Vec<StackItem<M>>,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
         scope: &HashSet<BranchPtr>,
     ) -> Option<StackItem<M>> {
         let mut result = None;

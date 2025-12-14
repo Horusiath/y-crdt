@@ -996,7 +996,7 @@ pub trait Xml: AsRef<Branch> {
     }
 
     /// Removes an attribute recognized by an `attr_name` from a current XML element.
-    fn remove_attribute<K>(&self, txn: &mut Transaction, attr_name: &K)
+    fn remove_attribute<D: MutProvider<Doc>, K>(&self, txn: &mut Transaction<D>, attr_name: &K)
     where
         K: AsRef<str>,
     {
@@ -1004,7 +1004,7 @@ pub trait Xml: AsRef<Branch> {
     }
 
     /// Inserts an attribute entry into current XML element.
-    fn insert_attribute<K, V>(&self, txn: &mut Transaction, key: K, value: V) -> V::Return
+    fn insert_attribute<D: MutProvider<Doc>, K, V>(&self, txn: &mut Transaction<D>, key: K, value: V) -> V::Return
     where
         K: Into<Arc<str>>,
         V: Prelim,
@@ -1034,18 +1034,18 @@ pub trait Xml: AsRef<Branch> {
 
     /// Returns a value of an attribute given its `attr_name`. Returns `None` if no such attribute
     /// can be found inside of a current XML element.
-    fn get_attribute(&self, txn: &Transaction, attr_name: &str) -> Option<Out> {
+    fn get_attribute<D: RefProvider<Doc>>(&self, txn: &Transaction<D>, attr_name: &str) -> Option<Out> {
         let branch = self.as_ref();
         branch.get(txn, attr_name)
     }
 
     /// Returns an unordered iterator over all attributes (key-value pairs), that can be found
     /// inside of a current XML element.
-    fn attributes<'a>(&'a self, txn: &'a Transaction) -> Attributes<'a> {
+    fn attributes<'a, D: RefProvider<Doc>>(&'a self, txn: &'a Transaction<D>) -> Attributes<'a, D> {
         Attributes(Entries::new(&self.as_ref().map, txn))
     }
 
-    fn siblings<'a>(&self, txn: &'a Transaction) -> Siblings<'a> {
+    fn siblings<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Siblings<'a, D> {
         let ptr = BranchPtr::from(self.as_ref());
         Siblings::new(ptr.item, txn)
     }
@@ -1066,13 +1066,13 @@ pub trait XmlFragment: AsRef<Branch> {
     /// Returns an iterator over all children of a current XML fragment.
     /// It does NOT include nested children of its children - for such cases use [Self::successors]
     /// iterator.
-    fn children<'a>(&self, txn: &'a Transaction) -> XmlNodes<'a> {
+    fn children<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> XmlNodes<'a, D> {
         let iter = BlockIter::new(BranchPtr::from(self.as_ref()));
         XmlNodes::new(iter, txn)
     }
 
     /// Returns a number of elements stored in current array.
-    fn len(&self, _txn: &Transaction) -> u32 {
+    fn len<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().len()
     }
 
@@ -1081,7 +1081,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// that value at the end of it.
     ///
     /// Using `index` value that's higher than current array length results in panic.
-    fn insert<V>(&self, txn: &mut Transaction, index: u32, xml_node: V) -> V::Return
+    fn insert<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, index: u32, xml_node: V) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1090,7 +1090,7 @@ pub trait XmlFragment: AsRef<Branch> {
     }
 
     /// Inserts given `value` at the end of the current array.
-    fn push_back<V>(&self, txn: &mut Transaction, xml_node: V) -> V::Return
+    fn push_back<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, xml_node: V) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1099,7 +1099,7 @@ pub trait XmlFragment: AsRef<Branch> {
     }
 
     /// Inserts given `value` at the beginning of the current array.
-    fn push_front<V>(&self, txn: &mut Transaction, xml_node: V) -> V::Return
+    fn push_front<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, xml_node: V) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1107,7 +1107,7 @@ pub trait XmlFragment: AsRef<Branch> {
     }
 
     /// Removes a single element at provided `index`.
-    fn remove(&self, txn: &mut Transaction, index: u32) {
+    fn remove<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32) {
         self.remove_range(txn, index, 1)
     }
 
@@ -1115,7 +1115,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// a particular number described by `len` has been deleted. This method panics in case when
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside the bounds of an array.
-    fn remove_range(&self, txn: &mut Transaction, index: u32, len: u32) {
+    fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             walker.delete(txn, len)
@@ -1126,7 +1126,7 @@ pub trait XmlFragment: AsRef<Branch> {
 
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
-    fn get(&self, _txn: &Transaction, index: u32) -> Option<XmlOut> {
+    fn get<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>, index: u32) -> Option<XmlOut> {
         let branch = self.as_ref();
         let (content, _) = branch.get_at(index)?;
         if let ItemContent::Type(inner) = content {
@@ -1177,22 +1177,22 @@ pub trait XmlFragment: AsRef<Branch> {
     ///   "again".to_string()
     /// ]);
     /// ```
-    fn successors<'a>(&'a self, txn: &'a Transaction) -> TreeWalker<'a> {
+    fn successors<'a, D: RefProvider<Doc>>(&'a self, txn: &'a Transaction<D>) -> TreeWalker<'a, D> {
         TreeWalker::new(self.as_ref(), txn)
     }
 }
 
 /// Iterator over the attributes (key-value pairs represented as a strings) of an [XmlElement].
-pub struct Attributes<'a>(Entries<'a>);
+pub struct Attributes<'a, D: RefProvider<Doc>>(Entries<'a, D>);
 
-impl<'a> Attributes<'a> {
-    pub fn new(branch: &'a Branch, txn: &'a Transaction<'a>) -> Self {
+impl<'a, D: RefProvider<Doc>> Attributes<'a, D> {
+    pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
         let entries = Entries::new(&branch.map, txn);
         Attributes(entries)
     }
 }
 
-impl<'a> Iterator for Attributes<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for Attributes<'a, D> {
     type Item = (&'a str, Out);
 
     fn next(&mut self) -> Option<Self::Item> {

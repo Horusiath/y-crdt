@@ -179,7 +179,7 @@ impl DefaultPrelim for ArrayRef {
 
 pub trait Array: AsRef<Branch> + Sized {
     /// Returns a number of elements stored in current array.
-    fn len(&self, _txn: &Transaction) -> u32 {
+    fn len<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().len()
     }
 
@@ -192,7 +192,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Panics
     ///
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
-    fn insert<V>(&self, txn: &mut Transaction, index: u32, value: V) -> V::Return
+    fn insert<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, index: u32, value: V) -> V::Return
     where
         V: Prelim,
     {
@@ -214,7 +214,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Panics
     ///
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
-    fn insert_range<T, V>(&self, txn: &mut Transaction, index: u32, values: T)
+    fn insert_range<D: MutProvider<Doc>, T, V>(&self, txn: &mut Transaction<D>, index: u32, values: T)
     where
         T: IntoIterator<Item = V>,
         V: Into<Any>,
@@ -228,7 +228,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Inserts given `value` at the end of the current array.
     ///
     /// Returns a reference to an integrated preliminary input.
-    fn push_back<V>(&self, txn: &mut Transaction, value: V) -> V::Return
+    fn push_back<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, value: V) -> V::Return
     where
         V: Prelim,
     {
@@ -239,7 +239,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// Inserts given `value` at the beginning of the current array.
     ///
     /// Returns a reference to an integrated preliminary input.
-    fn push_front<V>(&self, txn: &mut Transaction, content: V) -> V::Return
+    fn push_front<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, content: V) -> V::Return
     where
         V: Prelim,
     {
@@ -247,7 +247,7 @@ pub trait Array: AsRef<Branch> + Sized {
     }
 
     /// Removes a single element at provided `index`.
-    fn remove(&self, txn: &mut Transaction, index: u32) {
+    fn remove<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32) {
         self.remove_range(txn, index, 1)
     }
 
@@ -255,7 +255,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// a particular number described by `len` has been deleted. This method panics in case when
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside of the bounds of an array.
-    fn remove_range(&self, txn: &mut Transaction, index: u32, len: u32) {
+    fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             walker.delete(txn, len)
@@ -266,7 +266,7 @@ pub trait Array: AsRef<Branch> + Sized {
 
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
-    fn get<R: FromOut>(&self, txn: &Transaction, index: u32) -> Option<R> {
+    fn get<D: RefProvider<Doc>, R: FromOut>(&self, txn: &Transaction<D>, index: u32) -> Option<R> {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
         if walker.try_forward(txn, index) {
             let out = walker.read_value(txn)?;
@@ -329,7 +329,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// let bob: Option<Person> = array.get_as(&txn, 1).unwrap();
     /// assert_eq!(bob, None);
     /// ```
-    fn get_as<V>(&self, txn: &Transaction, index: u32) -> Result<V, Error>
+    fn get_as<D: RefProvider<Doc>, V>(&self, txn: &Transaction<D>, index: u32) -> Result<V, Error>
     where
         V: DeserializeOwned,
     {
@@ -346,7 +346,7 @@ pub trait Array: AsRef<Branch> + Sized {
     ///
     /// This method panics if either `source` or `target` indexes are greater than current array's
     /// length.
-    fn move_to(&self, txn: &mut Transaction, source: u32, target: u32) {
+    fn move_to<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, source: u32, target: u32) {
         if source == target || source + 1 == target {
             // It doesn't make sense to move a range into the same range (it's basically a no-op).
             return;
@@ -390,9 +390,9 @@ pub trait Array: AsRef<Branch> + Sized {
     ///
     /// This method panics if either `start`, `end` or `target` indexes are greater than current
     /// array's length.
-    fn move_range_to(
+    fn move_range_to<D: MutProvider<Doc>>(
         &self,
-        txn: &mut Transaction,
+        txn: &mut Transaction<D>,
         start: u32,
         assoc_start: Assoc,
         end: u32,
@@ -421,7 +421,7 @@ pub trait Array: AsRef<Branch> + Sized {
 
     /// Returns an iterator, that can be used to lazely traverse over all values stored in a current
     /// array.
-    fn iter<'a>(&self, txn: &'a Transaction) -> ArrayIter<'a> {
+    fn iter<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> ArrayIter<'a, D> {
         ArrayIter::from_ref(self.as_ref(), txn)
     }
 }

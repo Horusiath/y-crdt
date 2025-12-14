@@ -249,7 +249,7 @@ where
     /// returned.
     ///
     /// Use [WeakRef::try_deref_value] if conversion is not possible or desired at the current moment.
-    pub fn try_deref<V>(&self, txn: &Transaction<D>) -> Option<V>
+    pub fn try_deref<V, D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<V>
     where
         V: FromOut,
     {
@@ -280,7 +280,7 @@ where
     /// map.insert(&mut txn, "A", "other");
     /// assert_eq!(link.try_deref_value(&txn), Some("other".into()));
     /// ```
-    pub fn try_deref_value(&self, txn: &Transaction<D>) -> Option<Out> {
+    pub fn try_deref_value<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
         let source = self.try_source()?;
         let item = source.quote_start.get_item(txn.doc());
         let last = item.to_iter().last()?;
@@ -298,7 +298,7 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakRef] quotation
     /// range.
-    pub fn unquote<'a>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
+    pub fn unquote<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
         if let Some(source) = self.try_source() {
             source.unquote(txn.doc())
         } else {
@@ -360,7 +360,7 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakPrelim] quotation
     /// range.
-    pub fn unquote<'a>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
+    pub fn unquote<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
         self.source.unquote(txn.doc())
     }
 }
@@ -369,11 +369,14 @@ impl<P> WeakPrelim<P>
 where
     P: SharedRef + Map,
 {
-    pub fn try_deref_raw(&self, txn: &Transaction<D>) -> Option<Out> {
+    pub fn try_deref_raw<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
         self.source.unquote(txn.doc()).next()
     }
 
-    pub fn try_deref<V>(&self, txn: &Transaction<D>) -> Result<V, Option<V::Error>>
+    pub fn try_deref<V, D: RefProvider<Doc>>(
+        &self,
+        txn: &Transaction<D>,
+    ) -> Result<V, Option<V::Error>>
     where
         V: TryFrom<Out>,
     {
@@ -390,13 +393,15 @@ where
 
 impl GetString for WeakPrelim<TextRef> {
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        self.source.to_string(txn.doc())
+        let doc = txn.doc();
+        self.source.to_string(&*doc)
     }
 }
 
 impl GetString for WeakPrelim<XmlTextRef> {
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        self.source.to_xml_string(txn.doc())
+        let doc = txn.doc();
+        self.source.to_xml_string(&*doc)
     }
 }
 
@@ -802,14 +807,14 @@ pub enum QuoteError {
     OutOfBounds,
 }
 
-pub(crate) fn join_linked_range(mut block: ItemPtr, txn: &mut Transaction<D>) {
+pub(crate) fn join_linked_range(mut block: ItemPtr, doc: &mut Doc) {
     let item = block.deref_mut();
     // this item may exists within a quoted range
     item.info.set_linked();
     // we checked if left and right exists before this method call
     let left = item.left.unwrap();
     let right = item.right.unwrap();
-    let all_links = &mut txn.doc_mut().linked_by;
+    let all_links = &mut doc.linked_by;
     let left_links = all_links.get(&left);
     let right_links = all_links.get(&right);
     let mut common = HashSet::new();

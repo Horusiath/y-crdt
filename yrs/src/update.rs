@@ -15,8 +15,9 @@ use crate::slice::ItemSlice;
 use crate::types::TypePtr;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
+use crate::cell::MutProvider;
 use crate::utils::client_hasher::ClientHasher;
-use crate::{OffsetKind, StateVector, Transaction, ID};
+use crate::{Doc, OffsetKind, StateVector, Transaction, ID};
 
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct UpdateBlocks {
@@ -248,9 +249,9 @@ impl Update {
     /// pending update object is returned which contains blocks that couldn't be integrated, most
     /// likely because there were missing blocks that are used as a dependencies of other blocks
     /// contained in this update.
-    pub(crate) fn integrate(
+    pub(crate) fn integrate<D: MutProvider<Doc>>(
         mut self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
     ) -> Result<(Option<PendingUpdate>, Option<Update>), UpdateError> {
         let remaining_blocks = if self.blocks.is_empty() {
             None
@@ -984,7 +985,7 @@ impl BlockCarrier {
         }
     }
 
-    pub fn integrate(&mut self, txn: &mut TransactionMut, offset: u32) -> bool {
+    pub fn integrate<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, offset: u32) -> bool {
         match self {
             BlockCarrier::Item(x) => ItemPtr::from(x).integrate(txn, offset),
             BlockCarrier::Skip(x) => x.integrate(offset),

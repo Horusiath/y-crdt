@@ -155,7 +155,7 @@ impl FromOut for TextRef {
 
 pub trait Text: AsRef<Branch> + Sized {
     /// Returns a number of characters visible in a current text data structure.
-    fn len(&self, _txn: &Transaction) -> u32 {
+    fn len<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().content_len
     }
 
@@ -207,7 +207,7 @@ pub trait Text: AsRef<Branch> + Sized {
     /// assert_eq!(ytext.get_string(txn), "Hi ★! to you");
     /// ```
     ///
-    fn insert(&self, txn: &mut TransactionMut, index: u32, chunk: &str) {
+    fn insert<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, chunk: &str) {
         if chunk.is_empty() {
             return;
         }
@@ -228,9 +228,9 @@ pub trait Text: AsRef<Branch> + Sized {
         }
     }
 
-    fn apply_delta<D, P>(&self, txn: &mut TransactionMut, delta: D)
+    fn apply_delta<D: MutProvider<Doc>, I, P>(&self, txn: &mut Transaction<D>, delta: I)
     where
-        D: IntoIterator<Item = Delta<P>>,
+        I: IntoIterator<Item = Delta<P>>,
         P: Prelim,
     {
         let branch = BranchPtr::from(self.as_ref());
@@ -270,9 +270,9 @@ pub trait Text: AsRef<Branch> + Sized {
     /// formatting blocks.
     ///
     /// This method will panic if provided `index` is greater than the length of a current text.
-    fn insert_with_attributes(
+    fn insert_with_attributes<D: MutProvider<Doc>>(
         &self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
         index: u32,
         chunk: &str,
         attributes: Attrs,
@@ -296,7 +296,7 @@ pub trait Text: AsRef<Branch> + Sized {
     /// the end of it.
     ///
     /// This method will panic if provided `index` is greater than the length of a current text.
-    fn insert_embed<V>(&self, txn: &mut TransactionMut, index: u32, content: V) -> V::Return
+    fn insert_embed<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, index: u32, content: V) -> V::Return
     where
         V: Into<EmbedPrelim<V>> + Prelim,
     {
@@ -319,9 +319,9 @@ pub trait Text: AsRef<Branch> + Sized {
     /// a formatting blocks.
     ///
     /// This method will panic if provided `index` is greater than the length of a current text.
-    fn insert_embed_with_attributes<V>(
+    fn insert_embed_with_attributes<D: MutProvider<Doc>, V>(
         &self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
         index: u32,
         embed: V,
         attributes: Attrs,
@@ -340,7 +340,7 @@ pub trait Text: AsRef<Branch> + Sized {
     }
 
     /// Appends a given `chunk` of text at the end of a current text structure.
-    fn push(&self, txn: &mut TransactionMut, chunk: &str) {
+    fn push<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, chunk: &str) {
         let idx = self.len(txn);
         self.insert(txn, idx, chunk)
     }
@@ -348,7 +348,7 @@ pub trait Text: AsRef<Branch> + Sized {
     /// Removes up to a `len` characters from a current text structure, starting at given `index`.
     /// This method panics in case when not all expected characters were removed (due to
     /// insufficient number of characters to remove) or `index` is outside of the bounds of text.
-    fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
+    fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let this = BranchPtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             remove(txn, &mut pos, len)
@@ -359,7 +359,7 @@ pub trait Text: AsRef<Branch> + Sized {
 
     /// Wraps an existing piece of text within a range described by `index`-`len` parameters with
     /// formatting blocks containing provided `attributes` metadata.
-    fn format(&self, txn: &mut TransactionMut, index: u32, len: u32, attributes: Attrs) {
+    fn format<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32, attributes: Attrs) {
         let this = BranchPtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             insert_format(this, txn, &mut pos, len, attributes)
@@ -407,9 +407,9 @@ pub trait Text: AsRef<Branch> + Sized {
     ///     Diff::new("world".into(), Some(Box::new(italic_and_bold))),
     /// ]);
     /// ```
-    fn diff<D, F>(&self, _txn: &Transaction, compute_ychange: F) -> Vec<Diff<D>>
+    fn diff<T: RefProvider<Doc>, R, F>(&self, _txn: &Transaction<T>, compute_ychange: F) -> Vec<Diff<R>>
     where
-        F: Fn(YChange) -> D,
+        F: Fn(YChange) -> R,
     {
         let mut asm = DiffAssembler::new(compute_ychange);
         asm.process(self.as_ref().start, None, None, None, None);
@@ -417,15 +417,15 @@ pub trait Text: AsRef<Branch> + Sized {
     }
 
     /// Returns the Delta representation of this YText type.
-    fn diff_range<D, F>(
+    fn diff_range<T: MutProvider<Doc>, R, F>(
         &self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<T>,
         hi: Option<&Snapshot>,
         lo: Option<&Snapshot>,
         compute_ychange: F,
-    ) -> Vec<Diff<D>>
+    ) -> Vec<Diff<R>>
     where
-        F: Fn(YChange) -> D,
+        F: Fn(YChange) -> R,
     {
         if let Some(snapshot) = hi {
             txn.split_by_snapshot(snapshot);
@@ -692,9 +692,9 @@ where
     asm.finish()
 }
 
-fn insert<P: Prelim>(
+fn insert<D: MutProvider<Doc>, P: Prelim>(
     branch: BranchPtr,
-    txn: &mut TransactionMut,
+    txn: &mut Transaction<D>,
     pos: &mut ItemPosition,
     value: P,
     mut attributes: Attrs,
@@ -723,7 +723,7 @@ pub(crate) fn update_current_attributes(attrs: &mut Attrs, key: &str, value: &An
     }
 }
 
-fn find_position(this: BranchPtr, txn: &mut TransactionMut, index: u32) -> Option<ItemPosition> {
+fn find_position<D: MutProvider<Doc>>(this: BranchPtr, txn: &mut Transaction<D>, index: u32) -> Option<ItemPosition> {
     let mut pos = {
         ItemPosition {
             parent: this.into(),
@@ -794,7 +794,7 @@ fn find_position(this: BranchPtr, txn: &mut TransactionMut, index: u32) -> Optio
     Some(pos)
 }
 
-fn remove(txn: &mut TransactionMut, pos: &mut ItemPosition, len: u32) {
+fn remove<D: MutProvider<Doc>>(txn: &mut Transaction<D>, pos: &mut ItemPosition, len: u32) {
     let encoding = txn.doc().offset_kind();
     let mut remaining = len;
     let start = pos.right.clone();
@@ -863,9 +863,9 @@ fn is_valid_target(item: ItemPtr) -> bool {
     }
 }
 
-fn insert_format(
+fn insert_format<D: MutProvider<Doc>>(
     this: BranchPtr,
-    txn: &mut TransactionMut,
+    txn: &mut Transaction<D>,
     pos: &mut ItemPosition,
     mut len: u32,
     attrs: Attrs,
@@ -953,9 +953,9 @@ fn minimize_attr_changes(pos: &mut ItemPosition, attrs: &Attrs) {
     }
 }
 
-fn insert_attributes(
+fn insert_attributes<D: MutProvider<Doc>>(
     this: BranchPtr,
-    txn: &mut TransactionMut,
+    txn: &mut Transaction<D>,
     pos: &mut ItemPosition,
     attrs: Attrs,
 ) -> Attrs {
@@ -996,9 +996,9 @@ fn insert_attributes(
     negated_attrs
 }
 
-fn insert_negated_attributes(
+fn insert_negated_attributes<D: MutProvider<Doc>>(
     this: BranchPtr,
-    txn: &mut TransactionMut,
+    txn: &mut Transaction<D>,
     pos: &mut ItemPosition,
     mut attrs: Attrs,
 ) {
@@ -1046,8 +1046,8 @@ fn insert_negated_attributes(
     }
 }
 
-fn clean_format_gap(
-    txn: &mut TransactionMut,
+fn clean_format_gap<D: MutProvider<Doc>>(
+    txn: &mut Transaction<D>,
     mut start: Option<ItemPtr>,
     mut end: Option<ItemPtr>,
     start_attrs: &Attrs,

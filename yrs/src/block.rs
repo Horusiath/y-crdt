@@ -239,9 +239,9 @@ unsafe impl Send for ItemPtr {}
 unsafe impl Sync for ItemPtr {}
 
 impl ItemPtr {
-    pub(crate) fn redo<M>(
+    pub(crate) fn redo<D: MutProvider<Doc>, M>(
         &mut self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
         redo_items: &HashSet<ItemPtr>,
         items_to_delete: &DeleteSet,
         s1: &Vec<StackItem<M>>,
@@ -492,7 +492,7 @@ impl ItemPtr {
 
     /// Integrates current block into block store.
     /// If it returns true, it means that the block should be deleted after being added to a block store.
-    pub(crate) fn integrate(&mut self, txn: &mut TransactionMut, offset: u32) -> bool {
+    pub(crate) fn integrate<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, offset: u32) -> bool {
         let self_ptr = self.clone();
         let this = self.deref_mut();
         let store = txn.doc_mut();

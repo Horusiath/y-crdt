@@ -18,7 +18,7 @@ impl GCCollector {
     }
 
     /// Garbage collect all deleted blocks from current transaction's document store.
-    pub fn collect_all(txn: &mut TransactionMut, delete_set: Option<&DeleteSet>) {
+    pub fn collect_all<D: MutProvider<Doc>>(txn: &mut Transaction<D>, delete_set: Option<&DeleteSet>) {
         let mut gc = Self::default();
         let (doc, state) = txn.split_mut();
         match delete_set {

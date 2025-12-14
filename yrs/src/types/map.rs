@@ -382,7 +382,7 @@ pub trait Map: AsRef<Branch> + Sized {
     }
 
     /// Checks if an entry with given `key` can be found within current map.
-    fn contains_key(&self, _txn: &Transaction<D>, key: &str) -> bool {
+    fn contains_key<D: RefProvider<Doc>>(&self, _txn: &Transaction<D>, key: &str) -> bool {
         if let Some(item) = self.as_ref().map.get(key) {
             !item.is_deleted()
         } else {
@@ -391,14 +391,14 @@ pub trait Map: AsRef<Branch> + Sized {
     }
 
     /// Clears the contents of current map, effectively removing all of its entries.
-    fn clear(&self, txn: &mut Transaction<D>) {
+    fn clear<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>) {
         for (_, ptr) in self.as_ref().map.iter() {
             txn.delete(ptr.clone());
         }
     }
 }
 
-pub struct MapIter<'a, D>(Entries<'a, D>);
+pub struct MapIter<'a, D: RefProvider<Doc>>(Entries<'a, D>);
 
 impl<'a, D: RefProvider<Doc>> MapIter<'a, D> {
     pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
@@ -447,7 +447,7 @@ impl<'a, D: RefProvider<Doc>> Iterator for MapIntoIter<'a, D> {
 
 /// An unordered iterator over the keys of a [Map].
 #[derive(Debug)]
-pub struct Keys<'a, D>(Entries<'a, D>);
+pub struct Keys<'a, D: RefProvider<Doc>>(Entries<'a, D>);
 
 impl<'a, D: RefProvider<Doc>> Keys<'a, D> {
     pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
@@ -456,7 +456,7 @@ impl<'a, D: RefProvider<Doc>> Keys<'a, D> {
     }
 }
 
-impl<'a> Iterator for Keys<'a> {
+impl<'a, D: RefProvider<Doc>> Iterator for Keys<'a, D> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -467,16 +467,16 @@ impl<'a> Iterator for Keys<'a> {
 
 /// Iterator over the values of a [Map].
 #[derive(Debug)]
-pub struct Values<'a, D>(Entries<'a, D>);
+pub struct Values<'a, D: RefProvider<Doc>>(Entries<'a, D>);
 
-impl<'a, D> Values<'a, D> {
+impl<'a, D: RefProvider<Doc>> Values<'a, D> {
     pub fn new(branch: &'a Branch, txn: &'a Transaction<D>) -> Self {
         let entries = Entries::new(&branch.map, txn);
         Values(entries)
     }
 }
 
-impl<'a, D> Iterator for Values<'a, D> {
+impl<'a, D: RefProvider<Doc>> Iterator for Values<'a, D> {
     type Item = Vec<Out>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -649,6 +649,7 @@ impl MapEvent {
 
 #[cfg(test)]
 mod test {
+    use crate::cell::RefProvider;
     use crate::test_utils::{exchange_updates, run_scenario, RngExt};
     use crate::types::text::TextPrelim;
     use crate::types::{DeepObservable, EntryChange, Event, Out, Path, PathSegment};
@@ -696,7 +697,7 @@ mod test {
         //m1m.insert(&mut t1, "y-text".to_owned(), m1a);
 
         //TODO: YArray within YMap
-        fn compare_all(m: &MapRef, txn: &Transaction<D>) {
+        fn compare_all<D: RefProvider<Doc>>(m: &MapRef, txn: &Transaction<D>) {
             assert_eq!(m.len(txn), 5);
             assert_eq!(m.get(txn, &"number".to_owned()), Some(Out::from(1f64)));
             assert_eq!(m.get(txn, &"boolean0".to_owned()), Some(Out::from(false)));
@@ -805,8 +806,8 @@ mod test {
         m1.clear(&mut t1);
 
         assert_eq!(m1.len(&t1), 0);
-        assert_eq!(m1.get::<Out>(&t1, &"key1".to_owned()), None);
-        assert_eq!(m1.get::<Out>(&t1, &"key2".to_owned()), None);
+        assert_eq!(m1.get::<Out, _>(&t1, &"key1".to_owned()), None);
+        assert_eq!(m1.get::<Out, _>(&t1, &"key2".to_owned()), None);
 
         let mut d2 = Doc::with_client_id(2);
         let m2 = d2.get_or_insert_map("map");
@@ -817,8 +818,8 @@ mod test {
             .unwrap();
 
         assert_eq!(m2.len(&t2), 0);
-        assert_eq!(m2.get::<Out>(&t2, &"key1".to_owned()), None);
-        assert_eq!(m2.get::<Out>(&t2, &"key2".to_owned()), None);
+        assert_eq!(m2.get::<Out, _>(&t2, &"key1".to_owned()), None);
+        assert_eq!(m2.get::<Out, _>(&t2, &"key2".to_owned()), None);
     }
 
     #[test]
@@ -867,13 +868,13 @@ mod test {
             let map: MapRef = doc.get("map").unwrap();
 
             assert_eq!(
-                map.get::<Out>(&doc.transact(), &"key1".to_owned()),
+                map.get::<Out, _>(&doc.transact(), &"key1".to_owned()),
                 None,
                 "'key1' entry for peer {} should be removed",
                 doc.client_id()
             );
             assert_eq!(
-                map.get::<Out>(&doc.transact(), &"key2".to_owned()),
+                map.get::<Out, _>(&doc.transact(), &"key2".to_owned()),
                 None,
                 "'key2' entry for peer {} should be removed",
                 doc.client_id()
@@ -970,7 +971,7 @@ mod test {
             let map: MapRef = doc.get("map").unwrap();
 
             assert_eq!(
-                map.get::<Out>(&doc.transact(), &"key1".to_owned()),
+                map.get::<Out, _>(&doc.transact(), &"key1".to_owned()),
                 None,
                 "entry 'key1' on peer {} should be removed",
                 doc.client_id()

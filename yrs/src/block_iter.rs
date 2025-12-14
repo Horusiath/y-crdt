@@ -1,8 +1,9 @@
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
+use crate::cell::MutProvider;
 use crate::moving::{Move, StickyIndex};
 use crate::types::TypePtr;
-use crate::{Assoc, Out, Transaction, ID};
+use crate::{Assoc, Doc, Out, Transaction, ID};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -155,7 +156,7 @@ impl BlockIter {
         true
     }
 
-    fn reduce_moves(&mut self, txn: &mut TransactionMut) {
+    fn reduce_moves<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>) {
         let mut item = self.next_item;
         if item.is_some() {
             while item == self.curr_move_start {
@@ -199,7 +200,7 @@ impl BlockIter {
         self.reached_end = false;
     }
 
-    pub fn delete(&mut self, txn: &mut TransactionMut, mut len: u32) {
+    pub fn delete<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, mut len: u32) {
         let mut item = self.next_item;
         if self.index + len > self.branch.content_len() {
             panic!("Length exceeded");
@@ -333,7 +334,7 @@ impl BlockIter {
         read
     }
 
-    fn split_rel(&mut self, txn: &mut TransactionMut) {
+    fn split_rel<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>) {
         if self.rel > 0 {
             if let Some(ptr) = self.next_item {
                 let mut item_id = ptr.id().clone();
@@ -357,9 +358,9 @@ impl BlockIter {
         }
     }
 
-    pub fn insert_contents<V: Prelim>(
+    pub fn insert_contents<D: MutProvider<Doc>, V: Prelim>(
         &mut self,
-        txn: &mut TransactionMut,
+        txn: &mut Transaction<D>,
         value: V,
     ) -> Option<ItemPtr> {
         self.reduce_moves(txn);
@@ -404,7 +405,7 @@ impl BlockIter {
         Some(block_ptr)
     }
 
-    pub fn insert_move(&mut self, txn: &mut TransactionMut, start: StickyIndex, end: StickyIndex) {
+    pub fn insert_move<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, start: StickyIndex, end: StickyIndex) {
         self.insert_contents(txn, Move::new(start, end, -1));
     }
 }
