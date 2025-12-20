@@ -1,5 +1,6 @@
+use crate::cell::RefProvider;
 use crate::doc::SubDocHook;
-use crate::{DeleteSet, StateVector, Transaction};
+use crate::{DeleteSet, Doc, StateVector, Transaction};
 
 /// An update event passed to a callback subscribed with [Doc::observe_update_v1]/[Doc::observe_update_v2].
 pub struct UpdateEvent {
@@ -9,12 +10,12 @@ pub struct UpdateEvent {
 }
 
 impl UpdateEvent {
-    pub(crate) fn new_v1(txn: &Transaction) -> Self {
+    pub(crate) fn new_v1<D: RefProvider<Doc>>(txn: &Transaction<D>) -> Self {
         UpdateEvent {
             update: txn.encode_update_v1(),
         }
     }
-    pub(crate) fn new_v2(txn: &Transaction) -> Self {
+    pub(crate) fn new_v2<D: RefProvider<Doc>>(txn: &Transaction<D>) -> Self {
         UpdateEvent {
             update: txn.encode_update_v2(),
         }
@@ -30,7 +31,7 @@ pub struct TransactionCleanupEvent {
 }
 
 impl TransactionCleanupEvent {
-    pub fn new(txn: &Transaction) -> Self {
+    pub fn new<D: RefProvider<Doc>>(txn: &Transaction<D>) -> Self {
         TransactionCleanupEvent {
             before_state: txn.before_state().clone(),
             after_state: txn.after_state().clone(),

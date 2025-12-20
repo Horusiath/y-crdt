@@ -93,7 +93,7 @@ impl ToJson for ArrayRef {
         let mut walker = BlockIter::new(self.0);
         let len = self.0.len();
         let mut buf = vec![Out::default(); len as usize];
-        let read = walker.slice(txn, &mut buf);
+        let read = walker.slice(&*txn.doc(), &mut buf);
         if read == len {
             let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
             Any::Array(res)
@@ -192,12 +192,17 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Panics
     ///
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
-    fn insert<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, index: u32, value: V) -> V::Return
+    fn insert<D: MutProvider<Doc>, V>(
+        &self,
+        txn: &mut Transaction<D>,
+        index: u32,
+        value: V,
+    ) -> V::Return
     where
         V: Prelim,
     {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.try_forward(&*txn.doc(), index) {
             let ptr = walker
                 .insert_contents(txn, value)
                 .expect("cannot insert empty value");
@@ -214,8 +219,12 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Panics
     ///
     /// This method will panic if provided `index` is greater than the current length of an [ArrayRef].
-    fn insert_range<D: MutProvider<Doc>, T, V>(&self, txn: &mut Transaction<D>, index: u32, values: T)
-    where
+    fn insert_range<D: MutProvider<Doc>, T, V>(
+        &self,
+        txn: &mut Transaction<D>,
+        index: u32,
+        values: T,
+    ) where
         T: IntoIterator<Item = V>,
         V: Into<Any>,
     {
@@ -257,7 +266,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// or `index` is outside of the bounds of an array.
     fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.try_forward(&*txn.doc(), index) {
             walker.delete(txn, len)
         } else {
             panic!("Index {} is outside of the range of an array", index);
@@ -268,8 +277,9 @@ pub trait Array: AsRef<Branch> + Sized {
     /// of the range of a current array.
     fn get<D: RefProvider<Doc>, R: FromOut>(&self, txn: &Transaction<D>, index: u32) -> Option<R> {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            let out = walker.read_value(txn)?;
+        let doc = txn.doc();
+        if walker.try_forward(&*doc, index) {
+            let out = walker.read_value(&*doc)?;
             R::from_out(out, txn).ok()
         } else {
             None
@@ -352,12 +362,14 @@ pub trait Array: AsRef<Branch> + Sized {
             return;
         }
         let this = BranchPtr::from(self.as_ref());
-        let left = StickyIndex::at(txn, this, source, Assoc::After)
+        let doc = txn.doc();
+        let left = StickyIndex::at(&*doc, this, source, Assoc::After)
             .expect("`source` index parameter is beyond the range of an y-array");
         let mut right = left.clone();
         right.assoc = Assoc::Before;
         let mut walker = BlockIter::new(this);
-        if walker.try_forward(txn, target) {
+        if walker.try_forward(&*doc, target) {
+            drop(doc);
             walker.insert_move(txn, left, right);
         } else {
             panic!(
@@ -404,12 +416,14 @@ pub trait Array: AsRef<Branch> + Sized {
             return;
         }
         let this = BranchPtr::from(self.as_ref());
-        let left = StickyIndex::at(txn, this, start, assoc_start)
+        let doc = txn.doc();
+        let left = StickyIndex::at(&*doc, this, start, assoc_start)
             .expect("`start` index parameter is beyond the range of an y-array");
-        let right = StickyIndex::at(txn, this, end + 1, assoc_end)
+        let right = StickyIndex::at(&*doc, this, end + 1, assoc_end)
             .expect("`end` index parameter is beyond the range of an y-array");
         let mut walker = BlockIter::new(this);
-        if walker.try_forward(txn, target) {
+        if walker.try_forward(&*doc, target) {
+            drop(doc);
             walker.insert_move(txn, left, right);
         } else {
             panic!(
@@ -455,8 +469,8 @@ impl<'a, D: RefProvider<Doc>> Iterator for ArrayIter<'a, D> {
             None
         } else {
             let mut buf = [Out::default(); 1];
-            let txn = self.txn;
-            if self.inner.slice(txn, &mut buf) != 0 {
+            let doc = self.txn.doc();
+            if self.inner.slice(&*doc, &mut buf) != 0 {
                 Some(std::mem::replace(&mut buf[0], Out::default()))
             } else {
                 None
@@ -1786,7 +1800,7 @@ mod test {
         let array = txn.get_or_insert_array("array");
 
         array.insert(&mut txn, 0, 1);
-        array.insert_range::<_, Any>(&mut txn, 1, []);
+        array.insert_range(&mut txn, 1, [] as [Any; 0]);
         array.push_back(&mut txn, 2);
 
         assert_eq!(

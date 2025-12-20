@@ -414,9 +414,10 @@ impl StickyIndex {
         Self::new(IndexScope::Relative(id), assoc)
     }
 
-    pub fn from_type<B>(_txn: &Transaction, branch: &B, assoc: Assoc) -> Self
+    pub fn from_type<B, D>(_txn: &Transaction<D>, branch: &B, assoc: Assoc) -> Self
     where
         B: AsRef<Branch>,
+        D: RefProvider<Doc>,
     {
         let branch = branch.as_ref();
         if let Some(ptr) = branch.item {
@@ -508,13 +509,12 @@ impl StickyIndex {
     /// let off2 = pos.get_offset(&txn).unwrap();
     /// assert_ne!(off2.index, off.index); // offset index changed due to new insert above
     /// ```
-    pub fn get_offset(&self, txn: &Transaction) -> Option<Offset> {
+    pub fn get_offset(&self, doc: &Doc) -> Option<Offset> {
         let mut branch = None;
         let mut index = 0;
 
         match &self.scope {
             IndexScope::Relative(right_id) => {
-                let doc = txn.doc();
                 if doc.blocks.get_clock(&right_id.client) <= right_id.clock {
                     // type does not exist yet
                     return None;
@@ -548,19 +548,18 @@ impl StickyIndex {
                 }
             }
             IndexScope::Nested(id) => {
-                let store = txn.doc();
-                if store.blocks.get_clock(&id.client) <= id.clock {
+                if doc.blocks.get_clock(&id.client) <= id.clock {
                     // type does not exist yet
                     return None;
                 }
-                let item = store.follow_redone(id)?; // early return if item is GC'ed
+                let item = doc.follow_redone(id)?; // early return if item is GC'ed
                 if let ItemContent::Type(b) = &item.ptr.content {
                     // we don't need to materilized ItemContent::Type - they are always 1-length
                     branch = Some(BranchPtr::from(b.as_ref()));
                 } // else - branch remains null
             }
             IndexScope::Root(name) => {
-                branch = txn.doc().get_type(name.clone());
+                branch = doc.get_type(name.clone());
                 if let Some(ptr) = branch.as_ref() {
                     index = if self.assoc == Assoc::After {
                         ptr.content_len
@@ -578,7 +577,7 @@ impl StickyIndex {
         }
     }
 
-    pub fn at(txn: &Transaction, branch: BranchPtr, mut index: u32, assoc: Assoc) -> Option<Self> {
+    pub fn at(doc: &Doc, branch: BranchPtr, mut index: u32, assoc: Assoc) -> Option<Self> {
         if assoc == Assoc::Before {
             if index == 0 {
                 let context = IndexScope::from_branch(branch);
@@ -588,7 +587,7 @@ impl StickyIndex {
         }
 
         let mut walker = BlockIter::new(branch);
-        if !walker.try_forward(txn, index) {
+        if !walker.try_forward(doc, index) {
             return None;
         }
         if walker.finished() {
@@ -959,7 +958,7 @@ pub trait IndexedSequence: AsRef<Branch> {
         index: u32,
         assoc: Assoc,
     ) -> Option<StickyIndex> {
-        StickyIndex::at(txn, BranchPtr::from(self.as_ref()), index, assoc)
+        StickyIndex::at(&*txn.doc(), BranchPtr::from(self.as_ref()), index, assoc)
     }
 }
 
@@ -1004,7 +1003,7 @@ mod test {
                 let encoded = rel_pos.encode_v1();
                 let decoded = StickyIndex::decode_v1(&encoded).unwrap();
                 let abs_pos = decoded
-                    .get_offset(&txn)
+                    .get_offset(&*txn.doc())
                     .expect(&format!("offset not found for index {} of {}", i, decoded));
                 assert_eq!(abs_pos.index, i);
                 assert_eq!(abs_pos.assoc, assoc);
@@ -1097,8 +1096,8 @@ mod test {
 
         txt.insert(&mut txn, 1, "x");
 
-        let pos_right = rpos_right.get_offset(&txn).unwrap();
-        let pos_left = rpos_left.get_offset(&txn).unwrap();
+        let pos_right = rpos_right.get_offset(&txn.doc()).unwrap();
+        let pos_left = rpos_left.get_offset(&txn.doc()).unwrap();
 
         assert_eq!(pos_right.index, 2);
         assert_eq!(pos_left.index, 1);

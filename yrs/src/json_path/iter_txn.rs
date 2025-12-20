@@ -3,9 +3,9 @@ use crate::cell::RefProvider;
 use crate::json_path::JsonPathToken;
 use crate::{Any, Array, Doc, JsonPath, JsonPathEval, Map, Out, Transaction, Xml, XmlFragment};
 
-impl<'tx> JsonPathEval for Transaction<'tx> {
+impl<D: RefProvider<Doc>> JsonPathEval for Transaction<D> {
     type Iter<'a>
-        = JsonPathIter<'a>
+        = JsonPathIter<'a, D>
     where
         Self: 'a;
 
@@ -43,8 +43,8 @@ impl<'tx> JsonPathEval for Transaction<'tx> {
     }
 }
 
-fn slice_iter<'a>(
-    txn: &'a Transaction,
+fn slice_iter<'a, D: RefProvider<Doc>>(
+    txn: &'a Transaction<D>,
     value: Option<Out>,
     from: usize,
     to: usize,
@@ -77,8 +77,8 @@ fn slice_iter<'a>(
     }
 }
 
-fn any_iter<'a>(
-    txn: &'a Transaction,
+fn any_iter<'a, D: RefProvider<Doc>>(
+    txn: &'a Transaction<D>,
     out: Option<Out>,
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
     #[inline]
@@ -87,7 +87,10 @@ fn any_iter<'a>(
     }
 
     match out {
-        None => Some(dyn_iter(txn.doc().root_refs().map(|(_, out)| out))),
+        None => {
+            let doc = txn.doc();
+            Some(dyn_iter(doc.root_refs().map(|(_, out)| out)))
+        }
         Some(Out::Any(any)) => {
             let iter = any.try_into_iter();
             iter.map(|iter| dyn_iter(iter.map(|(_, v)| Out::Any(v))))
@@ -113,8 +116,8 @@ fn any_iter<'a>(
     }
 }
 
-fn member_union_iter<'a>(
-    txn: &'a Transaction,
+fn member_union_iter<'a, D: RefProvider<Doc>>(
+    txn: &'a Transaction<D>,
     value: Option<Out>,
     members: &'a [&'a str],
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
@@ -137,8 +140,8 @@ fn member_union_iter<'a>(
     }
 }
 
-fn index_union_iter<'a>(
-    txn: &'a Transaction,
+fn index_union_iter<'a, D: RefProvider<Doc>>(
+    txn: &'a Transaction<D>,
     value: Option<Out>,
     indices: &'a [i32],
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
@@ -329,7 +332,11 @@ impl<'a, D: RefProvider<Doc>> Iterator for JsonPathIter<'a, D> {
     }
 }
 
-fn get_member(txn: &Transaction, out: Option<&Out>, key: &str) -> Option<Out> {
+fn get_member<D: RefProvider<Doc>>(
+    txn: &Transaction<D>,
+    out: Option<&Out>,
+    key: &str,
+) -> Option<Out> {
     match out {
         None => txn.get(key),
         Some(Out::Map(map)) => map.get(txn, key),
@@ -345,7 +352,11 @@ fn get_member(txn: &Transaction, out: Option<&Out>, key: &str) -> Option<Out> {
     }
 }
 
-fn get_index(txn: &Transaction, out: Option<&Out>, idx: i32) -> Option<Out> {
+fn get_index<D: RefProvider<Doc>>(
+    txn: &Transaction<D>,
+    out: Option<&Out>,
+    idx: i32,
+) -> Option<Out> {
     match out {
         Some(Out::Array(array)) => {
             let idx = if idx < 0 {

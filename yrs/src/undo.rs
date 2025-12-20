@@ -5,7 +5,7 @@ use crate::branch::{Branch, BranchPtr};
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
-use crate::transaction::Origin;
+use crate::transaction::{Origin, TransactionState};
 use crate::{DeleteSet, Doc, Observer, Transaction, ID};
 
 use crate::cell::{Cell, CellRef, MutProvider};
@@ -42,10 +42,10 @@ pub struct UndoManager<M> {
 }
 
 #[cfg(feature = "sync")]
-type UndoFn<M> = Box<dyn Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static>;
+type UndoFn<M> = Box<dyn Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static>;
 
 #[cfg(not(feature = "sync"))]
-type UndoFn<M> = Box<dyn Fn(&Transaction, &mut Event<M>) + 'static>;
+type UndoFn<M> = Box<dyn Fn(&Transaction<&Doc>, &mut Event<M>) + 'static>;
 
 #[cfg(feature = "sync")]
 pub trait Meta: Default + Send + Sync {}
@@ -122,7 +122,7 @@ where
         self.redoing
     }
 
-    fn should_skip(&self, txn: &Transaction) -> bool {
+    fn should_skip(&self, txn: &Transaction<&Doc>) -> bool {
         if let Some(capture_transaction) = &self.options.capture_transaction {
             if !capture_transaction(txn) {
                 return true;
@@ -138,10 +138,11 @@ where
                 .unwrap_or(self.options.tracked_origins.len() == 1) // tracked origins contain only undo manager itself
     }
 
-    fn on_after_transaction(&mut self, txn: &Transaction) {
+    fn on_after_transaction(&mut self, txn: &Transaction<&Doc>) {
         if self.should_skip(txn) {
             return;
         }
+        let doc = txn.doc();
         let undoing = self.is_undoing();
         let redoing = self.is_redoing();
         if undoing {
@@ -149,7 +150,7 @@ where
         } else if !redoing {
             // neither undoing nor redoing: delete redoStack
             for item in self.redo.drain(..) {
-                clear_item(&self.scope, txn, item);
+                clear_item(&self.scope, &*doc, item);
             }
         }
 
@@ -197,7 +198,7 @@ where
         // make sure that deleted structs are not gc'd
         if let Some(ds) = txn.delete_set() {
             let mut deleted = ds.deleted_blocks();
-            while let Some(slice) = deleted.next(txn.doc()) {
+            while let Some(slice) = deleted.next(&*doc) {
                 if let Some(item) = slice.as_item() {
                     if self.scope.iter().any(|b| b.is_parent_of(Some(item))) {
                         item.keep(true);
@@ -315,7 +316,7 @@ where
     #[cfg(feature = "sync")]
     pub fn observe_item_added<F>(&mut self, f: F) -> crate::Subscription
     where
-        F: Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static,
     {
         self.state
             .borrow_mut()
@@ -332,7 +333,7 @@ where
     #[cfg(not(feature = "sync"))]
     pub fn observe_item_added<F>(&mut self, f: F) -> crate::Subscription
     where
-        F: Fn(&Transaction, &mut Event<M>) + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + 'static,
     {
         self.state
             .borrow_mut()
@@ -351,7 +352,7 @@ where
     pub fn observe_item_added_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static,
     {
         self.state
             .borrow_mut()
@@ -370,7 +371,7 @@ where
     pub fn observe_item_added_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &mut Event<M>) + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + 'static,
     {
         self.state
             .borrow_mut()
@@ -396,7 +397,7 @@ where
     #[cfg(feature = "sync")]
     pub fn observe_item_updated<F>(&mut self, f: F) -> crate::Subscription
     where
-        F: Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static,
     {
         self.state
             .borrow_mut()
@@ -412,7 +413,7 @@ where
     #[cfg(not(feature = "sync"))]
     pub fn observe_item_updated<F>(&mut self, f: F) -> crate::Subscription
     where
-        F: Fn(&Transaction, &mut Event<M>) + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + 'static,
     {
         self.state
             .borrow_mut()
@@ -430,7 +431,7 @@ where
     pub fn observe_item_updated_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static,
     {
         self.state
             .borrow_mut()
@@ -448,7 +449,7 @@ where
     pub fn observe_item_updated_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &mut Event<M>) + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + 'static,
     {
         self.state
             .borrow_mut()
@@ -473,7 +474,7 @@ where
     #[cfg(feature = "sync")]
     pub fn observe_item_popped<F>(&mut self, f: F) -> crate::Subscription
     where
-        F: Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static,
     {
         self.state
             .borrow_mut()
@@ -488,7 +489,7 @@ where
     #[cfg(not(feature = "sync"))]
     pub fn observe_item_popped<F>(&mut self, f: F) -> crate::Subscription
     where
-        F: Fn(&Transaction, &mut Event<M>) + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + 'static,
     {
         self.state
             .borrow_mut()
@@ -505,7 +506,7 @@ where
     pub fn observe_item_popped_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &mut Event<M>) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + Send + Sync + 'static,
     {
         self.state
             .borrow_mut()
@@ -522,7 +523,7 @@ where
     pub fn observe_item_popped_with<K, F>(&mut self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &mut Event<M>) + 'static,
+        F: Fn(&Transaction<&Doc>, &mut Event<M>) + 'static,
     {
         self.state
             .borrow_mut()
@@ -580,14 +581,13 @@ where
     /// read-write transaction is in progress), it will hold current thread until, acquisition is
     /// available.
     pub fn clear(&mut self, doc: &Doc) {
-        let txn = doc.transact();
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         for item in state.undo.drain(..) {
-            clear_item(&state.scope, &txn, item);
+            clear_item(&state.scope, doc, item);
         }
         for item in state.redo.drain(..) {
-            clear_item(&state.scope, &txn, item);
+            clear_item(&state.scope, doc, item);
         }
     }
 
@@ -727,18 +727,19 @@ where
         scope: &HashSet<BranchPtr>,
     ) -> Option<StackItem<M>> {
         let mut result = None;
+        let (mut doc, state) = txn.split_mut();
         while let Some(item) = stack.pop() {
             let mut to_redo = HashSet::<ItemPtr>::new();
             let mut to_delete = Vec::<ItemPtr>::new();
             let mut change_performed = false;
 
-            let deleted: Vec<_> = item.insertions.deleted_blocks().collect(txn.doc());
+            let deleted: Vec<_> = item.insertions.deleted_blocks().collect(&*doc);
             for slice in deleted {
                 if let BlockSlice::Item(slice) = slice {
-                    let mut item = txn.doc_mut().materialize(slice);
+                    let mut item = doc.materialize(slice);
                     if item.redone.is_some() {
-                        let slice = txn.doc_mut().follow_redone(item.id())?;
-                        item = txn.doc_mut().materialize(slice);
+                        let slice = doc.follow_redone(item.id())?;
+                        item = doc.materialize(slice);
                     }
 
                     if !item.is_deleted() && scope.iter().any(|b| b.is_parent_of(Some(item))) {
@@ -748,9 +749,9 @@ where
             }
 
             let mut deleted = item.deletions.deleted_blocks();
-            while let Some(slice) = deleted.next(txn.doc()) {
+            while let Some(slice) = deleted.next(&*doc) {
                 if let BlockSlice::Item(slice) = slice {
-                    let ptr = txn.doc_mut().materialize(slice);
+                    let ptr = doc.materialize(slice);
                     if scope.iter().any(|b| b.is_parent_of(Some(ptr)))
                         && !item.insertions.is_deleted(ptr.id())
                     // Never redo structs in stackItem.insertions because they were created and deleted in the same capture interval.
@@ -763,7 +764,7 @@ where
             for &ptr in to_redo.iter() {
                 let mut ptr = ptr;
                 change_performed |= ptr
-                    .redo(txn, &to_redo, &item.insertions, stack, other)
+                    .redo(state, &mut *doc, &to_redo, &item.insertions, stack, other)
                     .is_some();
             }
 
@@ -771,7 +772,7 @@ where
             // parents, so we have more information available when items are filtered.
             for &item in to_delete.iter().rev() {
                 // if self.options.delete_filter(item) {
-                txn.delete(item);
+                state.delete_item(&mut *doc, item);
                 change_performed = true;
             }
 
@@ -796,9 +797,9 @@ impl<M: std::fmt::Debug> std::fmt::Debug for UndoManager<M> {
     }
 }
 
-fn clear_item<M>(scope: &HashSet<BranchPtr>, txn: &Transaction, stack_item: StackItem<M>) {
+fn clear_item<M>(scope: &HashSet<BranchPtr>, doc: &Doc, stack_item: StackItem<M>) {
     let mut deleted = stack_item.deletions.deleted_blocks();
-    while let Some(slice) = deleted.next(txn.doc()) {
+    while let Some(slice) = deleted.next(doc) {
         if let Some(item) = slice.as_item() {
             if scope.iter().any(|b| b.is_parent_of(Some(item))) {
                 item.keep(false);
@@ -833,7 +834,7 @@ pub struct Options<M> {
     pub init_redo_stack: Vec<StackItem<M>>,
 }
 
-pub type CaptureTransactionFn = Arc<dyn Fn(&Transaction) -> bool + Send + Sync + 'static>;
+pub type CaptureTransactionFn = Arc<dyn Fn(&Transaction<&Doc>) -> bool + Send + Sync + 'static>;
 
 #[cfg(not(target_family = "wasm"))]
 impl<M> Default for Options<M> {
@@ -1114,9 +1115,9 @@ mod test {
         let mut mgr = UndoManager::new(&mut d1, &map1);
         map1.insert(&mut d1.transact_mut(), "a", 1);
         mgr.undo(&mut d1);
-        assert_eq!(0, map1.get::<u32>(&d1.transact(), "a").unwrap());
+        assert_eq!(0, map1.get::<u32, _>(&d1.transact(), "a").unwrap());
         mgr.redo(&mut d1);
-        assert_eq!(1, map1.get::<u32>(&d1.transact(), "a").unwrap());
+        assert_eq!(1, map1.get::<u32, _>(&d1.transact(), "a").unwrap());
 
         // testing sub-types and if it can restore a whole type
         let sub_type = map1.insert(&mut d1.transact_mut(), "a", MapPrelim::default());
@@ -1126,7 +1127,7 @@ mod test {
         assert_eq!(actual, expected);
 
         mgr.undo(&mut d1);
-        assert_eq!(map1.get::<u32>(&d1.transact(), "a").unwrap(), 1);
+        assert_eq!(map1.get::<u32, _>(&d1.transact(), "a").unwrap(), 1);
         mgr.redo(&mut d1);
         let actual = map1.to_json(&d1.transact());
         let expected = Any::from_json(r#"{ "a": { "x": 42 } }"#).unwrap();
@@ -1144,9 +1145,9 @@ mod test {
         exchange_updates([&mut d1, &mut d2]);
 
         mgr.undo(&mut d1);
-        assert_eq!(map1.get::<u32>(&d1.transact(), "a").unwrap(), 44);
+        assert_eq!(map1.get::<u32, _>(&d1.transact(), "a").unwrap(), 44);
         mgr.redo(&mut d1);
-        assert_eq!(map1.get::<u32>(&d1.transact(), "a").unwrap(), 44);
+        assert_eq!(map1.get::<u32, _>(&d1.transact(), "a").unwrap(), 44);
 
         // test setting value multiple times
         map1.insert(&mut d1.transact_mut(), "b", "initial");
@@ -1156,7 +1157,7 @@ mod test {
         mgr.reset();
         mgr.undo(&mut d1);
         assert_eq!(
-            map1.get::<String>(&d1.transact(), "b").unwrap(),
+            map1.get::<String, _>(&d1.transact(), "b").unwrap(),
             "initial".to_owned()
         );
     }
@@ -1449,7 +1450,7 @@ mod test {
         exchange_updates([&mut d1, &mut d2]);
 
         assert_eq!(
-            map1b.get::<String>(&d1.transact(), "key"),
+            map1b.get::<String, _>(&d1.transact(), "key"),
             Some("value".into())
         );
     }
@@ -1574,7 +1575,7 @@ mod test {
         assert_eq!(actual, Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
 
         mgr.undo(&mut doc); // null
-        assert_eq!(root.get::<Out>(&doc.transact(), "a"), None);
+        assert_eq!(root.get::<Out, _>(&doc.transact(), "a"), None);
 
         mgr.redo(&mut doc); // x=0, y=0
         let point: MapRef = root.get(&doc.transact(), "a").unwrap();

@@ -283,7 +283,7 @@ pub trait Observable: AsRef<Branch> {
     /// Returns a [Subscription] which, when dropped, will unsubscribe current callback.
     fn observe<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&Transaction, &Self::Event) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &Self::Event) + Send + Sync + 'static,
         Event: AsRef<Self::Event>,
     {
         let mut branch = BranchPtr::from(self.as_ref());
@@ -305,7 +305,7 @@ pub trait Observable: AsRef<Branch> {
     fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &Self::Event) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &Self::Event) + Send + Sync + 'static,
         Event: AsRef<Self::Event>,
     {
         let mut branch = BranchPtr::from(self.as_ref());
@@ -446,7 +446,7 @@ pub trait DeepObservable: AsRef<Branch> {
     /// when dropped.
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&Transaction, &Events) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
     {
         let branch = self.as_ref();
         branch.deep_observers.subscribe(Box::new(f))
@@ -465,7 +465,7 @@ pub trait DeepObservable: AsRef<Branch> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction, &Events) + Send + Sync + 'static,
+        F: Fn(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
     {
         let branch = self.as_ref();
         branch
@@ -639,21 +639,15 @@ impl std::fmt::Display for Branch {
 #[derive(Debug)]
 pub(crate) struct Entries<'a, D: RefProvider<Doc>> {
     iter: std::collections::hash_map::Iter<'a, Arc<str>, ItemPtr>,
-    txn: &'a Transaction<D>,
+    _txn: &'a Transaction<D>,
 }
 
 impl<'a, D: RefProvider<Doc>> Entries<'a, D> {
     pub fn new(source: &'a HashMap<Arc<str>, ItemPtr>, txn: &'a Transaction<D>) -> Self {
         Entries {
             iter: source.iter(),
-            txn,
+            _txn: txn,
         }
-    }
-}
-
-impl<'a, D: RefProvider<Doc>> Entries<'a, D> {
-    pub fn from_ref(source: &'a HashMap<Arc<str>, ItemPtr>, txn: &'a Transaction<D>) -> Self {
-        Entries::new(source, txn)
     }
 }
 

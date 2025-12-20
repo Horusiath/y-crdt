@@ -296,7 +296,12 @@ pub trait Text: AsRef<Branch> + Sized {
     /// the end of it.
     ///
     /// This method will panic if provided `index` is greater than the length of a current text.
-    fn insert_embed<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, index: u32, content: V) -> V::Return
+    fn insert_embed<D: MutProvider<Doc>, V>(
+        &self,
+        txn: &mut Transaction<D>,
+        index: u32,
+        content: V,
+    ) -> V::Return
     where
         V: Into<EmbedPrelim<V>> + Prelim,
     {
@@ -359,7 +364,13 @@ pub trait Text: AsRef<Branch> + Sized {
 
     /// Wraps an existing piece of text within a range described by `index`-`len` parameters with
     /// formatting blocks containing provided `attributes` metadata.
-    fn format<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32, attributes: Attrs) {
+    fn format<D: MutProvider<Doc>>(
+        &self,
+        txn: &mut Transaction<D>,
+        index: u32,
+        len: u32,
+        attributes: Attrs,
+    ) {
         let this = BranchPtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             insert_format(this, txn, &mut pos, len, attributes)
@@ -407,7 +418,11 @@ pub trait Text: AsRef<Branch> + Sized {
     ///     Diff::new("world".into(), Some(Box::new(italic_and_bold))),
     /// ]);
     /// ```
-    fn diff<T: RefProvider<Doc>, R, F>(&self, _txn: &Transaction<T>, compute_ychange: F) -> Vec<Diff<R>>
+    fn diff<T: RefProvider<Doc>, R, F>(
+        &self,
+        _txn: &Transaction<T>,
+        compute_ychange: F,
+    ) -> Vec<Diff<R>>
     where
         F: Fn(YChange) -> R,
     {
@@ -723,7 +738,11 @@ pub(crate) fn update_current_attributes(attrs: &mut Attrs, key: &str, value: &An
     }
 }
 
-fn find_position<D: MutProvider<Doc>>(this: BranchPtr, txn: &mut Transaction<D>, index: u32) -> Option<ItemPosition> {
+fn find_position<D: MutProvider<Doc>>(
+    this: BranchPtr,
+    txn: &mut Transaction<D>,
+    index: u32,
+) -> Option<ItemPosition> {
     let mut pos = {
         ItemPosition {
             parent: this.into(),
@@ -735,7 +754,7 @@ fn find_position<D: MutProvider<Doc>>(this: BranchPtr, txn: &mut Transaction<D>,
     };
 
     let mut format_ptrs = HashMap::new();
-    let doc = txn.doc_mut();
+    let mut doc = txn.doc_mut();
     let encoding = doc.offset_kind();
     let mut remaining = index;
     while let Some(right) = pos.right {
@@ -960,7 +979,9 @@ fn insert_attributes<D: MutProvider<Doc>>(
     attrs: Attrs,
 ) -> Attrs {
     let mut negated_attrs = HashMap::with_capacity(attrs.len());
-    let mut doc = txn.doc_mut();
+    let (mut doc, state) = txn.split_mut();
+    let doc = &mut *doc;
+    let client_id = doc.client_id();
     for (k, v) in attrs {
         let current_value = pos
             .current_attrs
@@ -971,7 +992,6 @@ fn insert_attributes<D: MutProvider<Doc>>(
             // save negated attribute (set null if currentVal undefined)
             negated_attrs.insert(k.clone(), current_value.clone());
 
-            let client_id = doc.client_id();
             let parent = this.into();
             let mut item = Item::new(
                 ID::new(client_id, doc.blocks.get_clock(&client_id)),
@@ -986,11 +1006,10 @@ fn insert_attributes<D: MutProvider<Doc>>(
             .unwrap();
             let mut item_ptr = ItemPtr::from(&mut item);
             pos.right = Some(item_ptr);
-            item_ptr.integrate(txn, 0);
-            txn.doc_mut().blocks.push_block(item);
+            item_ptr.integrate(state, doc, 0);
+            doc.blocks.push_block(item);
 
             pos.forward();
-            doc = txn.doc_mut();
         }
     }
     negated_attrs
@@ -1002,6 +1021,9 @@ fn insert_negated_attributes<D: MutProvider<Doc>>(
     pos: &mut ItemPosition,
     mut attrs: Attrs,
 ) {
+    let (mut doc, state) = txn.split_mut();
+    let doc = &mut *doc;
+
     while let Some(item) = pos.right.as_deref() {
         if !item.is_deleted() {
             if let ItemContent::Format(key, value) = &item.content {
@@ -1020,12 +1042,11 @@ fn insert_negated_attributes<D: MutProvider<Doc>>(
         }
     }
 
-    let mut store = txn.doc_mut();
     for (k, v) in attrs {
-        let client_id = store.client_id();
+        let client_id = doc.client_id();
         let parent = this.into();
         let mut item = Item::new(
-            ID::new(client_id, store.blocks.get_clock(&client_id)),
+            ID::new(client_id, doc.blocks.get_clock(&client_id)),
             pos.left.clone(),
             pos.left.map(|ptr| ptr.last_id()),
             pos.right.clone(),
@@ -1037,12 +1058,10 @@ fn insert_negated_attributes<D: MutProvider<Doc>>(
         .unwrap();
         let mut item_ptr = ItemPtr::from(&mut item);
         pos.right = Some(item_ptr);
-        item_ptr.integrate(txn, 0);
-
-        txn.doc_mut().blocks.push_block(item);
+        item_ptr.integrate(state, doc, 0);
+        doc.blocks.push_block(item);
 
         pos.forward();
-        store = txn.doc_mut();
     }
 }
 
@@ -2720,7 +2739,10 @@ mod test {
         );
         let delta = txt1.diff(&txn1, YChange::identity);
         let d: MapRef = delta[0].insert.clone().cast(&txn1).unwrap();
-        assert_eq!(d.get::<Out>(&txn1, "key").unwrap(), Out::Any("val".into()));
+        assert_eq!(
+            d.get::<Out, _>(&txn1, "key").unwrap(),
+            Out::Any("val".into())
+        );
 
         let triggered = Arc::new(AtomicBool::new(false));
         let _sub = {
@@ -2731,7 +2753,7 @@ mod test {
                     Delta::Inserted(insert, _) => insert.clone().cast(txn).unwrap(),
                     _ => unreachable!("unexpected delta"),
                 };
-                assert_eq!(d.get::<Out>(txn, "key").unwrap(), Out::Any("val".into()));
+                assert_eq!(d.get::<Out, _>(txn, "key").unwrap(), Out::Any("val".into()));
                 triggered.store(true, Ordering::Relaxed);
             })
         };
@@ -2750,7 +2772,10 @@ mod test {
         let delta = txt2.diff(&txn, YChange::identity);
         assert_eq!(delta.len(), 1);
         let d: MapRef = delta[0].insert.clone().cast(&txn).unwrap();
-        assert_eq!(d.get::<Out>(&txn, "key").unwrap(), Out::Any("val".into()));
+        assert_eq!(
+            d.get::<Out, _>(&txn, "key").unwrap(),
+            Out::Any("val".into())
+        );
     }
 
     #[test]

@@ -239,9 +239,10 @@ unsafe impl Send for ItemPtr {}
 unsafe impl Sync for ItemPtr {}
 
 impl ItemPtr {
-    pub(crate) fn redo<D: MutProvider<Doc>, M>(
+    pub(crate) fn redo<M>(
         &mut self,
-        txn: &mut Transaction<D>,
+        state: &mut TransactionState,
+        doc: &mut Doc,
         redo_items: &HashSet<ItemPtr>,
         items_to_delete: &DeleteSet,
         s1: &Vec<StackItem<M>>,
@@ -249,10 +250,9 @@ impl ItemPtr {
     ) -> Option<ItemPtr> {
         let self_ptr = self.clone();
         let item = self.deref_mut();
-        let (mut store, mut tx_state) = txn.split_mut();
         if let Some(redone) = item.redone.as_ref() {
-            let slice = store.blocks.get_item_clean_start(redone)?;
-            return Some(store.materialize(slice));
+            let slice = doc.blocks.get_item_clean_start(redone)?;
+            return Some(doc.materialize(slice));
         }
 
         let mut parent_block = item.parent.as_branch().and_then(|b| b.item);
@@ -263,18 +263,17 @@ impl ItemPtr {
                 if parent.redone.is_none()
                     && (!redo_items.contains(&parent)
                         || parent
-                            .redo(txn, redo_items, items_to_delete, s1, s2)
+                            .redo(state, doc, redo_items, items_to_delete, s1, s2)
                             .is_none())
                 {
                     return None;
                 }
-                (store, tx_state) = txn.split_mut();
                 let mut redone = parent.redone;
                 while let Some(id) = redone.as_ref() {
-                    parent_block = store
+                    parent_block = doc
                         .blocks
                         .get_item_clean_start(id)
-                        .map(|slice| store.materialize(slice));
+                        .map(|slice| doc.materialize(slice));
                     redone = parent_block.and_then(|ptr| ptr.redone);
                 }
             }
@@ -309,11 +308,11 @@ impl ItemPtr {
                             left = Some(left_right);
                             while let Some(item) = left.as_deref() {
                                 if let Some(id) = item.redone.as_ref() {
-                                    left = match store.blocks.get_item_clean_start(id) {
+                                    left = match doc.blocks.get_item_clean_start(id) {
                                         None => break,
                                         Some(slice) => {
-                                            let ptr = store.materialize(slice);
-                                            tx_state.merge_blocks.push(ptr.id().clone());
+                                            let ptr = doc.materialize(slice);
+                                            state.merge_blocks.push(ptr.id().clone());
                                             Some(ptr)
                                         }
                                     };
@@ -348,8 +347,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         left_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| store.materialize(s))
+                            let slice = doc.blocks.get_item_clean_start(redone);
+                            slice.map(|s| doc.materialize(s))
                         } else {
                             None
                         };
@@ -374,8 +373,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         right_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| store.materialize(s))
+                            let slice = doc.blocks.get_item_clean_start(redone);
+                            slice.map(|s| doc.materialize(s))
                         } else {
                             None
                         };
@@ -394,8 +393,8 @@ impl ItemPtr {
             }
         }
 
-        let next_clock = store.get_local_state();
-        let next_id = ID::new(store.options.client_id, next_clock);
+        let next_clock = doc.get_local_state();
+        let next_id = ID::new(doc.options.client_id, next_clock);
         let mut redone_item = Item::new(
             next_id,
             left,
@@ -410,9 +409,9 @@ impl ItemPtr {
         redone_item.info.set_keep();
         let mut block_ptr = ItemPtr::from(&mut redone_item);
 
-        block_ptr.integrate(txn, 0);
+        block_ptr.integrate(state, doc, 0);
 
-        txn.doc_mut().blocks.push_block(redone_item);
+        doc.blocks.push_block(redone_item);
         Some(block_ptr)
     }
 
@@ -492,19 +491,23 @@ impl ItemPtr {
 
     /// Integrates current block into block store.
     /// If it returns true, it means that the block should be deleted after being added to a block store.
-    pub(crate) fn integrate<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, offset: u32) -> bool {
+    pub(crate) fn integrate(
+        &mut self,
+        state: &mut TransactionState,
+        doc: &mut Doc,
+        offset: u32,
+    ) -> bool {
         let self_ptr = self.clone();
         let this = self.deref_mut();
-        let store = txn.doc_mut();
-        let encoding = store.options.offset_kind;
+        let encoding = doc.options.offset_kind;
         if offset > 0 {
             // offset could be > 0 only in context of Update::integrate,
             // is such case offset kind in use always means Yjs-compatible offset (utf-16)
             this.id.clock += offset;
-            this.left = store
+            this.left = doc
                 .blocks
                 .get_item_clean_end(&ID::new(this.id.client, this.id.clock - 1))
-                .map(|slice| store.materialize(slice));
+                .map(|slice| doc.materialize(slice));
             this.origin = this.left.as_deref().map(|b: &Item| b.last_id());
             this.content = this
                 .content
@@ -516,12 +519,12 @@ impl ItemPtr {
         let parent = match &this.parent {
             TypePtr::Branch(branch) => Some(*branch),
             TypePtr::Named(name) => {
-                let branch = store.get_or_create_type(name.clone(), TypeRef::Undefined);
+                let branch = doc.get_or_create_type(name.clone(), TypeRef::Undefined);
                 this.parent = TypePtr::Branch(branch);
                 Some(branch)
             }
             TypePtr::ID(id) => {
-                if let Some(item) = store.blocks.get_item(id) {
+                if let Some(item) = doc.blocks.get_item(id) {
                     if let Some(branch) = item.as_branch() {
                         this.parent = TypePtr::Branch(branch);
                         Some(branch)
@@ -592,10 +595,8 @@ impl ItemPtr {
                             break;
                         }
                     } else {
-                        if let Some(origin_ptr) = item
-                            .origin
-                            .as_ref()
-                            .and_then(|id| store.blocks.get_item(id))
+                        if let Some(origin_ptr) =
+                            item.origin.as_ref().and_then(|id| doc.blocks.get_item(id))
                         {
                             if items_before_origin.contains(&origin_ptr) {
                                 if !conflicting_items.contains(&origin_ptr) {
@@ -658,7 +659,7 @@ impl ItemPtr {
                             // inherit links from the block we're overriding
                             left.info.clear_linked();
                             this.info.set_linked();
-                            let all_links = &mut txn.doc_mut().linked_by;
+                            let all_links = &mut doc.linked_by;
                             if let Some(linked_by) = all_links.remove(&left) {
                                 all_links.insert(self_ptr, linked_by);
                                 // since left is being deleted, it will remove
@@ -667,7 +668,7 @@ impl ItemPtr {
                         }
                     }
                     // this is the current attribute value of parent. delete right
-                    txn.delete(left);
+                    state.delete_item(doc, left);
                 }
             }
 
@@ -681,7 +682,7 @@ impl ItemPtr {
                 #[cfg(feature = "weak")]
                 match (this.left, this.right) {
                     (Some(l), Some(r)) if l.info.is_linked() || r.info.is_linked() => {
-                        crate::types::weak::join_linked_range(self_ptr, txn)
+                        crate::types::weak::join_linked_range(self_ptr, &mut *doc)
                     }
                     _ => {}
                 }
@@ -690,7 +691,6 @@ impl ItemPtr {
             // check if this item is in a moved range
             let left_moved = this.left.and_then(|i| i.moved);
             let right_moved = this.right.and_then(|i| i.moved);
-            let (doc, state) = txn.split_mut();
             if left_moved.is_some() || right_moved.is_some() {
                 if left_moved == right_moved {
                     this.moved = left_moved;
@@ -710,11 +710,11 @@ impl ItemPtr {
                     }
 
                     if let Some(ptr) = left_moved {
-                        try_integrate(ptr, doc, state);
+                        try_integrate(ptr, &mut *doc, state);
                     }
 
                     if let Some(ptr) = right_moved {
-                        try_integrate(ptr, doc, state);
+                        try_integrate(ptr, &mut *doc, state);
                     }
                 }
             }
@@ -748,7 +748,7 @@ impl ItemPtr {
                 ItemContent::Type(branch) => {
                     let ptr = BranchPtr::from(branch);
                     if let TypeRef::WeakLink(source) = &ptr.type_ref {
-                        source.materialize(doc, ptr);
+                        source.materialize(&mut *doc, ptr);
                     }
                 }
                 _ => {

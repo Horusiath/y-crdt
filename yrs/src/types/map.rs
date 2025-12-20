@@ -270,7 +270,7 @@ pub trait Map: AsRef<Branch> + Sized {
     {
         let key = key.into();
         let branch = self.as_ref();
-        if let Some(value) = branch.get(txn, &key) {
+        if let Some(value) = branch.get(&key) {
             if let Ok(value) = V::from_out(value, txn) {
                 return value;
             }
@@ -312,7 +312,7 @@ pub trait Map: AsRef<Branch> + Sized {
     /// with such `key` existed.
     fn get<R: FromOut, D: RefProvider<Doc>>(&self, txn: &Transaction<D>, key: &str) -> Option<R> {
         let ptr = BranchPtr::from(self.as_ref());
-        let out = ptr.get(txn, key)?;
+        let out = ptr.get(key)?;
         R::from_out(out, txn).ok()
     }
 
@@ -375,7 +375,7 @@ pub trait Map: AsRef<Branch> + Sized {
         D: RefProvider<Doc>,
     {
         let ptr = BranchPtr::from(self.as_ref());
-        let out = ptr.get(txn, key).unwrap_or(Out::Any(Any::Null));
+        let out = ptr.get(key).unwrap_or(Out::Any(Any::Null));
         //TODO: we could probably optimize this step by not serializing to intermediate Any value
         let any = out.to_json(txn);
         from_any(&any)

@@ -86,7 +86,7 @@ impl BlockIter {
         false
     }
 
-    pub fn try_forward(&mut self, txn: &Transaction, mut len: u32) -> bool {
+    pub fn try_forward(&mut self, doc: &Doc, mut len: u32) -> bool {
         if len == 0 && self.next_item.is_none() {
             return true;
         }
@@ -102,13 +102,13 @@ impl BlockIter {
             self.rel = 0;
         }
 
-        let encoding = txn.doc().offset_kind();
+        let encoding = doc.offset_kind();
         while self.can_forward(item, len) {
             if item == self.curr_move_end
                 || (self.reached_end && self.curr_move_end.is_none() && self.curr_move.is_some())
             {
                 item = self.curr_move; // we iterate to the right after the current condition
-                self.pop(txn);
+                self.pop(doc);
             } else if item.is_none() {
                 return false;
             } else if let Some(i) = item.as_deref() {
@@ -131,7 +131,7 @@ impl BlockIter {
                             ));
                         }
 
-                        let (start, end) = m.get_moved_coords(txn.doc());
+                        let (start, end) = m.get_moved_coords(doc);
                         self.curr_move = item;
                         self.curr_move_start = start;
                         self.curr_move_end = end;
@@ -156,12 +156,12 @@ impl BlockIter {
         true
     }
 
-    fn reduce_moves<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>) {
+    fn reduce_moves(&mut self, doc: &Doc) {
         let mut item = self.next_item;
         if item.is_some() {
             while item == self.curr_move_start {
                 item = self.curr_move;
-                self.pop(txn);
+                self.pop(doc);
             }
             self.next_item = item;
         }
@@ -174,7 +174,7 @@ impl BlockIter {
     /// item. While the computed item is on the stack, it is possible that a user inserts something
     /// between target and the item on the stack. Then we expect that the newly inserted item
     /// is supposed to be on the new computed item.
-    fn pop(&mut self, txn: &Transaction) {
+    fn pop(&mut self, doc: &Doc) {
         let mut start = None;
         let mut end = None;
         let mut moved = None;
@@ -188,7 +188,7 @@ impl BlockIter {
                 if m.start.assoc == Assoc::Before && (m.start.within_range(start))
                     || (m.end.within_range(end))
                 {
-                    let (s, e) = m.get_moved_coords(txn.doc());
+                    let (s, e) = m.get_moved_coords(doc);
                     start = s;
                     end = e;
                 }
@@ -206,7 +206,8 @@ impl BlockIter {
             panic!("Length exceeded");
         }
 
-        let encoding = txn.doc().offset_kind();
+        let (mut doc, state) = txn.split_mut();
+        let encoding = doc.offset_kind();
         let mut i: &Item;
         while len > 0 {
             while let Some(block) = item.as_deref() {
@@ -221,25 +222,22 @@ impl BlockIter {
                     if self.rel > 0 {
                         let mut id = i.id.clone();
                         id.clock += self.rel;
-                        let store = txn.doc_mut();
-                        item = store
+                        item = doc
                             .blocks
                             .get_item_clean_start(&id)
-                            .map(|s| store.materialize(s));
+                            .map(|s| doc.materialize(s));
                         i = item.as_deref().unwrap();
                         self.rel = 0;
                     }
                     if len < i.content_len(encoding) {
                         let mut id = i.id.clone();
                         id.clock += len;
-                        let store = txn.doc_mut();
-                        store
-                            .blocks
+                        doc.blocks
                             .get_item_clean_start(&id)
-                            .map(|s| store.materialize(s));
+                            .map(|s| doc.materialize(s));
                     }
                     len -= i.content_len(encoding);
-                    txn.delete(item.unwrap());
+                    state.delete_item(&mut *doc, item.unwrap());
                     if i.right.is_some() {
                         item = i.right;
                     } else {
@@ -251,7 +249,7 @@ impl BlockIter {
             }
             if len > 0 {
                 self.next_item = item;
-                if self.try_forward(txn, 0) {
+                if self.try_forward(&doc, 0) {
                     item = self.next_item;
                 } else {
                     panic!("Block iter couldn't move forward");
@@ -261,14 +259,14 @@ impl BlockIter {
         self.next_item = item;
     }
 
-    pub(crate) fn slice(&mut self, txn: &Transaction, buf: &mut [Out]) -> u32 {
+    pub(crate) fn slice(&mut self, doc: &Doc, buf: &mut [Out]) -> u32 {
         let mut len = buf.len() as u32;
         if self.index + len > self.branch.content_len() {
             return 0;
         }
         self.index += len;
         let mut next_item = self.next_item;
-        let encoding = txn.doc().offset_kind();
+        let encoding = doc.offset_kind();
         let mut read = 0u32;
         while len > 0 {
             if !self.reached_end {
@@ -306,7 +304,7 @@ impl BlockIter {
                 if (!self.reached_end || self.curr_move.is_some()) && len > 0 {
                     // always set nextItem before any method call
                     self.next_item = next_item;
-                    if !self.try_forward(txn, 0) || self.next_item.is_none() {
+                    if !self.try_forward(doc, 0) || self.next_item.is_none() {
                         return read;
                     }
                     next_item = self.next_item;
@@ -317,7 +315,7 @@ impl BlockIter {
                 // first non-null right neighbor of the popped move block
                 while let Some(mov) = self.curr_move.as_deref() {
                     next_item = mov.right;
-                    self.pop(txn);
+                    self.pop(doc);
                     if next_item.is_some() {
                         self.reached_end = false;
                         break;
@@ -334,24 +332,23 @@ impl BlockIter {
         read
     }
 
-    fn split_rel<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>) {
+    fn split_rel(&mut self, doc: &mut Doc) {
         if self.rel > 0 {
             if let Some(ptr) = self.next_item {
                 let mut item_id = ptr.id().clone();
                 item_id.clock += self.rel;
-                let store = txn.doc_mut();
-                self.next_item = store
+                self.next_item = doc
                     .blocks
                     .get_item_clean_start(&item_id)
-                    .map(|s| store.materialize(s));
+                    .map(|s| doc.materialize(s));
                 self.rel = 0;
             }
         }
     }
 
-    pub(crate) fn read_value(&mut self, txn: &Transaction) -> Option<Out> {
+    pub(crate) fn read_value(&mut self, doc: &Doc) -> Option<Out> {
         let mut buf = [Out::default()];
-        if self.slice(txn, &mut buf) != 0 {
+        if self.slice(doc, &mut buf) != 0 {
             Some(std::mem::replace(&mut buf[0], Out::default()))
         } else {
             None
@@ -363,10 +360,10 @@ impl BlockIter {
         txn: &mut Transaction<D>,
         value: V,
     ) -> Option<ItemPtr> {
-        self.reduce_moves(txn);
-        self.split_rel(txn);
+        let (mut doc, state) = txn.split_mut();
+        self.reduce_moves(&*doc);
+        self.split_rel(&mut *doc);
         let id = {
-            let doc = txn.doc();
             let client_id = doc.client_id();
             let clock = doc.blocks.get_clock(&client_id);
             ID::new(client_id, clock)
@@ -374,6 +371,7 @@ impl BlockIter {
         let parent = TypePtr::Branch(self.branch);
         let right = self.right();
         let left = self.left();
+        drop(doc);
         let (content, remainder) = value.into_content(txn);
         let mut block = Item::new(
             id,
@@ -387,9 +385,10 @@ impl BlockIter {
         )?;
         let mut block_ptr = ItemPtr::from(&mut block);
 
-        block_ptr.integrate(txn, 0);
-
-        txn.doc_mut().blocks.push_block(block);
+        let (mut doc, state) = txn.split_mut();
+        block_ptr.integrate(state, &mut *doc, 0);
+        doc.blocks.push_block(block);
+        drop(doc);
 
         if let Some(remainder) = remainder {
             remainder.integrate(txn, block_ptr)
@@ -405,7 +404,12 @@ impl BlockIter {
         Some(block_ptr)
     }
 
-    pub fn insert_move<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, start: StickyIndex, end: StickyIndex) {
+    pub fn insert_move<D: MutProvider<Doc>>(
+        &mut self,
+        txn: &mut Transaction<D>,
+        start: StickyIndex,
+        end: StickyIndex,
+    ) {
         self.insert_contents(txn, Move::new(start, end, -1));
     }
 }

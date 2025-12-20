@@ -196,7 +196,8 @@ impl GetString for WeakRef<TextRef> {
     /// assert_eq!(link.get_string(&txn), "hello ".to_string());
     /// ```
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        self.source().to_string(txn.doc())
+        let doc = txn.doc();
+        self.source().to_string(&*doc)
     }
 }
 
@@ -282,7 +283,7 @@ where
     /// ```
     pub fn try_deref_value<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
         let source = self.try_source()?;
-        let item = source.quote_start.get_item(txn.doc());
+        let item = source.quote_start.get_item(&*txn.doc());
         let last = item.to_iter().last()?;
         if last.is_deleted() {
             None
@@ -300,7 +301,7 @@ where
     /// range.
     pub fn unquote<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
         if let Some(source) = self.try_source() {
-            source.unquote(txn.doc())
+            source.unquote(&*txn.doc())
         } else {
             Unquote::empty()
         }
@@ -361,7 +362,7 @@ where
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakPrelim] quotation
     /// range.
     pub fn unquote<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
-        self.source.unquote(txn.doc())
+        self.source.unquote(&*txn.doc())
     }
 }
 
@@ -370,7 +371,7 @@ where
     P: SharedRef + Map,
 {
     pub fn try_deref_raw<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
-        self.source.unquote(txn.doc()).next()
+        self.source.unquote(&*txn.doc()).next()
     }
 
     pub fn try_deref<V, D: RefProvider<Doc>>(
@@ -719,6 +720,7 @@ pub trait Quotable: AsRef<Branch> + Sized {
             Bound::Unbounded => None,
         };
         let doc = txn.doc();
+        let doc = &*doc;
         let encoding = doc.offset_kind();
         let mut start_index = 0;
         let mut remaining = start_index;
@@ -1097,8 +1099,8 @@ mod test {
         let l1: MapRef = link1.try_deref(&d1.transact()).unwrap();
         let l2: MapRef = link2.try_deref(&d2.transact()).unwrap();
         assert_eq!(
-            l1.get::<Out>(&d1.transact(), "a1"),
-            l2.get::<Out>(&d2.transact(), "a1")
+            l1.get::<Out, _>(&d1.transact(), "a1"),
+            l2.get::<Out, _>(&d2.transact(), "a1")
         );
 
         m2.insert(&mut d2.transact_mut(), "a2", "world");
@@ -1108,8 +1110,8 @@ mod test {
         let l1: MapRef = link1.try_deref(&d1.transact()).unwrap();
         let l2: MapRef = link2.try_deref(&d2.transact()).unwrap();
         assert_eq!(
-            l1.get::<Out>(&d1.transact(), "a2"),
-            l2.get::<Out>(&d2.transact(), "a2")
+            l1.get::<Out, _>(&d1.transact(), "a2"),
+            l2.get::<Out, _>(&d2.transact(), "a2")
         );
     }
 
@@ -1136,8 +1138,8 @@ mod test {
         let l1: MapRef = link1.try_deref(&d1.transact()).unwrap();
         let l2: MapRef = link2.try_deref(&d2.transact()).unwrap();
         assert_eq!(
-            l1.get::<Out>(&d1.transact(), "a1"),
-            l2.get::<Out>(&d2.transact(), "a1")
+            l1.get::<Out, _>(&d1.transact(), "a1"),
+            l2.get::<Out, _>(&d2.transact(), "a1")
         );
 
         m2.remove(&mut d2.transact_mut(), "b"); // delete links
@@ -1171,8 +1173,8 @@ mod test {
         let l1: MapRef = link1.try_deref(&d1.transact()).unwrap();
         let l2: MapRef = link2.try_deref(&d2.transact()).unwrap();
         assert_eq!(
-            l1.get::<Out>(&d1.transact(), "a1"),
-            l2.get::<Out>(&d2.transact(), "a1")
+            l1.get::<Out, _>(&d1.transact(), "a1"),
+            l2.get::<Out, _>(&d2.transact(), "a1")
         );
 
         m2.remove(&mut d2.transact_mut(), "a"); // delete source of the link

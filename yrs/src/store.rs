@@ -6,6 +6,7 @@ use crate::error::Error;
 use crate::event::SubdocsEvent;
 use crate::id_set::DeleteSet;
 use crate::slice::ItemSlice;
+use crate::transaction::TransactionState;
 use crate::types::{Path, PathSegment, TypeRef};
 use crate::update::PendingUpdate;
 use crate::updates::encoder::{Encode, Encoder};
@@ -389,22 +390,22 @@ impl std::fmt::Display for Store {
 
 #[cfg(feature = "sync")]
 pub type TransactionCleanupFn =
-    Box<dyn Fn(&Transaction, &TransactionCleanupEvent) + Send + Sync + 'static>;
+    Box<dyn Fn(&Transaction<&Doc>, &TransactionCleanupEvent) + Send + Sync + 'static>;
 #[cfg(feature = "sync")]
-pub type AfterTransactionFn = Box<dyn Fn(&Transaction) + Send + Sync + 'static>;
+pub type AfterTransactionFn = Box<dyn Fn(&Transaction<&Doc>) + Send + Sync + 'static>;
 #[cfg(feature = "sync")]
-pub type UpdateFn = Box<dyn Fn(&Transaction, &UpdateEvent) + Send + Sync + 'static>;
+pub type UpdateFn = Box<dyn Fn(&Transaction<&Doc>, &UpdateEvent) + Send + Sync + 'static>;
 #[cfg(feature = "sync")]
 pub type SubdocsFn = Box<dyn Fn(&mut SubdocsEvent) + Send + Sync + 'static>;
 #[cfg(feature = "sync")]
 pub type DestroyFn = Box<dyn Fn(&Doc) + Send + Sync + 'static>;
 
 #[cfg(not(feature = "sync"))]
-pub type TransactionCleanupFn = Box<dyn Fn(&Transaction, &TransactionCleanupEvent) + 'static>;
+pub type TransactionCleanupFn = Box<dyn Fn(&Transaction<&Doc>, &TransactionCleanupEvent) + 'static>;
 #[cfg(not(feature = "sync"))]
-pub type AfterTransactionFn = Box<dyn Fn(&Transaction) + 'static>;
+pub type AfterTransactionFn = Box<dyn Fn(&Transaction<&Doc>) + 'static>;
 #[cfg(not(feature = "sync"))]
-pub type UpdateFn = Box<dyn Fn(&Transaction, &UpdateEvent) + 'static>;
+pub type UpdateFn = Box<dyn Fn(&Transaction<&Doc>, &UpdateEvent) + 'static>;
 #[cfg(not(feature = "sync"))]
 pub type SubdocsFn = Box<dyn Fn(&mut SubdocsEvent) + 'static>;
 #[cfg(not(feature = "sync"))]
@@ -435,18 +436,18 @@ pub struct DocEvents {
 }
 
 impl DocEvents {
-    pub(crate) fn emit_update_v1(&self, txn: &Transaction) {
+    pub(crate) fn emit_update_v1(&self, tx: &Transaction<&Doc>) {
         if self.update_v1.has_subscribers() {
-            let has_delete_set = txn.delete_set().map(|ds| !ds.is_empty()).unwrap_or(false);
-            if has_delete_set || txn.after_state() != txn.before_state() {
+            let has_delete_set = tx.delete_set().map(|ds| !ds.is_empty()).unwrap_or(false);
+            if has_delete_set || tx.after_state() != tx.before_state() {
                 // produce update only if anything changed
-                let update = UpdateEvent::new_v1(txn);
-                self.update_v1.trigger(|callback| callback(txn, &update));
+                let update = UpdateEvent::new_v1(&tx);
+                self.update_v1.trigger(|callback| callback(&tx, &update));
             }
         }
     }
 
-    pub(crate) fn emit_update_v2(&self, txn: &Transaction) {
+    pub(crate) fn emit_update_v2(&self, txn: &Transaction<&Doc>) {
         if self.update_v2.has_subscribers() {
             let has_delete_set = txn.delete_set().map(|ds| !ds.is_empty()).unwrap_or(false);
             if has_delete_set || txn.after_state() != txn.before_state() {
@@ -457,11 +458,11 @@ impl DocEvents {
         }
     }
 
-    pub(crate) fn emit_after_transaction(&self, txn: &Transaction) {
+    pub(crate) fn emit_after_transaction(&self, txn: &Transaction<&Doc>) {
         self.after_transaction.trigger(|fun| fun(txn));
     }
 
-    pub(crate) fn emit_transaction_cleanup(&self, txn: &Transaction) {
+    pub(crate) fn emit_transaction_cleanup(&self, txn: &Transaction<&Doc>) {
         if self.transaction_cleanup.has_subscribers() {
             let event = TransactionCleanupEvent::new(txn);
             self.transaction_cleanup.trigger(|fun| fun(txn, &event));

@@ -78,12 +78,15 @@ impl FromOut for Out {
 }
 
 impl Out {
-    pub fn cast<O: FromOut>(self: Out, txn: &Transaction) -> Result<O, Self> {
+    pub fn cast<O: FromOut, D: RefProvider<Doc>>(
+        self: Out,
+        txn: &Transaction<D>,
+    ) -> Result<O, Self> {
         O::from_out(self, txn)
     }
 
     /// Converts current value into stringified representation.
-    pub fn to_string(self, txn: &Transaction) -> String {
+    pub fn to_string<D: RefProvider<Doc>>(self, txn: &Transaction<D>) -> String {
         match self {
             Out::Any(a) => a.to_string(),
             Out::Text(v) => v.get_string(txn),
@@ -156,7 +159,7 @@ impl AsPrelim for Out {
     }
 }
 
-fn infer_type_from_content(branch: BranchPtr, txn: &Transaction) -> In {
+fn infer_type_from_content<D: RefProvider<Doc>>(branch: BranchPtr, txn: &Transaction<D>) -> In {
     let has_map = !branch.map.is_empty();
     let mut ptr = branch.start;
     let has_list = ptr.is_some();
@@ -205,7 +208,10 @@ pub trait FromOut: Sized {
 macro_rules! impl_from_out {
     ($t:ty) => {
         impl FromOut for $t {
-            fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out> {
+            fn from_out<D: RefProvider<Doc>>(
+                value: Out,
+                _txn: &Transaction<D>,
+            ) -> Result<Self, Out> {
                 use std::convert::TryInto;
                 match value {
                     Out::Any(any) => any.try_into().map_err(Out::Any),

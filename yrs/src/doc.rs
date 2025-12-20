@@ -76,7 +76,7 @@ macro_rules! define_observe_tx {
         #[cfg(not(feature = "sync"))]
         pub fn $observe<F>(&mut self, callback: F) -> crate::Subscription
         where
-            F: Fn(&Transaction, &$t) + 'static,
+            F: Fn(&Transaction<&Doc>, &$t) + 'static,
         {
             self.events().$event.subscribe(Box::new(callback))
         }
@@ -85,7 +85,7 @@ macro_rules! define_observe_tx {
         pub fn $observe_with<K, F>(&mut self, key: K, callback: F)
         where
             K: Into<Origin>,
-            F: Fn(&Transaction, &$t) + 'static,
+            F: Fn(&Transaction<&Doc>, &$t) + 'static,
         {
             self.events()
                 .$event
@@ -95,7 +95,7 @@ macro_rules! define_observe_tx {
         #[cfg(feature = "sync")]
         pub fn $observe<F>(&mut self, callback: F) -> crate::Subscription
         where
-            F: Fn(&Transaction, &$t) + Send + Sync + 'static,
+            F: Fn(&Transaction<&Doc>, &$t) + Send + Sync + 'static,
         {
             self.events().$event.subscribe(Box::new(callback))
         }
@@ -104,7 +104,7 @@ macro_rules! define_observe_tx {
         pub fn $observe_with<K, F>(&mut self, key: K, callback: F)
         where
             K: Into<Origin>,
-            F: Fn(&Transaction, &$t) + Send + Sync + 'static,
+            F: Fn(&Transaction<&Doc>, &$t) + Send + Sync + 'static,
         {
             self.events()
                 .$event
@@ -123,7 +123,7 @@ macro_rules! define_observe_tx {
         #[cfg(not(feature = "sync"))]
         pub fn $observe<F>(&mut self, callback: F) -> crate::Subscription
         where
-            F: Fn(&Transaction) + 'static,
+            F: Fn(&Transaction<&Doc>) + 'static,
         {
             self.events().$event.subscribe(Box::new(callback))
         }
@@ -132,7 +132,7 @@ macro_rules! define_observe_tx {
         pub fn $observe_with<K, F>(&mut self, key: K, callback: F)
         where
             K: Into<Origin>,
-            F: Fn(&Transaction) + 'static,
+            F: Fn(&Transaction<&Doc>) + 'static,
         {
             self.events()
                 .$event
@@ -142,7 +142,7 @@ macro_rules! define_observe_tx {
         #[cfg(feature = "sync")]
         pub fn $observe<F>(&mut self, callback: F) -> crate::Subscription
         where
-            F: Fn(&Transaction) + Send + Sync + 'static,
+            F: Fn(&Transaction<&Doc>) + Send + Sync + 'static,
         {
             self.events().$event.subscribe(Box::new(callback))
         }
@@ -151,7 +151,7 @@ macro_rules! define_observe_tx {
         pub fn $observe_with<K, F>(&mut self, key: K, callback: F)
         where
             K: Into<Origin>,
-            F: Fn(&Transaction) + Send + Sync + 'static,
+            F: Fn(&Transaction<&Doc>) + Send + Sync + 'static,
         {
             self.events()
                 .$event
@@ -599,14 +599,14 @@ impl std::fmt::Display for DocId {
     }
 }
 
-pub struct SubDoc<'tx> {
-    parent_txn: &'tx Transaction<'tx>,
+pub struct SubDoc<'tx, D: RefProvider<Doc>> {
+    parent_txn: &'tx Transaction<D>,
     subdoc_ref: CellRef<'tx, Box<dyn DocLike>>,
 }
 
-impl<'tx> SubDoc<'tx> {
+impl<'tx, D: RefProvider<Doc>> SubDoc<'tx, D> {
     pub(crate) fn new(
-        parent_txn: &'tx Transaction<'tx>,
+        parent_txn: &'tx Transaction<D>,
         subdoc: CellRef<'tx, Box<dyn DocLike>>,
     ) -> Self {
         SubDoc {
@@ -615,12 +615,12 @@ impl<'tx> SubDoc<'tx> {
         }
     }
 
-    pub fn parent_txn(&self) -> &'tx Transaction<'tx> {
+    pub fn parent_txn(&self) -> &'tx Transaction<D> {
         self.parent_txn
     }
 }
 
-impl<'tx> Deref for SubDoc<'tx> {
+impl<'tx, D: RefProvider<Doc>> Deref for SubDoc<'tx, D> {
     type Target = Doc;
 
     fn deref(&self) -> &Self::Target {
@@ -669,25 +669,26 @@ impl<'tx> DerefMut for SubDocMut<'tx> {
     }
 }
 
-pub struct SubdocRefs<'tx> {
-    txn: &'tx Transaction<'tx>,
+pub struct SubdocRefs<'tx, D: RefProvider<Doc>> {
+    txn: &'tx Transaction<D>,
+    doc: D::Ref<'tx>,
     inner: std::collections::hash_set::Iter<'tx, (DocId, ID)>,
 }
 
-impl<'tx> SubdocRefs<'tx> {
-    pub(crate) fn new(
-        txn: &'tx Transaction,
-        subdocs: &'tx std::collections::HashSet<(DocId, ID)>,
-    ) -> Self {
+impl<'tx, D: RefProvider<Doc>> SubdocRefs<'tx, D> {
+    pub(crate) fn new(txn: &'tx Transaction<D>) -> Self {
+        let doc = txn.doc();
+        let subdocs = doc.subdocs.iter();
         SubdocRefs {
             txn,
-            inner: subdocs.iter(),
+            doc,
+            inner: subdocs,
         }
     }
 }
 
-impl<'tx> Iterator for SubdocRefs<'tx> {
-    type Item = SubDoc<'tx>;
+impl<'tx, D: RefProvider<Doc>> Iterator for SubdocRefs<'tx, D> {
+    type Item = SubDoc<'tx, D>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (_, id) = self.inner.next()?;
@@ -884,7 +885,14 @@ impl Prelim for Doc {
     }
 }
 
+#[cfg(not(feature = "sync"))]
 pub trait DocLike: 'static {
+    fn doc(&self) -> &Doc;
+    fn doc_mut(&mut self) -> &mut Doc;
+}
+
+#[cfg(feature = "sync")]
+pub trait DocLike: Send + Sync + 'static {
     fn doc(&self) -> &Doc;
     fn doc_mut(&mut self) -> &mut Doc;
 }
@@ -915,11 +923,17 @@ impl SubDocHook {
         self.inner.borrow().doc().guid()
     }
 
-    pub fn as_ref<'tx>(&'tx self, parent_txn: &'tx Transaction) -> SubDoc<'tx> {
+    pub fn as_ref<'tx, D: RefProvider<Doc>>(
+        &'tx self,
+        parent_txn: &'tx Transaction<D>,
+    ) -> SubDoc<'tx, D> {
         SubDoc::new(parent_txn, self.inner.borrow())
     }
 
-    pub fn as_mut<'tx>(&'tx mut self, parent_tx: &'tx mut Transaction) -> SubDocMut<'tx> {
+    pub fn as_mut<'tx, D: MutProvider<Doc>>(
+        &'tx mut self,
+        parent_tx: &'tx mut Transaction<D>,
+    ) -> SubDocMut<'tx> {
         let (_, state) = parent_tx.split_mut();
         SubDocMut::new(&mut state.subdocs, self.borrow_mut())
     }
@@ -962,6 +976,7 @@ impl From<Doc> for SubDocHook {
 #[cfg(test)]
 mod test {
     use crate::block::{BlockCell, ClientID, ItemContent, GC};
+    use crate::cell::{MutProvider, RefProvider};
     use crate::doc::SubDocHook;
     use crate::error::Error;
     use crate::test_utils::exchange_updates;
@@ -1086,7 +1101,8 @@ mod test {
 
         // decode an update incoming from A and integrate it at B
         let update = Update::decode_v1(binary.as_slice()).unwrap();
-        let pending = update.integrate(&mut t2).unwrap();
+        let (doc, state) = t2.split_mut();
+        let pending = update.integrate(state, doc).unwrap();
 
         assert!(pending.0.is_none());
         assert!(pending.1.is_none());
@@ -1263,7 +1279,7 @@ mod test {
         let delete_ref = delete_set.clone();
         // Subscribe callback
 
-        let sub: Subscription = doc.observe_transaction_cleanup(move |_: &Transaction, event| {
+        let sub: Subscription = doc.observe_transaction_cleanup(move |_, event| {
             before_ref.store(Some(event.before_state.clone().into()));
             after_ref.store(Some(event.after_state.clone().into()));
             delete_ref.store(Some(event.delete_set.clone().into()));
@@ -1338,7 +1354,7 @@ mod test {
         let acc = Arc::new(Mutex::new(String::new()));
 
         let a = acc.clone();
-        let _sub = d1.observe_update_v1(move |_: &Transaction, e| {
+        let _sub = d1.observe_update_v1(move |_, e| {
             let u = Update::decode_v1(&e.update).unwrap();
             for mut block in u.blocks.into_blocks(false) {
                 match block.as_item_ptr().as_deref() {
@@ -1368,7 +1384,7 @@ mod test {
         // test incremental deletes
         let acc = Arc::new(Mutex::new(vec![]));
         let a = acc.clone();
-        let _sub = d1.observe_update_v1(move |_: &Transaction, e| {
+        let _sub = d1.observe_update_v1(move |_, e| {
             let u = Update::decode_v1(&e.update).unwrap();
             for (&client_id, range) in u.delete_set.iter() {
                 if client_id == 1 {
@@ -2347,7 +2363,10 @@ mod test {
         assert!(actual.is_none());
     }
 
-    fn init_test_data<const N: usize>(txn: &mut Transaction, data: [&str; N]) -> TextRef {
+    fn init_test_data<const N: usize, D: MutProvider<Doc>>(
+        txn: &mut Transaction<D>,
+        data: [&str; N],
+    ) -> TextRef {
         let map = txn.get_or_insert_map("map");
         let txt = map.insert(txn, "text", TextPrelim::default());
         for ch in data {

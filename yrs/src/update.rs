@@ -8,14 +8,15 @@ use crate::block::{
     BlockRange, ClientID, Item, ItemContent, ItemPtr, BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER,
     HAS_ORIGIN, HAS_PARENT_SUB, HAS_RIGHT_ORIGIN,
 };
+use crate::cell::MutProvider;
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
 use crate::id_set::{DeleteSet, IdSet};
 use crate::slice::ItemSlice;
+use crate::transaction::TransactionState;
 use crate::types::TypePtr;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::cell::MutProvider;
 use crate::utils::client_hasher::ClientHasher;
 use crate::{Doc, OffsetKind, StateVector, Transaction, ID};
 
@@ -249,14 +250,14 @@ impl Update {
     /// pending update object is returned which contains blocks that couldn't be integrated, most
     /// likely because there were missing blocks that are used as a dependencies of other blocks
     /// contained in this update.
-    pub(crate) fn integrate<D: MutProvider<Doc>>(
+    pub(crate) fn integrate(
         mut self,
-        txn: &mut Transaction<D>,
+        state: &mut TransactionState,
+        doc: &mut Doc,
     ) -> Result<(Option<PendingUpdate>, Option<Update>), UpdateError> {
         let remaining_blocks = if self.blocks.is_empty() {
             None
         } else {
-            let mut store = txn.doc_mut();
             let mut client_block_ref_ids: Vec<ClientID> =
                 self.blocks.clients.keys().cloned().collect();
             client_block_ref_ids.sort();
@@ -269,7 +270,7 @@ impl Update {
                 None
             };
 
-            let mut local_sv = store.blocks.state_vector().clone();
+            let mut local_sv = doc.blocks.state_vector().clone();
             let mut missing_sv = StateVector::default();
             let mut remaining = UpdateBlocks::default();
             let mut stack = Vec::new();
@@ -303,34 +304,32 @@ impl Update {
                             let client = id.client;
                             local_sv.set_max(client, id.clock + block.len());
                             if let BlockCarrier::Item(item) = &mut block {
-                                item.repair(store)?;
+                                item.repair(&mut *doc)?;
                             }
-                            let should_delete = block.integrate(txn, offset);
+                            let should_delete = block.integrate(state, doc, offset);
                             let mut delete_ptr = if should_delete {
                                 let ptr = block.as_item_ptr();
                                 ptr
                             } else {
                                 None
                             };
-                            store = txn.doc_mut();
                             match block {
                                 BlockCarrier::Item(item) => {
                                     if item.parent != TypePtr::Unknown {
-                                        store.blocks.push_block(item)
+                                        doc.blocks.push_block(item)
                                     } else {
                                         // parent is not defined. Integrate GC struct instead
-                                        store.blocks.push_gc(BlockRange::new(item.id, item.len));
+                                        doc.blocks.push_gc(BlockRange::new(item.id, item.len));
                                         delete_ptr = None;
                                     }
                                 }
-                                BlockCarrier::GC(gc) => store.blocks.push_gc(gc),
+                                BlockCarrier::GC(gc) => doc.blocks.push_gc(gc),
                                 BlockCarrier::Skip(_) => { /* do nothing */ }
                             }
 
                             if let Some(ptr) = delete_ptr {
-                                txn.delete(ptr);
+                                state.delete_item(doc, ptr);
                             }
-                            store = txn.doc_mut();
                         }
                     } else {
                         // update from the same client is missing
@@ -382,7 +381,7 @@ impl Update {
             }
         };
 
-        let remaining_ds = txn.apply_delete(&self.delete_set).map(|ds| {
+        let remaining_ds = state.apply_delete(doc, &self.delete_set).map(|ds| {
             let mut update = Update::new();
             update.delete_set = ds;
             update
@@ -985,9 +984,14 @@ impl BlockCarrier {
         }
     }
 
-    pub fn integrate<D: MutProvider<Doc>>(&mut self, txn: &mut Transaction<D>, offset: u32) -> bool {
+    pub(crate) fn integrate(
+        &mut self,
+        state: &mut TransactionState,
+        doc: &mut Doc,
+        offset: u32,
+    ) -> bool {
         match self {
-            BlockCarrier::Item(x) => ItemPtr::from(x).integrate(txn, offset),
+            BlockCarrier::Item(x) => ItemPtr::from(x).integrate(state, doc, offset),
             BlockCarrier::Skip(x) => x.integrate(offset),
             BlockCarrier::GC(x) => x.integrate(offset),
         }

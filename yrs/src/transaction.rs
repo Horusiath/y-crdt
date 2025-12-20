@@ -123,6 +123,293 @@ impl TransactionState {
         })
     }
 
+    /// Applies given `id_set` onto current transaction to run multi-range deletion.
+    /// Returns a remaining of original ID set, that couldn't be applied.
+    pub(crate) fn apply_delete(&mut self, doc: &mut Doc, ds: &DeleteSet) -> Option<DeleteSet> {
+        let mut unapplied = DeleteSet::new();
+        for (client, ranges) in ds.iter() {
+            if let Some(mut blocks) = doc.blocks.get_client_mut(client) {
+                let current_clock = blocks.clock();
+
+                for range in ranges.iter() {
+                    let clock = range.start;
+                    let clock_end = range.end;
+
+                    if clock < current_clock {
+                        if current_clock < clock_end {
+                            unapplied.insert(ID::new(*client, clock), clock_end - current_clock);
+                        }
+                        // We can ignore the case of GC and Delete structs, because we are going to skip them
+                        if let Some(mut index) = blocks.find_pivot(clock) {
+                            // We can ignore the case of GC and Delete structs, because we are going to skip them
+                            let ptr = &mut blocks[index];
+                            if let Some(item) = ptr.as_item() {
+                                // split the first item if necessary
+                                if !item.is_deleted() && item.id.clock < clock {
+                                    if let Some(split) =
+                                        doc.blocks.split_block_inner(item, clock - item.id.clock)
+                                    {
+                                        if item.moved.is_some() {
+                                            if let Some(&prev_moved) = self.prev_moved.get(&item) {
+                                                self.prev_moved.insert(split, prev_moved);
+                                            }
+                                        }
+
+                                        index += 1;
+                                        self.merge_blocks.push(*split.id());
+                                    }
+                                    blocks = doc.blocks.get_client_mut(client).unwrap();
+                                }
+
+                                while index < blocks.len() {
+                                    let block = &mut blocks[index];
+                                    if let Some(item) = block.as_item() {
+                                        if item.id.clock < clock_end {
+                                            if !item.is_deleted() {
+                                                if item.id.clock + item.len() > clock_end {
+                                                    if let Some(split) =
+                                                        doc.blocks.split_block_inner(
+                                                            item,
+                                                            clock_end - item.id.clock,
+                                                        )
+                                                    {
+                                                        if item.moved.is_some() {
+                                                            if let Some(&prev_moved) =
+                                                                self.prev_moved.get(&item)
+                                                            {
+                                                                self.prev_moved
+                                                                    .insert(split, prev_moved);
+                                                            }
+                                                        }
+                                                        if item.info.is_linked() {
+                                                            if let Some(links) =
+                                                                doc.linked_by.get(&item).cloned()
+                                                            {
+                                                                doc.linked_by.insert(split, links);
+                                                            }
+                                                        }
+
+                                                        self.merge_blocks.push(*split.id());
+                                                        index += 1;
+                                                    }
+                                                }
+                                                self.delete_item(&mut *doc, item);
+                                                blocks = doc.blocks.get_client_mut(client).unwrap();
+                                                // just to make the borrow checker happy
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    index += 1;
+                                }
+                            }
+                        }
+                    } else {
+                        unapplied.insert(ID::new(*client, clock), clock_end - clock);
+                    }
+                }
+            } else {
+                // Client doesn't exist in block store yet, so all deletes for this client
+                // cannot be applied and should be marked as unapplied (pending)
+                for range in ranges.iter() {
+                    unapplied.insert(ID::new(*client, range.start), range.end - range.start);
+                }
+            }
+        }
+
+        if unapplied.is_empty() {
+            None
+        } else {
+            Some(unapplied)
+        }
+    }
+
+    fn commit(mut state: Box<Self>, doc: &mut Doc) -> Box<Self> {
+        // 1. sort and merge delete set
+        state.delete_set.squash();
+        state.after_state = doc.blocks.state_vector().clone(); //TODO: not necessary
+                                                               // 2. emit 'beforeObserverCalls'
+                                                               // 3. for each change observed by the transaction call 'afterTransaction'
+        let collections_modified = !state.changed.is_empty();
+        if collections_modified {
+            let mut changed_parents: HashMap<BranchPtr, Vec<usize>> = HashMap::new();
+            let mut event_cache = Vec::new();
+
+            let changed_collections = state.changed.clone();
+            for (ptr, subs) in changed_collections {
+                if let TypePtr::Branch(branch) = ptr {
+                    let (mut s, event) = branch.trigger(subs, state, doc);
+                    if let Some(e) = event {
+                        event_cache.push(e);
+                        Self::call_type_observers(
+                            &mut s.changed_parent_types,
+                            &doc.linked_by,
+                            branch,
+                            &mut changed_parents,
+                            &event_cache,
+                            &mut HashSet::default(),
+                        );
+                    }
+                    state = s;
+                }
+            }
+
+            // deep observe events
+            for (&branch, events) in changed_parents.iter() {
+                // sort events by path length so that top-level events are fired first.
+                let mut unsorted: Vec<&Event> = Vec::with_capacity(events.len());
+
+                for &i in events.iter() {
+                    let e = &mut event_cache[i];
+                    e.set_current_target(branch);
+                }
+
+                for &i in events.iter() {
+                    unsorted.push(&event_cache[i]);
+                }
+
+                // We don't need to check for events.length
+                // because we know it has at least one element
+                let events = Events::new(&mut unsorted);
+                state = branch.trigger_deep(state, doc, &events);
+            }
+        }
+
+        if let Some(events) = doc.events.take() {
+            {
+                let tx = Transaction::stateful(&mut *doc, state);
+                events.emit_after_transaction(&tx);
+                state = tx.into_state().unwrap();
+            }
+            doc.events = Some(events);
+        }
+
+        // 4. try GC delete set
+        if !doc.options.skip_gc {
+            GCCollector::collect(&mut *doc, &state);
+        }
+
+        // 5. try merge delete set
+        state.delete_set.try_squash_with(&mut *doc);
+
+        // 6. get transaction after state and try to merge to left
+        for (client, &clock) in state.after_state.iter() {
+            let before_clock = state.before_state.get(client);
+            if before_clock != clock {
+                let blocks = doc.blocks.get_client_mut(client).unwrap();
+                let first_change = blocks.find_pivot(before_clock).unwrap().max(1);
+                let mut i = blocks.len() - 1;
+                while i >= first_change {
+                    blocks.squash_left(i);
+                    i -= 1;
+                }
+            }
+        }
+
+        // 7. get merge_structs and try to merge to left
+        for id in state.merge_blocks.iter() {
+            if let Some(blocks) = doc.blocks.get_client_mut(&id.client) {
+                if let Some(replaced_pos) = blocks.find_pivot(id.clock) {
+                    if replaced_pos + 1 < blocks.len() {
+                        blocks.squash_left(replaced_pos + 1);
+                    } else if replaced_pos > 0 {
+                        blocks.squash_left(replaced_pos);
+                    }
+                }
+            }
+        }
+
+        if let Some(events) = doc.events.as_ref() {
+            let tx = Transaction::stateful(&*doc, state);
+            // 8. emit 'afterTransactionCleanup'
+            events.emit_transaction_cleanup(&tx);
+            // 9. emit 'update'
+            events.emit_update_v1(&tx);
+            // 10. emit 'updateV2'
+            events.emit_update_v2(&tx);
+            state = tx.into_state().unwrap();
+        }
+
+        // 11. add and remove subdocs
+        if let Some(mut subdocs) = state.subdocs.take() {
+            // inherit client_id and collection_id for all subdocs
+            let client_id = doc.options.client_id;
+            let collection_id = doc.collection_id();
+            for subdoc in subdocs.added.iter_mut() {
+                // subdoc must be already present in the document since it was added
+                // during integration of the ItemContent::Doc
+                let mut borrowed = subdoc.inner.borrow_mut();
+                let subdoc = borrowed.doc_mut();
+                subdoc.options.client_id = client_id;
+                if let Some(collection_id) = &collection_id {
+                    subdoc.options.collection_id = Some(collection_id.clone());
+                }
+            }
+
+            let removed = if let Some(events) = doc.events.as_ref() {
+                if events.subdocs.has_subscribers() {
+                    let mut e = SubdocsEvent::new(subdocs.added, subdocs.removed, subdocs.loaded);
+                    events.subdocs.trigger(|cb| cb(&mut e));
+                    e.removed
+                } else {
+                    subdocs.removed
+                }
+            } else {
+                subdocs.removed
+            };
+
+            for subdoc in removed {
+                drop(subdoc); // drop will trigger destroy on subdoc
+            }
+        }
+
+        state
+    }
+
+    fn call_type_observers(
+        changed_parent_types: &mut Vec<BranchPtr>,
+        all_links: &HashMap<ItemPtr, HashSet<BranchPtr>>,
+        branch: BranchPtr,
+        changed_parents: &mut HashMap<BranchPtr, Vec<usize>>,
+        event_cache: &Vec<Event>,
+        visited: &mut HashSet<BranchPtr>,
+    ) {
+        let mut current = branch;
+        loop {
+            changed_parent_types.push(current);
+            if current.deep_observers.has_subscribers() {
+                let entries = changed_parents.entry(current).or_default();
+                entries.push(event_cache.len() - 1);
+            }
+
+            if let Some(item) = current.item {
+                if item.info.is_linked() {
+                    if let Some(linked_by) = all_links.get(&item) {
+                        for &link in linked_by.iter() {
+                            if visited.insert(link) {
+                                Self::call_type_observers(
+                                    changed_parent_types,
+                                    all_links,
+                                    link,
+                                    changed_parents,
+                                    event_cache,
+                                    visited,
+                                )
+                            }
+                        }
+                    }
+                }
+                if let TypePtr::Branch(parent) = item.parent {
+                    current = parent;
+                    continue;
+                }
+            }
+
+            break;
+        }
+    }
+
     pub(crate) fn delete_item(&mut self, doc: &mut Doc, mut item: ItemPtr) -> bool {
         let mut recurse = Vec::new();
         let mut result = false;
@@ -272,11 +559,14 @@ where
     D: RefProvider<Doc>,
 {
     fn drop(&mut self) {
-        // we cannot restrict Drop fot only transactions with mutable Doc references,
-        // so we cast them and execute, since only those transactions will have state
-        // initialized anyway
-        if self.state.is_some() {
-            self.commit();
+        if let Some(state) = self.state.take() {
+            let doc = self.doc.get_ref();
+            let doc: &Doc = &*doc;
+
+            // we cannot restrict Drop fot only transactions with mutable Doc references,
+            // so we cast them and execute, since only those transactions will have state
+            // initialized anyway.
+            TransactionState::commit(state, unsafe { std::mem::transmute(doc) });
         }
     }
 }
@@ -285,6 +575,17 @@ impl<D> Transaction<D>
 where
     D: RefProvider<Doc>,
 {
+    pub(crate) fn stateful(doc: D, state: Box<TransactionState>) -> Self {
+        Transaction {
+            doc,
+            state: Some(state),
+        }
+    }
+
+    pub(crate) fn into_state(mut self) -> Option<Box<TransactionState>> {
+        self.state.take()
+    }
+
     pub fn new(doc: D, origin: Option<Origin>) -> Self {
         let state = match origin {
             None => None,
@@ -460,9 +761,8 @@ where
     }
 
     /// Returns a collection of sub documents linked within the structures of this document store.
-    pub fn subdoc_refs(&self) -> SubdocRefs<'_> {
-        let doc = self.doc();
-        SubdocRefs::new(&self, &doc.subdocs)
+    pub fn subdoc_refs(&self) -> SubdocRefs<'_, D> {
+        SubdocRefs::new(&self)
     }
 
     /// Returns a [TextRef] data structure stored under a given `name`. Text structures are used for
@@ -476,7 +776,7 @@ where
     /// interpreted as a list of text chunks).
     #[inline]
     pub fn get_text<N: Into<Arc<str>>>(&self, name: N) -> Option<TextRef> {
-        TextRef::root(name).get(self)
+        TextRef::root(name).get(&*self.doc())
     }
 
     /// Returns an [ArrayRef] data structure stored under a given `name`. Array structures are used for
@@ -490,7 +790,7 @@ where
     /// interpreted as a list of inserted values).
     #[inline]
     pub fn get_array<N: Into<Arc<str>>>(&self, name: N) -> Option<ArrayRef> {
-        ArrayRef::root(name).get(self)
+        ArrayRef::root(name).get(&*self.doc())
     }
 
     /// Returns a [MapRef] data structure stored under a given `name`. Maps are used to store key-value
@@ -505,7 +805,7 @@ where
     /// interpreted as native map).
     #[inline]
     pub fn get_map<N: Into<Arc<str>>>(&self, name: N) -> Option<MapRef> {
-        MapRef::root(name).get(self)
+        MapRef::root(name).get(&*self.doc())
     }
 
     /// Returns a [XmlFragmentRef] data structure stored under a given `name`. XML elements represent
@@ -521,7 +821,7 @@ where
     /// XML nodes).
     #[inline]
     pub fn get_xml_fragment<N: Into<Arc<str>>>(&self, name: N) -> Option<XmlFragmentRef> {
-        XmlFragmentRef::root(name).get(self)
+        XmlFragmentRef::root(name).get(&*self.doc())
     }
 
     pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
@@ -771,110 +1071,6 @@ where
         self.doc_mut().events.get_or_init()
     }
 
-    /// Applies given `id_set` onto current transaction to run multi-range deletion.
-    /// Returns a remaining of original ID set, that couldn't be applied.
-    pub(crate) fn apply_delete(&mut self, ds: &DeleteSet) -> Option<DeleteSet> {
-        let mut unapplied = DeleteSet::new();
-        let (doc, state) = self.split_mut();
-        for (client, ranges) in ds.iter() {
-            if let Some(mut blocks) = doc.blocks.get_client_mut(client) {
-                let current_clock = blocks.clock();
-
-                for range in ranges.iter() {
-                    let clock = range.start;
-                    let clock_end = range.end;
-
-                    if clock < current_clock {
-                        if current_clock < clock_end {
-                            unapplied.insert(ID::new(*client, clock), clock_end - current_clock);
-                        }
-                        // We can ignore the case of GC and Delete structs, because we are going to skip them
-                        if let Some(mut index) = blocks.find_pivot(clock) {
-                            // We can ignore the case of GC and Delete structs, because we are going to skip them
-                            let ptr = &mut blocks[index];
-                            if let Some(item) = ptr.as_item() {
-                                // split the first item if necessary
-                                if !item.is_deleted() && item.id.clock < clock {
-                                    if let Some(split) =
-                                        doc.blocks.split_block_inner(item, clock - item.id.clock)
-                                    {
-                                        if item.moved.is_some() {
-                                            if let Some(&prev_moved) = state.prev_moved.get(&item) {
-                                                state.prev_moved.insert(split, prev_moved);
-                                            }
-                                        }
-
-                                        index += 1;
-                                        state.merge_blocks.push(*split.id());
-                                    }
-                                    blocks = doc.blocks.get_client_mut(client).unwrap();
-                                }
-
-                                while index < blocks.len() {
-                                    let block = &mut blocks[index];
-                                    if let Some(item) = block.as_item() {
-                                        if item.id.clock < clock_end {
-                                            if !item.is_deleted() {
-                                                if item.id.clock + item.len() > clock_end {
-                                                    if let Some(split) =
-                                                        doc.blocks.split_block_inner(
-                                                            item,
-                                                            clock_end - item.id.clock,
-                                                        )
-                                                    {
-                                                        if item.moved.is_some() {
-                                                            if let Some(&prev_moved) =
-                                                                state.prev_moved.get(&item)
-                                                            {
-                                                                state
-                                                                    .prev_moved
-                                                                    .insert(split, prev_moved);
-                                                            }
-                                                        }
-                                                        if item.info.is_linked() {
-                                                            if let Some(links) =
-                                                                doc.linked_by.get(&item).cloned()
-                                                            {
-                                                                doc.linked_by.insert(split, links);
-                                                            }
-                                                        }
-
-                                                        state.merge_blocks.push(*split.id());
-                                                        index += 1;
-                                                    }
-                                                }
-                                                state.delete_item(&mut *doc, item);
-                                                blocks = doc.blocks.get_client_mut(client).unwrap();
-                                                // just to make the borrow checker happy
-                                            }
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                    index += 1;
-                                }
-                            }
-                        }
-                    } else {
-                        unapplied.insert(ID::new(*client, clock), clock_end - clock);
-                    }
-                }
-            } else {
-                // Client doesn't exist in block store yet, so all deletes for this client
-                // cannot be applied and should be marked as unapplied (pending)
-                for range in ranges.iter() {
-                    unapplied.insert(ID::new(*client, range.start), range.end - range.start);
-                }
-            }
-        }
-
-        if unapplied.is_empty() {
-            None
-        } else {
-            Some(unapplied)
-        }
-    }
-
     /// Delete item under given pointer.
     /// Returns true if block was successfully deleted, false if it was already deleted in the past.
     pub(crate) fn delete(&mut self, item: ItemPtr) -> bool {
@@ -893,9 +1089,9 @@ where
     /// predecessors already in place. Out of order updates from the same peer will be stashed
     /// internally and their integration will be postponed until missing blocks arrive first.
     pub fn apply_update(&mut self, update: Update) -> Result<(), UpdateError> {
-        let (remaining, remaining_ds) = update.integrate(self)?;
+        let (mut doc, state) = self.split_mut();
+        let (remaining, remaining_ds) = update.integrate(state, &mut *doc)?;
         let mut retry = false;
-        let doc = self.doc.get_mut();
         {
             doc.pending = if let Some(mut pending) = doc.pending.take() {
                 // check if we can apply something
@@ -919,7 +1115,7 @@ where
             };
         }
         if let Some(pending) = doc.pending_ds.take() {
-            let ds2 = self.apply_delete(&pending);
+            let ds2 = state.apply_delete(&mut *doc, &pending);
             let ds = match (remaining_ds, ds2) {
                 (Some(mut a), Some(b)) => {
                     a.delete_set.merge(b);
@@ -939,6 +1135,8 @@ where
                 let ds = doc.pending_ds.take().unwrap_or_default();
                 let mut ds_update = Update::new();
                 ds_update.delete_set = ds;
+                drop(doc);
+
                 self.apply_update(pending.update)?;
                 self.apply_update(ds_update)?;
             }
@@ -980,57 +1178,16 @@ where
         )?;
         let mut block_ptr = ItemPtr::from(&mut block);
 
-        block_ptr.integrate(self, 0);
-        self.doc_mut().blocks.push_block(block);
+        let (mut doc, state) = self.split_mut();
+        block_ptr.integrate(state, &mut *doc, 0);
+        doc.blocks.push_block(block);
+        drop(doc);
 
         if let Some(remainder) = remainder {
             remainder.integrate(self, block_ptr)
         }
 
         Some(block_ptr)
-    }
-
-    fn call_type_observers(
-        changed_parent_types: &mut Vec<BranchPtr>,
-        all_links: &HashMap<ItemPtr, HashSet<BranchPtr>>,
-        branch: BranchPtr,
-        changed_parents: &mut HashMap<BranchPtr, Vec<usize>>,
-        event_cache: &Vec<Event>,
-        visited: &mut HashSet<BranchPtr>,
-    ) {
-        let mut current = branch;
-        loop {
-            changed_parent_types.push(current);
-            if current.deep_observers.has_subscribers() {
-                let entries = changed_parents.entry(current).or_default();
-                entries.push(event_cache.len() - 1);
-            }
-
-            if let Some(item) = current.item {
-                if item.info.is_linked() {
-                    if let Some(linked_by) = all_links.get(&item) {
-                        for &link in linked_by.iter() {
-                            if visited.insert(link) {
-                                Self::call_type_observers(
-                                    changed_parent_types,
-                                    all_links,
-                                    link,
-                                    changed_parents,
-                                    event_cache,
-                                    visited,
-                                )
-                            }
-                        }
-                    }
-                }
-                if let TypePtr::Branch(parent) = item.parent {
-                    current = parent;
-                    continue;
-                }
-            }
-
-            break;
-        }
     }
 
     /// Commits current transaction. This step involves cleaning up and optimizing changes performed
@@ -1045,142 +1202,10 @@ where
     /// After commit, transaction returns to initial state and can be used for subsequent changes
     /// for the purposes of next committable action.
     pub fn commit(&mut self) -> Option<Box<TransactionState>> {
-        let (doc, mut state) = self.split_mut();
-
-        // 1. sort and merge delete set
-        state.delete_set.squash();
-        state.after_state = doc.blocks.state_vector().clone(); //TODO: not necessary
-                                                               // 2. emit 'beforeObserverCalls'
-                                                               // 3. for each change observed by the transaction call 'afterTransaction'
-        let collections_modified = !state.changed.is_empty();
-        if collections_modified {
-            let mut changed_parents: HashMap<BranchPtr, Vec<usize>> = HashMap::new();
-            let mut event_cache = Vec::new();
-
-            let changed_collections = state.changed.clone();
-            for (ptr, subs) in changed_collections {
-                if let TypePtr::Branch(branch) = ptr {
-                    if let Some(e) = branch.trigger(self, subs) {
-                        event_cache.push(e);
-                        state = unsafe { self.state.as_deref_mut().unwrap_unchecked() };
-                        Self::call_type_observers(
-                            &mut state.changed_parent_types,
-                            &doc.linked_by,
-                            branch,
-                            &mut changed_parents,
-                            &event_cache,
-                            &mut HashSet::default(),
-                        );
-                    }
-                }
-            }
-
-            // deep observe events
-            for (&branch, events) in changed_parents.iter() {
-                // sort events by path length so that top-level events are fired first.
-                let mut unsorted: Vec<&Event> = Vec::with_capacity(events.len());
-
-                for &i in events.iter() {
-                    let e = &mut event_cache[i];
-                    e.set_current_target(branch);
-                }
-
-                for &i in events.iter() {
-                    unsorted.push(&event_cache[i]);
-                }
-
-                // We don't need to check for events.length
-                // because we know it has at least one element
-                let events = Events::new(&mut unsorted);
-                branch.trigger_deep(self, &events);
-            }
-        }
-
-        if let Some(events) = doc.events.take() {
-            events.emit_after_transaction(self);
-            doc.events = Some(events);
-        }
-
-        // 4. try GC delete set
-
-        let (mut doc, state) = self.split_mut();
-        if !doc.options.skip_gc {
-            GCCollector::collect(&mut *doc, &state);
-        }
-
-        // 5. try merge delete set
-        state.delete_set.try_squash_with(&mut *doc);
-
-        // 6. get transaction after state and try to merge to left
-        for (client, &clock) in state.after_state.iter() {
-            let before_clock = state.before_state.get(client);
-            if before_clock != clock {
-                let blocks = doc.blocks.get_client_mut(client).unwrap();
-                let first_change = blocks.find_pivot(before_clock).unwrap().max(1);
-                let mut i = blocks.len() - 1;
-                while i >= first_change {
-                    blocks.squash_left(i);
-                    i -= 1;
-                }
-            }
-        }
-
-        // 7. get merge_structs and try to merge to left
-        for id in state.merge_blocks.iter() {
-            if let Some(blocks) = doc.blocks.get_client_mut(&id.client) {
-                if let Some(replaced_pos) = blocks.find_pivot(id.clock) {
-                    if replaced_pos + 1 < blocks.len() {
-                        blocks.squash_left(replaced_pos + 1);
-                    } else if replaced_pos > 0 {
-                        blocks.squash_left(replaced_pos);
-                    }
-                }
-            }
-        }
-
-        if let Some(events) = doc.events.as_ref() {
-            // 8. emit 'afterTransactionCleanup'
-            events.emit_transaction_cleanup(self);
-            // 9. emit 'update'
-            events.emit_update_v1(self);
-            // 10. emit 'updateV2'
-            events.emit_update_v2(self);
-        }
-
-        // 11. add and remove subdocs
-        let state = unsafe { self.state.as_deref_mut().unwrap_unchecked() };
-        if let Some(mut subdocs) = state.subdocs.take() {
-            // inherit client_id and collection_id for all subdocs
-            let client_id = doc.options.client_id;
-            let collection_id = doc.collection_id();
-            for subdoc in subdocs.added.iter_mut() {
-                // subdoc must be already present in the document since it was added
-                // during integration of the ItemContent::Doc
-                let mut borrowed = subdoc.inner.borrow_mut();
-                let subdoc = borrowed.doc_mut();
-                subdoc.options.client_id = client_id;
-                if let Some(collection_id) = &collection_id {
-                    subdoc.options.collection_id = Some(collection_id.clone());
-                }
-            }
-
-            let removed = if let Some(events) = doc.events.as_ref() {
-                if events.subdocs.has_subscribers() {
-                    let mut e = SubdocsEvent::new(subdocs.added, subdocs.removed, subdocs.loaded);
-                    events.subdocs.trigger(|cb| cb(&mut e));
-                    e.removed
-                } else {
-                    subdocs.removed
-                }
-            } else {
-                subdocs.removed
-            };
-
-            for subdoc in removed {
-                drop(subdoc); // drop will trigger destroy on subdoc
-            }
-        }
-        self.state.take() // clear transaction state
+        let mut state = self.state.take()?;
+        let mut doc = self.doc.get_mut();
+        state = TransactionState::commit(state, &mut *doc);
+        Some(state)
     }
 
     /// Perform garbage collection of deleted blocks, even if a document was created with `skip_gc`

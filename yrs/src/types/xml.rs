@@ -297,7 +297,7 @@ impl GetString for XmlElementRef {
             write!(&mut s, " {}=\"{}\"", k, v).unwrap();
         }
         write!(&mut s, ">").unwrap();
-        for i in inner.iter(txn) {
+        for i in inner.iter() {
             if !i.is_deleted() {
                 for content in i.content.get_content() {
                     write!(&mut s, "{}", content.to_string(txn)).unwrap();
@@ -822,7 +822,7 @@ impl GetString for XmlFragmentRef {
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
         let inner = self.0;
         let mut s = String::new();
-        for i in inner.iter(txn) {
+        for i in inner.iter() {
             if !i.is_deleted() {
                 for content in i.content.get_content() {
                     write!(&mut s, "{}", content.to_string(txn)).unwrap();
@@ -1004,7 +1004,12 @@ pub trait Xml: AsRef<Branch> {
     }
 
     /// Inserts an attribute entry into current XML element.
-    fn insert_attribute<D: MutProvider<Doc>, K, V>(&self, txn: &mut Transaction<D>, key: K, value: V) -> V::Return
+    fn insert_attribute<D: MutProvider<Doc>, K, V>(
+        &self,
+        txn: &mut Transaction<D>,
+        key: K,
+        value: V,
+    ) -> V::Return
     where
         K: Into<Arc<str>>,
         V: Prelim,
@@ -1034,9 +1039,13 @@ pub trait Xml: AsRef<Branch> {
 
     /// Returns a value of an attribute given its `attr_name`. Returns `None` if no such attribute
     /// can be found inside of a current XML element.
-    fn get_attribute<D: RefProvider<Doc>>(&self, txn: &Transaction<D>, attr_name: &str) -> Option<Out> {
+    fn get_attribute<D: RefProvider<Doc>>(
+        &self,
+        txn: &Transaction<D>,
+        attr_name: &str,
+    ) -> Option<Out> {
         let branch = self.as_ref();
-        branch.get(txn, attr_name)
+        branch.get(attr_name)
     }
 
     /// Returns an unordered iterator over all attributes (key-value pairs), that can be found
@@ -1081,7 +1090,12 @@ pub trait XmlFragment: AsRef<Branch> {
     /// that value at the end of it.
     ///
     /// Using `index` value that's higher than current array length results in panic.
-    fn insert<D: MutProvider<Doc>, V>(&self, txn: &mut Transaction<D>, index: u32, xml_node: V) -> V::Return
+    fn insert<D: MutProvider<Doc>, V>(
+        &self,
+        txn: &mut Transaction<D>,
+        index: u32,
+        xml_node: V,
+    ) -> V::Return
     where
         V: XmlPrelim,
     {
@@ -1117,7 +1131,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// or `index` is outside the bounds of an array.
     fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.try_forward(&*txn.doc(), index) {
             walker.delete(txn, len)
         } else {
             panic!("Index {} is outside of the range of an array", index);
@@ -1219,7 +1233,7 @@ impl<'a, D: RefProvider<Doc>> Iterator for XmlNodes<'a, D> {
     type Item = XmlOut;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let value = self.iter.read_value(self.txn)?;
+        let value = self.iter.read_value(&*self.txn.doc())?;
         XmlOut::from_out(value, self.txn).ok()
     }
 }
