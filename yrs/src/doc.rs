@@ -677,8 +677,12 @@ pub struct SubdocRefs<'tx, D: RefProvider<Doc>> {
 
 impl<'tx, D: RefProvider<Doc>> SubdocRefs<'tx, D> {
     pub(crate) fn new(txn: &'tx Transaction<D>) -> Self {
-        let doc = txn.doc();
-        let subdocs = doc.subdocs.iter();
+        let doc: D::Ref<'tx> = txn.doc();
+        let iter = doc.subdocs.iter();
+        // since iter lifetime is bound to doc reference (which is owned by current struct),
+        // it's safe to transmute its lifetime this way
+        let subdocs: std::collections::hash_set::Iter<'tx, (DocId, ID)> =
+            unsafe { std::mem::transmute(iter) };
         SubdocRefs {
             txn,
             doc,

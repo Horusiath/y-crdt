@@ -515,28 +515,30 @@ where
 }
 
 #[derive(Debug)]
-pub struct AsIter<'a, I> {
-    doc: &'a Doc,
+pub struct AsIter<D, I> {
+    doc: D,
     iter: I,
 }
 
-impl<'a, I> AsIter<'a, I>
+impl<D, I> AsIter<D, I>
 where
+    D: Deref<Target = Doc>,
     I: TxnIterator,
 {
-    pub fn new(iter: I, txn: &'a Doc) -> Self {
-        AsIter { doc: txn, iter }
+    pub fn new(iter: I, doc: D) -> Self {
+        AsIter { doc, iter }
     }
 }
 
-impl<'a, I> Iterator for AsIter<'a, I>
+impl<D, I> Iterator for AsIter<D, I>
 where
+    D: Deref<Target = Doc>,
     I: TxnIterator,
 {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next(self.doc)
+        self.iter.next(&*self.doc)
     }
 }
 

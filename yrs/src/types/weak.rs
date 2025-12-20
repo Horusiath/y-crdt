@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{Bound, HashSet};
 use std::convert::TryFrom;
 use std::marker::PhantomData;
-use std::ops::{DerefMut, RangeBounds};
+use std::ops::{Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -293,9 +293,12 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakRef] quotation
     /// range.
-    pub fn unquote<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
+    pub fn unquote<'tx, D: RefProvider<Doc>>(
+        &self,
+        txn: &'tx Transaction<D>,
+    ) -> Unquote<D::Ref<'tx>> {
         if let Some(source) = self.try_source() {
-            source.unquote(&*txn.doc())
+            source.unquote(txn)
         } else {
             Unquote::empty()
         }
@@ -355,8 +358,11 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakPrelim] quotation
     /// range.
-    pub fn unquote<'a, D: RefProvider<Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a> {
-        self.source.unquote(&*txn.doc())
+    pub fn unquote<'tx, D: RefProvider<Doc>>(
+        &self,
+        txn: &'tx Transaction<D>,
+    ) -> Unquote<D::Ref<'tx>> {
+        self.source.unquote(txn)
     }
 }
 
@@ -365,7 +371,7 @@ where
     P: SharedRef + Map,
 {
     pub fn try_deref_raw<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
-        self.source.unquote(&*txn.doc()).next()
+        self.source.unquote(txn).next()
     }
 
     pub fn try_deref<V, D: RefProvider<Doc>>(
@@ -522,8 +528,12 @@ impl LinkSource {
         }
     }
 
-    pub(crate) fn unquote<'a>(&self, doc: &'a Doc) -> Unquote<'a> {
-        let mut current = self.quote_start.get_item(doc);
+    pub(crate) fn unquote<'tx, D: RefProvider<Doc>>(
+        &self,
+        txn: &'tx Transaction<D>,
+    ) -> Unquote<D::Ref<'tx>> {
+        let doc = txn.doc();
+        let mut current = self.quote_start.get_item(&doc);
         if let Some(ptr) = &mut current {
             if Self::try_right_most(ptr) {
                 current = Some(*ptr);
@@ -633,10 +643,10 @@ impl LinkSource {
 }
 
 /// Iterator over non-deleted items, bounded by the given ID range.
-pub struct Unquote<'a>(Option<AsIter<'a, Values<RangeIter<MoveIter>>>>);
+pub struct Unquote<D>(Option<AsIter<D, Values<RangeIter<MoveIter>>>>);
 
-impl<'a> Unquote<'a> {
-    fn new(doc: &'a Doc, parent: BranchPtr, from: StickyIndex, to: StickyIndex) -> Self {
+impl<D: Deref<Target = Doc>> Unquote<D> {
+    fn new(doc: D, parent: BranchPtr, from: StickyIndex, to: StickyIndex) -> Self {
         let iter = parent
             .start
             .to_iter()
@@ -651,7 +661,7 @@ impl<'a> Unquote<'a> {
     }
 }
 
-impl<'a> Iterator for Unquote<'a> {
+impl<D: Deref<Target = Doc>> Iterator for Unquote<D> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -566,7 +566,8 @@ where
             // we cannot restrict Drop fot only transactions with mutable Doc references,
             // so we cast them and execute, since only those transactions will have state
             // initialized anyway.
-            TransactionState::commit(state, unsafe { std::mem::transmute(doc) });
+            let doc = unsafe { (std::ptr::from_ref(doc) as *mut Doc).as_mut().unwrap() };
+            TransactionState::commit(state, doc);
         }
     }
 }
@@ -1065,10 +1066,6 @@ where
         } else {
             Some(Update::merge_updates(merge))
         }
-    }
-
-    pub fn events_mut(&mut self) -> &mut DocEvents {
-        self.doc_mut().events.get_or_init()
     }
 
     /// Delete item under given pointer.

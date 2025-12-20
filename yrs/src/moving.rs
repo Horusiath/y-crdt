@@ -509,10 +509,11 @@ impl StickyIndex {
     /// let off2 = pos.get_offset(&txn).unwrap();
     /// assert_ne!(off2.index, off.index); // offset index changed due to new insert above
     /// ```
-    pub fn get_offset(&self, doc: &Doc) -> Option<Offset> {
+    pub fn get_offset<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Offset> {
         let mut branch = None;
         let mut index = 0;
 
+        let doc = txn.doc();
         match &self.scope {
             IndexScope::Relative(right_id) => {
                 if doc.blocks.get_clock(&right_id.client) <= right_id.clock {
@@ -1003,7 +1004,7 @@ mod test {
                 let encoded = rel_pos.encode_v1();
                 let decoded = StickyIndex::decode_v1(&encoded).unwrap();
                 let abs_pos = decoded
-                    .get_offset(&*txn.doc())
+                    .get_offset(&txn)
                     .expect(&format!("offset not found for index {} of {}", i, decoded));
                 assert_eq!(abs_pos.index, i);
                 assert_eq!(abs_pos.assoc, assoc);
@@ -1096,8 +1097,8 @@ mod test {
 
         txt.insert(&mut txn, 1, "x");
 
-        let pos_right = rpos_right.get_offset(&txn.doc()).unwrap();
-        let pos_left = rpos_left.get_offset(&txn.doc()).unwrap();
+        let pos_right = rpos_right.get_offset(&txn).unwrap();
+        let pos_left = rpos_left.get_offset(&txn).unwrap();
 
         assert_eq!(pos_right.index, 2);
         assert_eq!(pos_left.index, 1);

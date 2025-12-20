@@ -340,7 +340,10 @@ impl Branch {
 
     /// Get iterator over (String, Block) entries of a map component of a current root type.
     /// Deleted blocks are skipped by this iterator.
-    pub(crate) fn entries<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Entries<'_, D> {
+    pub(crate) fn entries<'a, D: RefProvider<Doc>>(
+        &'a self,
+        txn: &'a Transaction<D>,
+    ) -> Entries<'a, D> {
         Entries::new(&self.map, txn)
     }
 
@@ -856,8 +859,8 @@ impl<S: SharedRef> Hook<S> {
     /// // descriptors work also for root types
     /// assert_eq!(root_hook.get(&txn), Some(root));
     /// ```
-    pub fn get(&self, doc: &Doc) -> Option<S> {
-        let branch = self.id.get_branch(doc)?;
+    pub fn get<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
+        let branch = self.id.get_branch(&*txn.doc())?;
         match branch.item {
             Some(ptr) if ptr.is_deleted() => None,
             _ => Some(S::from(branch)),

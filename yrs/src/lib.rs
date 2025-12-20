@@ -554,9 +554,20 @@
 //! ```rust
 //! use yrs::sync::{Awareness, Message, Protocol, Error};
 //!
-//! struct MyProtocol;
+//! struct MyProtocol {
+//!     awareness: Awareness,
+//! }
+//!
 //! impl Protocol for MyProtocol {
-//!     fn missing_handle(&self, awareness: &mut Awareness, tag: u8, data: Vec<u8>) -> Result<Option<Message>, Error> {
+//!     fn awareness(&self) -> &Awareness {
+//!         &self.awareness
+//!     }
+//!
+//!     fn awareness_mut(&mut self) -> &mut Awareness {
+//!         &mut self.awareness
+//!     }
+//!
+//!     fn missing_handle(&mut self, tag: u8, data: Vec<u8>) -> Result<Option<Message>, Error> {
 //!         // you can not only override existing message handlers but also define your own
 //!         Ok(Some(Message::Custom(tag, data))) // echo
 //!     }
