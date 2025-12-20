@@ -195,10 +195,7 @@ impl TryFrom<BranchPtr> for XmlOut {
 }
 
 impl FromOut for XmlOut {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::XmlElement(n) => Ok(XmlOut::Element(n)),
             Out::XmlFragment(n) => Ok(XmlOut::Fragment(n)),
@@ -207,10 +204,7 @@ impl FromOut for XmlOut {
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         match branch.type_ref {
             TypeRef::XmlElement(_) => Some(XmlOut::Element(XmlElementRef::from(branch))),
@@ -334,20 +328,14 @@ impl From<BranchPtr> for XmlElementRef {
 }
 
 impl FromOut for XmlElementRef {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::XmlElement(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         Some(Self::from(branch))
     }
@@ -618,20 +606,14 @@ impl From<BranchPtr> for XmlTextRef {
 }
 
 impl FromOut for XmlTextRef {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::XmlText(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         Some(Self::from(branch))
     }
@@ -858,20 +840,14 @@ impl From<BranchPtr> for XmlFragmentRef {
 }
 
 impl FromOut for XmlFragmentRef {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::XmlFragment(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         Some(Self::from(branch))
     }
@@ -1030,7 +1006,7 @@ pub trait Xml: AsRef<Branch> {
         let ptr = txn
             .create_item(&pos, value, Some(key))
             .expect("Cannot insert empty value");
-        if let Some(integrated) = V::Return::from_item(ptr, txn) {
+        if let Some(integrated) = V::Return::from_item(ptr, &*txn.doc()) {
             integrated
         } else {
             panic!("Defect: unexpected integrated type")
@@ -1100,7 +1076,7 @@ pub trait XmlFragment: AsRef<Branch> {
         V: XmlPrelim,
     {
         let ptr = self.as_ref().insert_at(txn, index, xml_node).unwrap(); // XML node is never empty
-        V::Return::from_item(ptr, txn).unwrap()
+        V::Return::from_item(ptr, &*txn.doc()).unwrap()
     }
 
     /// Inserts given `value` at the end of the current array.
@@ -1234,7 +1210,7 @@ impl<'a, D: RefProvider<Doc>> Iterator for XmlNodes<'a, D> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let value = self.iter.read_value(&*self.txn.doc())?;
-        XmlOut::from_out(value, self.txn).ok()
+        XmlOut::from_out(value, &*self.txn.doc()).ok()
     }
 }
 

@@ -64,20 +64,14 @@ impl BranchPtr {
 }
 
 impl FromOut for BranchPtr {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value.try_branch() {
             None => Err(value),
             Some(branch) => Ok(BranchPtr::from(branch)),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         item.as_branch()
     }
 }

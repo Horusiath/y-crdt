@@ -137,20 +137,14 @@ impl TryFrom<ItemPtr> for ArrayRef {
 }
 
 impl FromOut for ArrayRef {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::Array(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         Some(Self::from(branch))
     }
@@ -206,7 +200,7 @@ pub trait Array: AsRef<Branch> + Sized {
             let ptr = walker
                 .insert_contents(txn, value)
                 .expect("cannot insert empty value");
-            V::Return::from_item(ptr, txn).unwrap()
+            V::Return::from_item(ptr, &*txn.doc()).unwrap()
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }
@@ -280,7 +274,7 @@ pub trait Array: AsRef<Branch> + Sized {
         let doc = txn.doc();
         if walker.try_forward(&*doc, index) {
             let out = walker.read_value(&*doc)?;
-            R::from_out(out, txn).ok()
+            R::from_out(out, &*doc).ok()
         } else {
             None
         }

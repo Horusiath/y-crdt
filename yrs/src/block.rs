@@ -2182,18 +2182,12 @@ pub struct Unused;
 
 impl FromOut for Unused {
     #[inline]
-    fn from_out<D: RefProvider<Doc>>(_: Out, _: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(_: Out, _: &Doc) -> Result<Self, Out> {
         Ok(Unused)
     }
 
     #[inline]
-    fn from_item<D: RefProvider<Doc>>(_: ItemPtr, _: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(_: ItemPtr, _: &Doc) -> Option<Self> {
         Some(Unused)
     }
 }

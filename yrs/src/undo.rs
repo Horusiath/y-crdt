@@ -1840,7 +1840,7 @@ mod test {
         {
             let txn = d1.transact();
             let diff = txt2.diff(&txn, YChange::identity);
-            let nested2: TextRef = diff[0].insert.clone().cast(&txn).unwrap();
+            let nested2: TextRef = diff[0].insert.clone().cast(&*txn.doc()).unwrap();
             assert_eq!(
                 nested2.get_string(&d2.transact()),
                 "initial text".to_string()

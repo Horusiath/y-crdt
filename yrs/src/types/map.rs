@@ -103,20 +103,14 @@ impl PartialEq for MapRef {
 }
 
 impl FromOut for MapRef {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::Map(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         Some(Self::from(branch))
     }
@@ -206,7 +200,7 @@ pub trait Map: AsRef<Branch> + Sized {
         let ptr = txn
             .create_item(&pos, value, Some(key))
             .expect("Cannot insert empty value");
-        if let Some(integrated) = <V as Prelim>::Return::from_item(ptr, txn) {
+        if let Some(integrated) = <V as Prelim>::Return::from_item(ptr, &*txn.doc()) {
             integrated
         } else {
             panic!("Defect: unexpected integrated type")
@@ -271,7 +265,7 @@ pub trait Map: AsRef<Branch> + Sized {
         let key = key.into();
         let branch = self.as_ref();
         if let Some(value) = branch.get(&key) {
-            if let Ok(value) = V::from_out(value, txn) {
+            if let Ok(value) = V::from_out(value, &*txn.doc()) {
                 return value;
             }
         }
@@ -295,7 +289,7 @@ pub trait Map: AsRef<Branch> + Sized {
 
     /// Returns [WeakPrelim] to a given `key`, if it exists in a current map.
     #[cfg(feature = "weak")]
-    fn link<D: MutProvider<Doc>>(
+    fn link<D: RefProvider<Doc>>(
         &self,
         _txn: &Transaction<D>,
         key: &str,
@@ -313,7 +307,7 @@ pub trait Map: AsRef<Branch> + Sized {
     fn get<R: FromOut, D: RefProvider<Doc>>(&self, txn: &Transaction<D>, key: &str) -> Option<R> {
         let ptr = BranchPtr::from(self.as_ref());
         let out = ptr.get(key)?;
-        R::from_out(out, txn).ok()
+        R::from_out(out, &*txn.doc()).ok()
     }
 
     /// Returns a value stored under a given `key` within current map, deserializing it into expected

@@ -852,20 +852,14 @@ pub enum OffsetKind {
 }
 
 impl FromOut for SubDocHook {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::SubDoc(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         match &item.content {
             ItemContent::Doc(doc) => Some(doc.clone()),
             _ => None,
@@ -1711,14 +1705,13 @@ mod test {
             let _xml_elem = doc.get_or_insert_xml_fragment("xml_elem");
         }
 
-        let txn = doc.transact();
-        for (key, value) in txn.doc().root_refs() {
+        for (key, value) in doc.root_refs() {
             match key {
-                "text" => assert!(value.cast::<TextRef>(&txn).is_ok()),
-                "array" => assert!(value.cast::<ArrayRef>(&txn).is_ok()),
-                "map" => assert!(value.cast::<MapRef>(&txn).is_ok()),
-                "xml_elem" => assert!(value.cast::<XmlFragmentRef>(&txn).is_ok()),
-                "xml_text" => assert!(value.cast::<XmlTextRef>(&txn).is_ok()),
+                "text" => assert!(value.cast::<TextRef>(&doc).is_ok()),
+                "array" => assert!(value.cast::<ArrayRef>(&doc).is_ok()),
+                "map" => assert!(value.cast::<MapRef>(&doc).is_ok()),
+                "xml_elem" => assert!(value.cast::<XmlFragmentRef>(&doc).is_ok()),
+                "xml_text" => assert!(value.cast::<XmlTextRef>(&doc).is_ok()),
                 other => panic!("unrecognized root type: '{}'", other),
             }
         }

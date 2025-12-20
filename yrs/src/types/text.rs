@@ -134,20 +134,14 @@ impl GetString for TextRef {
 }
 
 impl FromOut for TextRef {
-    fn from_out<D: RefProvider<Doc>>(value: Out, _txn: &Transaction<D>) -> Result<Self, Out>
-    where
-        Self: Sized,
-    {
+    fn from_out(value: Out, _doc: &Doc) -> Result<Self, Out> {
         match value {
             Out::Text(value) => Ok(value),
             other => Err(other),
         }
     }
 
-    fn from_item<D: RefProvider<Doc>>(item: ItemPtr, _txn: &Transaction<D>) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    fn from_item(item: ItemPtr, _doc: &Doc) -> Option<Self> {
         let branch = item.as_branch()?;
         Some(Self::from(branch))
     }
@@ -310,7 +304,7 @@ pub trait Text: AsRef<Branch> + Sized {
             let ptr = txn
                 .create_item(&pos, content.into(), None)
                 .expect("cannot insert empty value");
-            V::Return::from_item(ptr, txn).unwrap()
+            V::Return::from_item(ptr, &*txn.doc()).unwrap()
         } else {
             panic!("The type or the position doesn't exist!");
         }
@@ -338,7 +332,7 @@ pub trait Text: AsRef<Branch> + Sized {
         if let Some(mut pos) = find_position(this, txn, index) {
             let item = insert(this, txn, &mut pos, embed.into(), attributes)
                 .expect("cannot insert empty value");
-            V::Return::from_item(item, txn).unwrap()
+            V::Return::from_item(item, &*txn.doc()).unwrap()
         } else {
             panic!("The type or the position doesn't exist!");
         }
@@ -2738,7 +2732,7 @@ mod test {
             [Delta::insert(MapPrelim::from([("key", "val")]))],
         );
         let delta = txt1.diff(&txn1, YChange::identity);
-        let d: MapRef = delta[0].insert.clone().cast(&txn1).unwrap();
+        let d: MapRef = delta[0].insert.clone().cast(&txn1.doc()).unwrap();
         assert_eq!(
             d.get::<Out, _>(&txn1, "key").unwrap(),
             Out::Any("val".into())
@@ -2750,7 +2744,7 @@ mod test {
             txt1.observe(move |txn, e| {
                 let delta = e.delta().to_vec();
                 let d: MapRef = match &delta[0] {
-                    Delta::Inserted(insert, _) => insert.clone().cast(txn).unwrap(),
+                    Delta::Inserted(insert, _) => insert.clone().cast(txn.doc()).unwrap(),
                     _ => unreachable!("unexpected delta"),
                 };
                 assert_eq!(d.get::<Out, _>(txn, "key").unwrap(), Out::Any("val".into()));
@@ -2771,7 +2765,7 @@ mod test {
         let txn = d2.transact();
         let delta = txt2.diff(&txn, YChange::identity);
         assert_eq!(delta.len(), 1);
-        let d: MapRef = delta[0].insert.clone().cast(&txn).unwrap();
+        let d: MapRef = delta[0].insert.clone().cast(&txn.doc()).unwrap();
         assert_eq!(
             d.get::<Out, _>(&txn, "key").unwrap(),
             Out::Any("val".into())

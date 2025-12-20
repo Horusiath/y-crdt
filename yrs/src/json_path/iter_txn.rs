@@ -88,8 +88,12 @@ fn any_iter<'a, D: RefProvider<Doc>>(
 
     match out {
         None => {
-            let doc = txn.doc();
-            Some(dyn_iter(doc.root_refs().map(|(_, out)| out)))
+            let root_refs = txn
+                .doc()
+                .root_refs()
+                .map(|(_, out)| out)
+                .collect::<Vec<_>>();
+            Some(dyn_iter(root_refs.into_iter()))
         }
         Some(Out::Any(any)) => {
             let iter = any.try_into_iter();
