@@ -360,9 +360,10 @@ impl BlockIter {
         txn: &mut Transaction<D>,
         value: V,
     ) -> Option<ItemPtr> {
-        let (mut doc, state) = txn.split_mut();
-        self.reduce_moves(&*doc);
-        self.split_rel(&mut *doc);
+        let (mut doc_ref, state) = txn.split_mut();
+        let doc = &mut *doc_ref;
+        self.reduce_moves(doc);
+        self.split_rel(doc);
         let id = {
             let client_id = doc.client_id();
             let clock = doc.blocks.get_clock(&client_id);
@@ -371,7 +372,8 @@ impl BlockIter {
         let parent = TypePtr::Branch(self.branch);
         let right = self.right();
         let left = self.left();
-        drop(doc);
+        drop(doc_ref);
+
         let (content, remainder) = value.into_content(txn);
         let mut block = Item::new(
             id,
@@ -385,10 +387,12 @@ impl BlockIter {
         )?;
         let mut block_ptr = ItemPtr::from(&mut block);
 
-        let (mut doc, state) = txn.split_mut();
-        block_ptr.integrate(state, &mut *doc, 0);
-        doc.blocks.push_block(block);
-        drop(doc);
+        {
+            let (mut doc, state) = txn.split_mut();
+            let doc = &mut *doc;
+            block_ptr.integrate(state, doc, 0);
+            doc.blocks.push_block(block);
+        }
 
         if let Some(remainder) = remainder {
             remainder.integrate(txn, block_ptr)

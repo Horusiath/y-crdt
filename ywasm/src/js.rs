@@ -13,21 +13,19 @@ use std::convert::TryInto;
 use std::ops::{Deref, RangeBounds};
 use std::sync::Arc;
 use wasm_bindgen::__rt::RcRefMut;
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
+use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, RefMutFromWasmAbi};
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::{Branch, BranchPtr};
-use yrs::cell::MutProvider;
-use yrs::out::FromOut;
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
     TypeRef, TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
     TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_FRAGMENT, TYPE_REFS_XML_TEXT,
 };
 use yrs::{
-    Any, ArrayRef, BranchID, Doc, Map, MapRef, Origin, Out, Text, TextRef,
-    Transaction, WeakRef, Xml, XmlElementRef, XmlFragment, XmlFragmentRef,
-    XmlOut, XmlTextRef,
+    Any, ArrayRef, BranchID, Doc, Map, MapRef, Mut, MutProvider, Origin, Out, Ref, RefProvider,
+    Text, TextRef, Transaction, WeakRef, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
+    XmlTextRef,
 };
 
 #[repr(transparent)]
@@ -173,6 +171,20 @@ impl Js {
         } else {
             Err(self.0.clone())
         }
+    }
+}
+
+impl RefProvider<yrs::Doc> for Js {
+    fn get_ref(&self) -> Ref<'_, Doc> {
+        let abi = unsafe { crate::Doc::ref_from_abi(self.0.into_abi()) };
+        Ref::Interior(Box::new(abi))
+    }
+}
+
+impl MutProvider<yrs::Doc> for Js {
+    fn get_mut(&mut self) -> Mut<'_, Doc> {
+        let abi = unsafe { crate::Doc::ref_mut_from_abi(self.0.into_abi()) };
+        Mut::Interior(Box::new(abi))
     }
 }
 

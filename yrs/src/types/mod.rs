@@ -516,7 +516,7 @@ pub trait DeepObservable: AsRef<Branch> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: Fn(&Transaction<Doc>, &Events) + 'static,
+        F: Fn(&Transaction<&Doc>, &Events) + 'static,
     {
         let branch = self.as_ref();
         branch

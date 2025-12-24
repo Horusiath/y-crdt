@@ -206,99 +206,132 @@ impl<S> Cell<S> {
     }
 }
 
-pub trait RefProvider<T> {
-    type Ref<'a>: Deref<Target = T>
-    where
-        Self: 'a;
+pub enum Ref<'a, T> {
+    /// A direct reference.
+    Direct(&'a T),
+    /// An implementation using interior mutability pattern.
+    Interior(Box<dyn Deref<Target = T> + 'a>),
+}
 
-    fn get_ref(&self) -> Self::Ref<'_>;
+impl<'a, T> From<&'a T> for Ref<'a, T> {
+    #[inline]
+    fn from(value: &'a T) -> Self {
+        Self::Direct(value)
+    }
+}
+
+impl<'a, T> From<CellRef<'a, T>> for Ref<'a, T> {
+    #[inline]
+    fn from(value: CellRef<'a, T>) -> Self {
+        Self::Interior(Box::new(value))
+    }
+}
+
+impl<'a, T> Deref for Ref<'a, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Ref::Direct(value) => value,
+            Ref::Interior(value) => value.deref(),
+        }
+    }
+}
+
+pub enum Mut<'a, T> {
+    Direct(&'a mut T),
+    Interior(Box<dyn DerefMut<Target = T> + 'a>),
+}
+
+impl<'a, T> From<&'a mut T> for Mut<'a, T> {
+    #[inline]
+    fn from(value: &'a mut T) -> Self {
+        Self::Direct(value)
+    }
+}
+
+impl<'a, T> From<CellMut<'a, T>> for Mut<'a, T> {
+    #[inline]
+    fn from(value: CellMut<'a, T>) -> Self {
+        Self::Interior(Box::new(value))
+    }
+}
+
+impl<'a, T> Deref for Mut<'a, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Mut::Direct(value) => value,
+            Mut::Interior(value) => value.deref(),
+        }
+    }
+}
+
+impl<'a, T> DerefMut for Mut<'a, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Mut::Direct(value) => value,
+            Mut::Interior(value) => value.deref_mut(),
+        }
+    }
+}
+
+pub trait RefProvider<T> {
+    fn get_ref(&self) -> Ref<'_, T>;
 }
 
 pub trait MutProvider<T>: RefProvider<T> {
-    type Mut<'a>: DerefMut<Target = T>
-    where
-        Self: 'a;
-
-    fn get_mut(&mut self) -> Self::Mut<'_>;
+    fn get_mut(&mut self) -> Mut<'_, T>;
 }
 
 impl<T> RefProvider<T> for T {
-    type Ref<'a>
-        = &'a T
-    where
-        Self: 'a;
-
     #[inline]
-    fn get_ref(&self) -> Self::Ref<'_> {
-        self
+    fn get_ref(&self) -> Ref<'_, T> {
+        Ref::from(self)
     }
 }
 
 impl<T> MutProvider<T> for T {
-    type Mut<'a>
-        = &'a mut T
-    where
-        Self: 'a;
-
     #[inline]
-    fn get_mut(&mut self) -> Self::Mut<'_> {
-        self
+    fn get_mut(&mut self) -> Mut<'_, T> {
+        Mut::from(self)
     }
 }
 
 impl<'t, T> RefProvider<T> for &'t T {
-    type Ref<'a>
-        = &'a T
-    where
-        Self: 'a;
-
     #[inline]
-    fn get_ref(&self) -> Self::Ref<'_> {
-        self
+    fn get_ref(&self) -> Ref<'_, T> {
+        Ref::Direct(self)
     }
 }
 
 impl<'t, T> RefProvider<T> for &'t mut T {
-    type Ref<'a>
-        = &'a T
-    where
-        Self: 'a;
-
     #[inline]
-    fn get_ref(&self) -> Self::Ref<'_> {
-        self
+    fn get_ref(&self) -> Ref<'_, T> {
+        Ref::Direct(*self)
     }
 }
 impl<'t, T> MutProvider<T> for &'t mut T {
-    type Mut<'a>
-        = &'a mut T
-    where
-        Self: 'a;
-
     #[inline]
-    fn get_mut(&mut self) -> Self::Mut<'_> {
-        self
+    fn get_mut(&mut self) -> Mut<'_, T> {
+        Mut::Direct(*self)
     }
 }
 
 impl<T> RefProvider<T> for Cell<T> {
-    type Ref<'a>
-        = CellRef<'a, T>
-    where
-        Self: 'a;
-
-    fn get_ref(&self) -> Self::Ref<'_> {
-        self.borrow()
+    #[inline]
+    fn get_ref(&self) -> Ref<'_, T> {
+        Ref::from(self.borrow())
     }
 }
 
 impl<T> MutProvider<T> for Cell<T> {
-    type Mut<'a>
-        = CellMut<'a, T>
-    where
-        Self: 'a;
-
-    fn get_mut(&mut self) -> Self::Mut<'_> {
-        self.borrow_mut()
+    #[inline]
+    fn get_mut(&mut self) -> Mut<'_, T> {
+        Mut::from(self.borrow_mut())
     }
 }

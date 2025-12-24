@@ -8,7 +8,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim};
-use crate::cell::{MutProvider, RefProvider};
+use crate::cell::{MutProvider, Ref, RefProvider};
 use crate::iter::{
     AsIter, BlockIterator, BlockSliceIterator, IntoBlockIter, MoveIter, RangeIter, TxnIterator,
     Values,
@@ -293,10 +293,7 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakRef] quotation
     /// range.
-    pub fn unquote<'tx, D: RefProvider<Doc>>(
-        &self,
-        txn: &'tx Transaction<D>,
-    ) -> Unquote<D::Ref<'tx>> {
+    pub fn unquote<'tx, D: RefProvider<Doc>>(&self, txn: &'tx Transaction<D>) -> Unquote<'tx> {
         if let Some(source) = self.try_source() {
             source.unquote(txn)
         } else {
@@ -358,10 +355,7 @@ where
 {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakPrelim] quotation
     /// range.
-    pub fn unquote<'tx, D: RefProvider<Doc>>(
-        &self,
-        txn: &'tx Transaction<D>,
-    ) -> Unquote<D::Ref<'tx>> {
+    pub fn unquote<'tx, D: RefProvider<Doc>>(&self, txn: &'tx Transaction<D>) -> Unquote<'tx> {
         self.source.unquote(txn)
     }
 }
@@ -531,7 +525,7 @@ impl LinkSource {
     pub(crate) fn unquote<'tx, D: RefProvider<Doc>>(
         &self,
         txn: &'tx Transaction<D>,
-    ) -> Unquote<D::Ref<'tx>> {
+    ) -> Unquote<'tx> {
         let doc = txn.doc();
         let mut current = self.quote_start.get_item(&doc);
         if let Some(ptr) = &mut current {
@@ -643,10 +637,10 @@ impl LinkSource {
 }
 
 /// Iterator over non-deleted items, bounded by the given ID range.
-pub struct Unquote<D>(Option<AsIter<D, Values<RangeIter<MoveIter>>>>);
+pub struct Unquote<'tx>(Option<AsIter<'tx, Values<RangeIter<MoveIter>>>>);
 
-impl<D: Deref<Target = Doc>> Unquote<D> {
-    fn new(doc: D, parent: BranchPtr, from: StickyIndex, to: StickyIndex) -> Self {
+impl<'tx> Unquote<'tx> {
+    fn new(doc: Ref<'tx, Doc>, parent: BranchPtr, from: StickyIndex, to: StickyIndex) -> Self {
         let iter = parent
             .start
             .to_iter()
@@ -661,7 +655,7 @@ impl<D: Deref<Target = Doc>> Unquote<D> {
     }
 }
 
-impl<D: Deref<Target = Doc>> Iterator for Unquote<D> {
+impl<'tx> Iterator for Unquote<'tx> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1058,6 +1052,7 @@ mod test {
         assert_eq!(a1.get(&t1, 2), Some(2));
         assert_eq!(a1.get(&t1, 3), Some(3));
         assert_eq!(a1.get(&t1, 4), Some(4));
+        drop(u);
         drop(t1);
 
         exchange_updates([&mut d1, &mut d2]);

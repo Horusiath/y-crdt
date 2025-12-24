@@ -1151,8 +1151,10 @@ mod test {
 
             let mut i = 0;
             let mut deleted = s.delete_set.deleted_blocks();
-            while let Some(BlockSlice::Item(b)) = deleted.next(txn.doc()) {
-                let item = txn.doc_mut().materialize(b);
+            let mut doc = txn.doc_mut();
+            let doc = &mut *doc;
+            while let Some(BlockSlice::Item(b)) = deleted.next(doc) {
+                let item = doc.materialize(b);
                 if let ItemContent::String(str) = &item.content {
                     let t = (
                         item.is_deleted(),
@@ -1189,11 +1191,11 @@ mod test {
         ds.insert(ID::new(1, 5), 1);
         let txn = doc.transact_mut();
         let mut i = ds.deleted_blocks();
-        let ptr = i.next(txn.doc()).unwrap();
+        let ptr = i.next(&*txn.doc()).unwrap();
         let start = ptr.clock_start();
         let end = ptr.clock_end();
         assert_eq!(start, 5);
         assert_eq!(end, 5);
-        assert!(i.next(txn.doc()).is_none());
+        assert!(i.next(&*txn.doc()).is_none());
     }
 }

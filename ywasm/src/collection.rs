@@ -1,9 +1,10 @@
+use crate::js::Js;
 use crate::transaction::Transaction;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
 use std::ops::Deref;
 use wasm_bindgen::JsValue;
-use yrs::{BranchID, Doc as YDoc, Hook, SharedRef, TransactionMut as YTransaction};
+use yrs::{BranchID, Doc as YDoc, Hook, SharedRef, Transaction as YTransaction};
 
 pub enum SharedCollection<P, S> {
     Integrated(Integrated<S>),
@@ -83,7 +84,7 @@ impl<S: SharedRef + 'static> Integrated<S> {
 
     pub fn transact<F, T>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&S, &mut YTransaction) -> Result<T>,
+        F: FnOnce(&S, &mut YTransaction<Js>) -> Result<T>,
     {
         self.doc.transact(JsValue::UNDEFINED, |tx| {
             let shared_ref = self

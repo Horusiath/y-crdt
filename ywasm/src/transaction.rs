@@ -64,7 +64,7 @@ impl DerefMut for DocRefMut {
 #[repr(transparent)]
 #[wasm_bindgen]
 pub struct Transaction {
-    inner: YTransaction<DocRefMut>,
+    inner: YTransaction<Js>,
 }
 
 impl Transaction {
@@ -80,22 +80,8 @@ impl Transaction {
     }
 }
 
-impl AsRef<YTransaction<DocRefMut>> for Transaction {
-    #[inline]
-    fn as_ref(&self) -> &YTransaction<DocRefMut> {
-        &self.inner
-    }
-}
-
-impl AsMut<YTransaction<DocRefMut>> for Transaction {
-    #[inline]
-    fn as_mut(&mut self) -> &mut YTransaction<DocRefMut> {
-        &mut self.inner
-    }
-}
-
 impl Deref for Transaction {
-    type Target = YTransaction<DocRefMut>;
+    type Target = YTransaction<Js>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {

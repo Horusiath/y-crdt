@@ -1,4 +1,5 @@
 use crate::block::{ItemContent, ItemPtr};
+use crate::cell::Ref;
 use crate::slice::ItemSlice;
 use crate::{Assoc, Doc, Out, StickyIndex};
 use smallvec::{smallvec, SmallVec};
@@ -514,25 +515,22 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct AsIter<D, I> {
-    doc: D,
+pub struct AsIter<'tx, I> {
+    doc: Ref<'tx, Doc>,
     iter: I,
 }
 
-impl<D, I> AsIter<D, I>
+impl<'tx, I> AsIter<'tx, I>
 where
-    D: Deref<Target = Doc>,
     I: TxnIterator,
 {
-    pub fn new(iter: I, doc: D) -> Self {
+    pub fn new(iter: I, doc: Ref<'tx, Doc>) -> Self {
         AsIter { doc, iter }
     }
 }
 
-impl<D, I> Iterator for AsIter<D, I>
+impl<'tx, I> Iterator for AsIter<'tx, I>
 where
-    D: Deref<Target = Doc>,
     I: TxnIterator,
 {
     type Item = I::Item;
@@ -561,10 +559,10 @@ mod test {
 
         let start = array.as_ref().start;
         let mut i = start.to_iter().moved().slices().values();
-        assert_eq!(i.next(txn.doc()), Some(3.into()));
-        assert_eq!(i.next(txn.doc()), Some(1.into()));
-        assert_eq!(i.next(txn.doc()), Some(2.into()));
-        assert_eq!(i.next(txn.doc()), None);
+        assert_eq!(i.next(&*txn.doc()), Some(3.into()));
+        assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+        assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+        assert_eq!(i.next(&*txn.doc()), None);
     }
 
     #[test]
@@ -583,20 +581,20 @@ mod test {
         {
             let txn = d1.transact();
             let mut i = a1.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), Some(3.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(3.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
 
         exchange_updates([&mut d1, &mut d2]);
         {
             let txn = d2.transact();
             let mut i = a2.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), Some(3.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(3.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
 
         a1.move_to(&mut d1.transact_mut(), 0, 2);
@@ -604,10 +602,10 @@ mod test {
         {
             let txn = d1.transact();
             let mut i = a1.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), Some(3.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(3.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
     }
 
@@ -624,9 +622,9 @@ mod test {
         {
             let txn = d1.transact();
             let mut i = a1.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
 
         exchange_updates([&mut d1, &mut d2]);
@@ -634,18 +632,18 @@ mod test {
         {
             let txn = d2.transact();
             let mut i = a2.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
 
         a1.move_to(&mut d1.transact_mut(), 0, 2);
         {
             let txn = d1.transact();
             let mut i = a1.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
     }
 
@@ -664,22 +662,22 @@ mod test {
         {
             let txn = d1.transact();
             let mut i = a1.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(3.into()));
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), Some(4.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(3.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(4.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
 
         a2.move_range_to(&mut d2.transact_mut(), 2, Assoc::After, 3, Assoc::Before, 1);
         {
             let txn = d2.transact();
             let mut i = a2.as_ref().start.to_iter().moved().slices().values();
-            assert_eq!(i.next(txn.doc()), Some(1.into()));
-            assert_eq!(i.next(txn.doc()), Some(3.into()));
-            assert_eq!(i.next(txn.doc()), Some(4.into()));
-            assert_eq!(i.next(txn.doc()), Some(2.into()));
-            assert_eq!(i.next(txn.doc()), None);
+            assert_eq!(i.next(&*txn.doc()), Some(1.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(3.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(4.into()));
+            assert_eq!(i.next(&*txn.doc()), Some(2.into()));
+            assert_eq!(i.next(&*txn.doc()), None);
         }
 
         exchange_updates([&mut d1, &mut d2]);
@@ -693,7 +691,7 @@ mod test {
             .moved()
             .slices()
             .values()
-            .collect(t1.doc());
+            .collect(&*t1.doc());
         let t2 = d2.transact();
         let v2: Vec<_> = a2
             .as_ref()
@@ -702,7 +700,7 @@ mod test {
             .moved()
             .slices()
             .values()
-            .collect(t2.doc());
+            .collect(&*t2.doc());
 
         assert_eq!(v1, v2);
     }
@@ -726,7 +724,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![3.into(), 4.into(), 5.into()])
     }
 
@@ -749,7 +747,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![4.into(), 5.into()])
     }
 
@@ -772,7 +770,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![5.into()])
     }
 
@@ -795,7 +793,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![3.into(), 4.into(), 5.into()])
     }
 
@@ -818,7 +816,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![3.into(), 4.into()])
     }
 
@@ -841,7 +839,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(
             res,
             vec![1.into(), 2.into(), 3.into(), 4.into(), 5.into(), 6.into()]
@@ -867,7 +865,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![1.into(), 2.into(), 3.into(), 4.into()])
     }
 
@@ -890,7 +888,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![4.into(), 5.into(), 6.into()])
     }
 
@@ -913,7 +911,7 @@ mod test {
             .moved()
             .within_range(from, to)
             .values()
-            .collect(txn.doc());
+            .collect(&*txn.doc());
         assert_eq!(res, vec![3.into()])
     }
 }

@@ -102,7 +102,7 @@ impl Doc {
 
     pub(crate) fn transact<F, T>(&self, origin: JsValue, f: F) -> T
     where
-        F: FnOnce(&mut YTransaction<&mut yrs::Doc>) -> T,
+        F: FnOnce(&mut YTransaction<Js>) -> T,
     {
         let self_clone = self.clone();
         let mut this = RcRefMut::new(self.state.clone());

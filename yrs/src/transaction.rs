@@ -1,6 +1,6 @@
 use crate::block::{Item, ItemContent, ItemPosition, ItemPtr, Prelim, ID};
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::{Cell, MutProvider, RefProvider};
+use crate::cell::{Cell, Mut, MutProvider, Ref, RefProvider};
 use crate::doc::{SubDocHook, SubdocRefs};
 use crate::error::{Error, UpdateError};
 use crate::event::SubdocsEvent;
@@ -604,7 +604,7 @@ where
     }
 
     #[inline]
-    pub fn doc(&self) -> D::Ref<'_> {
+    pub fn doc(&self) -> crate::cell::Ref<'_, Doc> {
         self.doc.get_ref()
     }
 
@@ -884,7 +884,7 @@ where
         }
     }
 
-    pub(crate) fn split(&self) -> (D::Ref<'_>, Option<&TransactionState>) {
+    pub(crate) fn split(&self) -> (Ref<'_, Doc>, Option<&TransactionState>) {
         (self.doc.get_ref(), self.state.as_deref())
     }
     /// Returns a list of root level types changed in a scope of the current transaction. This
@@ -947,7 +947,7 @@ where
     D: MutProvider<Doc>,
 {
     #[inline]
-    pub fn doc_mut(&mut self) -> D::Mut<'_> {
+    pub fn doc_mut(&mut self) -> Mut<'_, Doc> {
         self.doc.get_mut()
     }
 
@@ -961,7 +961,7 @@ where
             ))
         }
     }
-    pub(crate) fn split_mut(&mut self) -> (D::Mut<'_>, &mut TransactionState) {
+    pub(crate) fn split_mut(&mut self) -> (Mut<'_, Doc>, &mut TransactionState) {
         if self.state.is_none() {
             self.init_state();
         }
@@ -971,6 +971,7 @@ where
 
     pub fn subdocs_mut(&mut self, mut f: impl FnMut(SubDocMut<'_>)) {
         let (doc, state) = self.split_mut();
+        let doc = &*doc;
         let scope = &mut state.subdocs;
         for (_, id) in doc.subdocs.iter() {
             if let Some(block) = doc.blocks.get_block(id) {
@@ -1053,6 +1054,7 @@ where
     pub fn prune_pending(&mut self) -> Option<Update> {
         let mut merge = Vec::with_capacity(2);
         let mut doc = self.doc_mut();
+        let doc = &mut *doc;
         if let Some(pending) = doc.pending.take() {
             merge.push(pending.update);
         }
@@ -1086,8 +1088,9 @@ where
     /// predecessors already in place. Out of order updates from the same peer will be stashed
     /// internally and their integration will be postponed until missing blocks arrive first.
     pub fn apply_update(&mut self, update: Update) -> Result<(), UpdateError> {
-        let (mut doc, state) = self.split_mut();
-        let (remaining, remaining_ds) = update.integrate(state, &mut *doc)?;
+        let (mut doc_ref, state) = self.split_mut();
+        let doc = &mut *doc_ref;
+        let (remaining, remaining_ds) = update.integrate(state, doc)?;
         let mut retry = false;
         {
             doc.pending = if let Some(mut pending) = doc.pending.take() {
@@ -1112,7 +1115,7 @@ where
             };
         }
         if let Some(pending) = doc.pending_ds.take() {
-            let ds2 = state.apply_delete(&mut *doc, &pending);
+            let ds2 = state.apply_delete(doc, &pending);
             let ds = match (remaining_ds, ds2) {
                 (Some(mut a), Some(b)) => {
                     a.delete_set.merge(b);
@@ -1132,7 +1135,7 @@ where
                 let ds = doc.pending_ds.take().unwrap_or_default();
                 let mut ds_update = Update::new();
                 ds_update.delete_set = ds;
-                drop(doc);
+                drop(doc_ref);
 
                 self.apply_update(pending.update)?;
                 self.apply_update(ds_update)?;
@@ -1175,10 +1178,12 @@ where
         )?;
         let mut block_ptr = ItemPtr::from(&mut block);
 
-        let (mut doc, state) = self.split_mut();
-        block_ptr.integrate(state, &mut *doc, 0);
-        doc.blocks.push_block(block);
-        drop(doc);
+        {
+            let (mut doc, state) = self.split_mut();
+            let doc = &mut *doc;
+            block_ptr.integrate(state, doc, 0);
+            doc.blocks.push_block(block);
+        }
 
         if let Some(remainder) = remainder {
             remainder.integrate(self, block_ptr)
@@ -1218,12 +1223,12 @@ where
     pub(crate) fn split_by_snapshot(&mut self, snapshot: &Snapshot) {
         let mut merge_blocks: Vec<ID> = Vec::new();
         let (mut doc, state) = self.split_mut();
-        let blocks = &mut doc.blocks;
+        let doc = &mut *doc;
         for (&client, &clock) in snapshot.state_map.iter() {
-            if let Some(ptr) = blocks.get_item(&ID::new(client, clock)) {
+            if let Some(ptr) = doc.blocks.get_item(&ID::new(client, clock)) {
                 let ptr_clock = ptr.id.clock;
                 if ptr_clock < clock {
-                    if let Some(right) = blocks.split_block_inner(ptr, clock - ptr_clock) {
+                    if let Some(right) = doc.blocks.split_block_inner(ptr, clock - ptr_clock) {
                         if right.moved.is_some() {
                             if let Some(&prev_moved) = state.prev_moved.get(&ptr) {
                                 state.prev_moved.insert(right, prev_moved);
@@ -1238,7 +1243,7 @@ where
 
         state.merge_blocks.append(&mut merge_blocks);
         let mut deleted = snapshot.delete_set.deleted_blocks();
-        while let Some(slice) = deleted.next(&*doc) {
+        while let Some(slice) = deleted.next(doc) {
             if let BlockSlice::Item(slice) = slice {
                 //TODO: we technically don't need to physically split underlying item in two
                 // if we were to use block slices all the way down.

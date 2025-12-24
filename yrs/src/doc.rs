@@ -671,13 +671,13 @@ impl<'tx> DerefMut for SubDocMut<'tx> {
 
 pub struct SubdocRefs<'tx, D: RefProvider<Doc>> {
     txn: &'tx Transaction<D>,
-    doc: D::Ref<'tx>,
+    doc: crate::cell::Ref<'tx, Doc>,
     inner: std::collections::hash_set::Iter<'tx, (DocId, ID)>,
 }
 
 impl<'tx, D: RefProvider<Doc>> SubdocRefs<'tx, D> {
     pub(crate) fn new(txn: &'tx Transaction<D>) -> Self {
-        let doc: D::Ref<'tx> = txn.doc();
+        let doc: crate::cell::Ref<'tx, Doc> = txn.doc();
         let iter = doc.subdocs.iter();
         // since iter lifetime is bound to doc reference (which is owned by current struct),
         // it's safe to transmute its lifetime this way
@@ -1099,8 +1099,8 @@ mod test {
 
         // decode an update incoming from A and integrate it at B
         let update = Update::decode_v1(binary.as_slice()).unwrap();
-        let (doc, state) = t2.split_mut();
-        let pending = update.integrate(state, doc).unwrap();
+        let (mut doc, state) = t2.split_mut();
+        let pending = update.integrate(state, &mut *doc).unwrap();
 
         assert!(pending.0.is_none());
         assert!(pending.1.is_none());
@@ -2412,7 +2412,8 @@ mod test {
         doc.transact_mut().gc(None);
 
         let txn = doc.transact();
-        let block = txn.doc().blocks.get_block(&ID::new(1, 1)).unwrap();
+        let doc = txn.doc();
+        let block = doc.blocks.get_block(&ID::new(1, 1)).unwrap();
         assert_eq!(block.len(), 3, "GCed blocks should be squashed");
         assert!(block.is_deleted(), "`abc` should be deleted");
         assert_matches!(&block, &BlockCell::GC(_));
@@ -2479,7 +2480,8 @@ mod test {
 
         // verify that we GC 'abc' blocks and compressed them
         let txn = doc.transact();
-        let block = txn.doc().blocks.get_block(&ID::new(1, 1)).unwrap();
+        let doc = txn.doc();
+        let block = doc.blocks.get_block(&ID::new(1, 1)).unwrap();
         assert_eq!(
             block,
             &BlockCell::GC(GC::new(1, 3)),

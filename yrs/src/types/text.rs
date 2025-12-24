@@ -749,6 +749,7 @@ fn find_position<D: MutProvider<Doc>>(
 
     let mut format_ptrs = HashMap::new();
     let mut doc = txn.doc_mut();
+    let doc = &mut *doc;
     let encoding = doc.offset_kind();
     let mut remaining = index;
     while let Some(right) = pos.right {
@@ -812,6 +813,8 @@ fn remove<D: MutProvider<Doc>>(txn: &mut Transaction<D>, pos: &mut ItemPosition,
     let mut remaining = len;
     let start = pos.right.clone();
     let start_attrs = pos.current_attrs.clone();
+    let (mut doc, state) = txn.split_mut();
+    let doc = &mut *doc;
     while let Some(item) = pos.right.as_deref() {
         if remaining == 0 {
             break;
@@ -830,13 +833,11 @@ fn remove<D: MutProvider<Doc>>(txn: &mut Transaction<D>, pos: &mut ItemPosition,
                             len
                         };
                         remaining = 0;
-                        txn.doc_mut()
-                            .blocks
-                            .split_block(ptr, offset, OffsetKind::Utf16);
+                        doc.blocks.split_block(ptr, offset, OffsetKind::Utf16);
                     } else {
                         remaining -= content_len;
                     };
-                    txn.delete(ptr);
+                    state.delete_item(doc, ptr);
                 }
                 _ => {}
             }
@@ -857,7 +858,8 @@ fn remove<D: MutProvider<Doc>>(txn: &mut Transaction<D>, pos: &mut ItemPosition,
         (start, start_attrs, pos.current_attrs.as_mut())
     {
         clean_format_gap(
-            txn,
+            state,
+            doc,
             Some(start),
             pos.right,
             start_attrs.as_ref(),
@@ -896,6 +898,8 @@ fn insert_format<D: MutProvider<Doc>>(
         }
 
         if !right.is_deleted() {
+            let (mut doc, state) = txn.split_mut();
+            let doc = &mut *doc;
             match &right.content {
                 ItemContent::Format(key, value) => {
                     if let Some(v) = attrs.get(key) {
@@ -904,7 +908,7 @@ fn insert_format<D: MutProvider<Doc>>(
                         } else {
                             negated_attrs.insert(key.clone(), *value.clone());
                         }
-                        txn.delete(right);
+                        state.delete_item(doc, right);
                     }
                 }
                 ItemContent::String(s) => {
@@ -912,10 +916,7 @@ fn insert_format<D: MutProvider<Doc>>(
                     if len < content_len {
                         // split block
                         let offset = s.block_offset(len, encoding);
-                        let new_right =
-                            txn.doc_mut()
-                                .blocks
-                                .split_block(right, offset, OffsetKind::Utf16);
+                        let new_right = doc.blocks.split_block(right, offset, OffsetKind::Utf16);
                         pos.left = Some(right);
                         pos.right = new_right;
                         break;
@@ -925,10 +926,7 @@ fn insert_format<D: MutProvider<Doc>>(
                 _ => {
                     let content_len = right.len();
                     if len < content_len {
-                        let new_right =
-                            txn.doc_mut()
-                                .blocks
-                                .split_block(right, len, OffsetKind::Utf16);
+                        let new_right = doc.blocks.split_block(right, len, OffsetKind::Utf16);
                         pos.left = Some(right);
                         pos.right = new_right;
                         break;
@@ -1059,8 +1057,9 @@ fn insert_negated_attributes<D: MutProvider<Doc>>(
     }
 }
 
-fn clean_format_gap<D: MutProvider<Doc>>(
-    txn: &mut Transaction<D>,
+fn clean_format_gap(
+    tx_state: &mut TransactionState,
+    doc: &mut Doc,
     mut start: Option<ItemPtr>,
     mut end: Option<ItemPtr>,
     start_attrs: &Attrs,
@@ -1086,7 +1085,7 @@ fn clean_format_gap<D: MutProvider<Doc>>(
                     let e = end_attrs.get(key).unwrap_or(&Any::Null);
                     let s = start_attrs.get(key).unwrap_or(&Any::Null);
                     if e != value.as_ref() || s == value.as_ref() {
-                        txn.delete(start.unwrap());
+                        tx_state.delete_item(doc, start.unwrap());
                         cleanups += 1;
                     }
                 }
@@ -2744,7 +2743,7 @@ mod test {
             txt1.observe(move |txn, e| {
                 let delta = e.delta().to_vec();
                 let d: MapRef = match &delta[0] {
-                    Delta::Inserted(insert, _) => insert.clone().cast(txn.doc()).unwrap(),
+                    Delta::Inserted(insert, _) => insert.clone().cast(&*txn.doc()).unwrap(),
                     _ => unreachable!("unexpected delta"),
                 };
                 assert_eq!(d.get::<Out, _>(txn, "key").unwrap(), Out::Any("val".into()));

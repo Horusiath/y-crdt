@@ -11,8 +11,7 @@ use wasm_bindgen::JsValue;
 use yrs::types::array::ArrayEvent;
 use yrs::types::{ToJson, TYPE_REFS_ARRAY};
 use yrs::{
-    Array, ArrayRef, DeepObservable, Observable, Quotable, SharedRef,
-    TransactionMut as YTransaction,
+    Array, ArrayRef, DeepObservable, Observable, Quotable, SharedRef, Transaction as YTransaction,
 };
 
 /// A collection used to store data in an indexed sequence structure. This type is internally
@@ -327,7 +326,7 @@ impl YArray {
 }
 
 pub(crate) trait ArrayExt: Array + SharedRef {
-    fn insert_at<I>(&self, txn: &mut YTransaction, index: u32, src: I) -> Result<()>
+    fn insert_at<I>(&self, txn: &mut YTransaction<Js>, index: u32, src: I) -> Result<()>
     where
         I: IntoIterator<Item = JsValue>,
     {

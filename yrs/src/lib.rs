@@ -661,6 +661,7 @@ pub use crate::branch::BranchID;
 pub use crate::branch::Hook;
 pub use crate::branch::Nested;
 pub use crate::branch::Root;
+pub use crate::cell::{Cell, CellMut, CellRef, Mut, MutProvider, Ref, RefProvider, WeakCell};
 pub use crate::doc::Doc;
 pub use crate::doc::DocId;
 pub use crate::doc::OffsetKind;

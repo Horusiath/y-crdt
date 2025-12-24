@@ -434,6 +434,7 @@ impl Branch {
         mut index: u32,
     ) -> (Option<ItemPtr>, Option<ItemPtr>) {
         let (mut doc, state) = txn.split_mut();
+        let doc = &mut *doc;
         let encoding = doc.offset_kind();
         while let Some(item) = ptr {
             let content_len = item.content_len(encoding);
