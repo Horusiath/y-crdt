@@ -11,11 +11,11 @@ use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
-use wasm_bindgen::__rt::{RcRefMut, WasmRefCell};
+use wasm_bindgen::__rt::{IntoJsResult, RcRefMut, WasmRefCell};
 use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, RefMutFromWasmAbi};
 use wasm_bindgen::describe::{WasmDescribe, RUST_STRUCT};
 use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
@@ -46,32 +46,15 @@ use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDoc};
 /// }
 /// ```
 #[wasm_bindgen]
-#[derive(Clone)]
 pub struct Doc {
-    pub(crate) state: Rc<RefCell<DocState>>,
-}
-
-pub(crate) struct DocState {
-    current_transaction: Option<crate::Transaction>,
     doc: yrs::Doc,
-    parent_doc: Option<crate::Doc>,
+    current_transaction: Option<crate::Transaction>,
+    parent_doc: Option<Js>,
 }
 
-impl DocLike for DocState {
-    #[inline]
-    fn doc(&self) -> &yrs::Doc {
-        &self.doc
-    }
-
-    #[inline]
-    fn doc_mut(&mut self) -> &mut yrs::Doc {
-        &mut self.doc
-    }
-}
-
-impl From<yrs::Doc> for DocState {
+impl From<yrs::Doc> for Doc {
     fn from(doc: yrs::Doc) -> Self {
-        DocState {
+        Doc {
             doc,
             current_transaction: None,
             parent_doc: None,
@@ -79,7 +62,7 @@ impl From<yrs::Doc> for DocState {
     }
 }
 
-impl Deref for DocState {
+impl Deref for Doc {
     type Target = yrs::Doc;
 
     #[inline]
@@ -88,7 +71,7 @@ impl Deref for DocState {
     }
 }
 
-impl DerefMut for DocState {
+impl DerefMut for Doc {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.doc
@@ -100,28 +83,25 @@ impl Doc {
         todo!()
     }
 
-    pub(crate) fn transact<F, T>(&self, origin: JsValue, f: F) -> T
+    pub(crate) fn current_transaction(&self) -> Option<&crate::Transaction> {
+        self.current_transaction.as_ref()
+    }
+
+    pub(crate) fn transact<F, T>(js: &Js, origin: JsValue, f: F) -> T
     where
         F: FnOnce(&mut YTransaction<Js>) -> T,
     {
-        let self_clone = self.clone();
-        let mut this = RcRefMut::new(self.state.clone());
-        match &mut this.current_transaction {
+        let mut doc = unsafe { Self::ref_mut_from_abi(js.deref().clone().into_abi()) };
+        match &mut doc.current_transaction {
             None => {
-                this.current_transaction = Some(crate::Transaction::new(self_clone, origin));
-                let tx = this.current_transaction.as_mut().unwrap();
-                let result = tx.execute_deref(f);
-                this.current_transaction = None;
+                doc.current_transaction = Some(crate::Transaction::new(js.clone(), origin));
+                let tx = doc.current_transaction.as_mut().unwrap();
+                let result = f(tx);
+                doc.current_transaction = None;
                 result
             }
-            Some(tx) => tx.execute_deref(f),
+            Some(tx) => f(tx),
         }
-    }
-
-    pub(crate) fn transaction_origin(&self) -> Option<JsValue> {
-        let instance = self.state.borrow();
-        let tx = instance.current_transaction.as_ref()?;
-        Some(tx.origin())
     }
 }
 
@@ -143,13 +123,7 @@ impl Doc {
         }
         let doc = yrs::Doc::with_options(options);
 
-        Ok(Self {
-            state: Rc::new(RefCell::new(DocState {
-                current_transaction: None,
-                doc,
-                parent_doc: None,
-            })),
-        })
+        Ok(Self::from(doc))
     }
 
     #[wasm_bindgen(getter, js_name = type)]
@@ -163,40 +137,38 @@ impl Doc {
     #[wasm_bindgen(getter)]
     #[inline]
     pub fn prelim(&self) -> bool {
-        let this = self.state.borrow();
-        this.parent_doc.is_none()
+        self.parent_doc.is_none()
     }
 
     /// Returns a parent document of this document or null if current document is not sub-document.
     #[wasm_bindgen(getter, js_name = parentDoc)]
     pub fn parent_doc(&self) -> JsValue {
-        let this = self.state.borrow();
-        match &this.parent_doc {
+        match &self.parent_doc {
             None => JsValue::NULL,
-            Some(parent) => parent.clone().into(),
+            Some(parent) => parent.deref().clone(),
         }
     }
 
     /// Gets unique peer identifier of this `YDoc` instance.
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> f64 {
-        self.state.borrow().client_id() as f64
+        self.doc.client_id() as f64
     }
 
     /// Gets globally unique identifier of this `YDoc` instance.
     #[wasm_bindgen(getter)]
     pub fn guid(&self) -> String {
-        self.state.borrow().guid().to_string()
+        self.doc.guid().to_string()
     }
 
     #[wasm_bindgen(getter, js_name = shouldLoad)]
     pub fn should_load(&self) -> bool {
-        self.state.borrow().should_load()
+        self.doc.should_load()
     }
 
     #[wasm_bindgen(getter, js_name = autoLoad)]
     pub fn auto_load(&self) -> bool {
-        self.state.borrow().auto_load()
+        self.doc.auto_load()
     }
 
     /// Returns a `YText` shared data type, that's accessible for subsequent accesses using given
@@ -208,7 +180,8 @@ impl Doc {
     /// onto `YText` instance.
     #[wasm_bindgen(js_name = getText)]
     pub fn get_text(&mut self, name: &str) -> YText {
-        let instance = self.clone();
+        let doc: JsValue = self.into();
+        let doc = Js::new(doc);
         self.transact(JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_text(name);
             YText(SharedCollection::integrated(shared_ref, instance))

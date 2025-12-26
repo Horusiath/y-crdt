@@ -1,6 +1,7 @@
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
 use serde::Serialize;
+use std::ops::Deref;
 use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, TryFromJsValue};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
@@ -15,21 +16,24 @@ use crate::js::{Callback, Js};
 #[wasm_bindgen]
 pub struct Awareness {
     inner: YAwareness,
-    doc: JsValue,
+    doc: Js,
 }
 
 #[wasm_bindgen]
 impl Awareness {
     #[wasm_bindgen(constructor)]
-    pub fn new(doc: JsValue) -> crate::Result<Awareness> {
-        let ydoc = unsafe { crate::Doc::ref_from_abi(doc.clone().into_abi()) };
-        let inner = YAwareness::with_clock(ydoc.state.borrow().client_id(), JsClock);
+    pub fn new(
+        #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
+    ) -> crate::Result<Awareness> {
+        let doc = Js::new(doc);
+        let ydoc = doc.clone().into_doc();
+        let inner = YAwareness::with_clock(ydoc.client_id(), JsClock);
         Ok(Awareness { inner, doc })
     }
 
     #[wasm_bindgen(getter, js_name = doc)]
     pub fn doc(&self) -> JsValue {
-        self.doc.clone()
+        self.doc.deref().clone()
     }
 
     #[wasm_bindgen(getter, js_name = meta)]

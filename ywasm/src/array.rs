@@ -1,11 +1,13 @@
 use crate::collection::{Integrated, SharedCollection};
-use crate::js::{Callback, Js, ValueRef, YRange};
+use crate::js::{Callback, Js, OptionDisposed, ValueRef, YRange};
 use crate::text::YText;
 use crate::transaction::Transaction;
 use crate::weak::YWeakLink;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
 use std::iter::FromIterator;
+use std::ops::Deref;
+use wasm_bindgen::convert::{IntoWasmAbi, RefFromWasmAbi};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::array::ArrayEvent;
@@ -184,10 +186,15 @@ impl YArray {
                 Some(item) => Ok(item.clone()),
                 None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
             },
-            SharedCollection::Integrated(c) => c.transact(|node, txn| match node.get(txn, index) {
-                Some(item) => Ok(Js::from_value(&item, &c.doc).into()),
-                None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
-            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    match target.get(tx, index) {
+                        Some(item) => Ok(Js::from_value(&item, c.doc.clone()).into()),
+                        None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
+                    }
+                })
+            }
         }
     }
 
@@ -204,13 +211,13 @@ impl YArray {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
             SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
                     let range = YRange::new(lower, upper, lower_open, upper_open);
-                    let quote = c
-                        .quote(txn, range)
+                    let quote = target
+                        .quote(tx, range)
                         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    Ok(YWeakLink::from_prelim(quote, doc))
+                    Ok(YWeakLink::from_prelim(quote, c.doc.clone()))
                 })
             }
         }
@@ -241,13 +248,16 @@ impl YArray {
     pub fn values(&self) -> Result<JsValue> {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(js_sys::Array::from_iter(c).into()),
-            SharedCollection::Integrated(c) => c.transact(|node, txn| {
-                let a = js_sys::Array::new();
-                for item in node.iter(txn) {
-                    a.push(&Js::from_value(&item, &c.doc));
-                }
-                Ok(a.into())
-            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let a = js_sys::Array::new();
+                    for item in target.iter(tx) {
+                        a.push(&Js::from_value(&item, c.doc.clone()));
+                    }
+                    Ok(a.into())
+                })
+            }
         }
     }
 
@@ -261,10 +271,11 @@ impl YArray {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, txn| {
-                    array.observe_with(abi, move |_, e| {
-                        let e = YArrayEvent::new(e, doc.clone());
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_with(abi, move |_, e| {
+                        let e = YArrayEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -282,7 +293,10 @@ impl YArray {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                c.transact(|array, _| Ok(array.unobserve(abi)))
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    Ok(target.unobserve(abi))
+                })
             }
         }
     }
@@ -298,10 +312,11 @@ impl YArray {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, _| {
-                    array.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(doc.clone(), e);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_deep_with(abi, move |_, e| {
+                        let e = crate::js::convert::events_into_js(&doc, e);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -319,7 +334,10 @@ impl YArray {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                c.transact(|array, _| Ok(array.unobserve_deep(abi)))
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    Ok(target.unobserve_deep(abi))
+                })
             }
         }
     }
@@ -367,18 +385,18 @@ impl ArrayExt for ArrayRef {}
 #[wasm_bindgen]
 pub struct YArrayEvent {
     inner: &'static ArrayEvent,
-    doc: crate::Doc,
+    doc: Js,
     target: Option<JsValue>,
     delta: Option<JsValue>,
 }
 
 #[wasm_bindgen]
 impl YArrayEvent {
-    pub(crate) fn new<'doc>(event: &ArrayEvent, doc: crate::Doc) -> Self {
+    pub(crate) fn new<'doc>(event: &ArrayEvent, doc: &Js) -> Self {
         let inner: &'static ArrayEvent = unsafe { std::mem::transmute(event) };
         YArrayEvent {
             inner,
-            doc,
+            doc: doc.clone(),
             target: None,
             delta: None,
         }
@@ -405,7 +423,9 @@ impl YArrayEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        self.doc.transaction_origin().unwrap_or(JsValue::UNDEFINED)
+        let doc = self.doc.clone().into_doc();
+        let tx = doc.current_transaction().unwrap();
+        tx.origin()
     }
 
     /// Returns a list of text changes made over corresponding `YArray` collection within

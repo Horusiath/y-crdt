@@ -1,5 +1,5 @@
 use crate::collection::SharedCollection;
-use crate::js::{Callback, Js, Shared, ValueRef};
+use crate::js::{Callback, Js, OptionDisposed, Shared, ValueRef};
 use crate::transaction::Transaction;
 use crate::xml::XmlAttrs;
 use crate::xml_frag::YXmlEvent;
@@ -287,13 +287,15 @@ impl YXmlElement {
                 None => Ok(JsValue::UNDEFINED),
                 Some(value) => Ok(Js::from_any(value).into()),
             },
-            SharedCollection::Integrated(c) => c.transact(|node, txn| {
-                let value = node.get_attribute(txn, name);
-                match value {
-                    None => Ok(JsValue::UNDEFINED),
-                    Some(out) => Ok(Js::from_value(&out, &c.doc).into()),
-                }
-            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    match target.get_attribute(tx, name) {
+                        None => Ok(JsValue::UNDEFINED),
+                        Some(out) => Ok(Js::from_value(&out, c.doc.clone()).into()),
+                    }
+                })
+            }
         }
     }
 
@@ -320,17 +322,20 @@ impl YXmlElement {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(JsValue::from_serde(&c.attributes)
                 .map_err(|_| JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))?),
-            SharedCollection::Integrated(c) => c.transact(|node, txn| {
-                let map = js_sys::Object::new();
-                for (name, value) in node.attributes(txn) {
-                    js_sys::Reflect::set(
-                        &map,
-                        &JsValue::from_str(name),
-                        &Js::from_value(&value, &c.doc).into(),
-                    )?;
-                }
-                Ok(map.into())
-            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let map = js_sys::Object::new();
+                    for (name, value) in target.attributes(tx) {
+                        js_sys::Reflect::set(
+                            &map,
+                            &JsValue::from_str(name),
+                            &Js::from_value(&value, c.doc.clone()).into(),
+                        )?;
+                    }
+                    Ok(map.into())
+                })
+            }
         }
     }
 
@@ -343,10 +348,10 @@ impl YXmlElement {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
             SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
-                    let walker = c.successors(txn).map(|n| {
-                        let js: JsValue = Js::from_xml(n, doc.clone()).into();
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let walker = target.successors(tx).map(|n| {
+                        let js: JsValue = Js::from_xml(n, c.doc.clone()).into();
                         js
                     });
                     let array = js_sys::Array::from_iter(walker);
@@ -366,10 +371,11 @@ impl YXmlElement {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, txn| {
-                    array.observe_with(abi, move |_, e| {
-                        let e = YXmlEvent::new(e, doc.clone());
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_with(abi, move |_, e| {
+                        let e = YXmlEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -403,10 +409,11 @@ impl YXmlElement {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, _| {
-                    array.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(doc.clone(), e);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_deep_with(abi, move |_, e| {
+                        let e = crate::js::convert::events_into_js(&doc, e);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())

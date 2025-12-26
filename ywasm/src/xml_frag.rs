@@ -1,5 +1,5 @@
 use crate::collection::SharedCollection;
-use crate::js::{Callback, Js, Shared};
+use crate::js::{Callback, Js, OptionDisposed, Shared};
 use std::iter::FromIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
@@ -185,10 +185,11 @@ impl YXmlFragment {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, txn| {
-                    array.observe_with(abi, move |_, e| {
-                        let e = YXmlEvent::new(e, doc.clone());
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_with(abi, move |_, e| {
+                        let e = YXmlEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -222,10 +223,11 @@ impl YXmlFragment {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, _| {
-                    array.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(doc.clone(), e);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_deep_with(abi, move |_, e| {
+                        let e = crate::js::convert::events_into_js(&doc, e);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -253,7 +255,7 @@ impl YXmlFragment {
 #[wasm_bindgen]
 pub struct YXmlEvent {
     inner: &'static XmlEvent,
-    doc: crate::Doc,
+    doc: Js,
     target: Option<JsValue>,
     keys: Option<JsValue>,
     delta: Option<JsValue>,
@@ -261,11 +263,11 @@ pub struct YXmlEvent {
 
 #[wasm_bindgen]
 impl YXmlEvent {
-    pub(crate) fn new<'doc>(event: &XmlEvent, doc: crate::Doc) -> Self {
+    pub(crate) fn new<'doc>(event: &XmlEvent, doc: &Js) -> Self {
         let inner: &'static XmlEvent = unsafe { std::mem::transmute(event) };
         YXmlEvent {
             inner,
-            doc,
+            doc: doc.clone(),
             target: None,
             delta: None,
             keys: None,
@@ -292,12 +294,9 @@ impl YXmlEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        let origin = self.doc.transaction_origin();
-        if let Some(origin) = origin {
-            origin
-        } else {
-            JsValue::UNDEFINED
-        }
+        let doc = self.doc.clone().into_doc();
+        let tx = doc.current_transaction().unwrap();
+        tx.origin()
     }
 
     /// Returns a list of attribute changes made over corresponding `YXmlText` collection within
@@ -313,7 +312,7 @@ impl YXmlEvent {
             let result = js_sys::Object::new();
             for (key, value) in keys.iter() {
                 let key = JsValue::from(key.as_ref());
-                let value = crate::js::convert::entry_change_into_js(value, &self.doc)?;
+                let value = crate::js::convert::entry_change_into_js(value, self.doc.clone())?;
                 js_sys::Reflect::set(&result, &key, &value)?;
             }
             let keys: JsValue = result.into();

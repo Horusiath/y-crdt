@@ -1,6 +1,6 @@
 use crate::collection::{Integrated, SharedCollection};
 use crate::js;
-use crate::js::{Callback, Js};
+use crate::js::{Callback, Js, OptionDisposed};
 use crate::text::YText;
 use crate::transaction::Transaction;
 use crate::weak::YWeakLink;
@@ -148,13 +148,15 @@ impl YMap {
                 let value = c.get(key);
                 Ok(value.cloned().unwrap_or(JsValue::UNDEFINED))
             }
-            SharedCollection::Integrated(c) => c.transact(|node, txn| {
-                let value = node.get(txn, key);
-                match value {
-                    None => Ok(JsValue::UNDEFINED),
-                    Some(value) => Ok(Js::from_value(&value, &c.doc).into()),
-                }
-            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    match target.get(tx, key) {
+                        None => Ok(JsValue::UNDEFINED),
+                        Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
+                    }
+                })
+            }
         }
     }
 
@@ -163,11 +165,11 @@ impl YMap {
         match &self.0 {
             SharedCollection::Prelim(_) => Err(JsValue::from_str(js::errors::INVALID_PRELIM_OP)),
             SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
-                    let link = c.link(txn, key);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let link = target.link(tx, key);
                     match link {
-                        Some(link) => Ok(YWeakLink::from_prelim(link, doc).into()),
+                        Some(link) => Ok(YWeakLink::from_prelim(link, c.doc.clone()).into()),
                         None => Err(JsValue::from_str(js::errors::KEY_NOT_FOUND)),
                     }
                 })
@@ -208,14 +210,17 @@ impl YMap {
                 }
                 Ok(map.into())
             }
-            SharedCollection::Integrated(c) => c.transact(|node, txn| {
-                let map = js_sys::Object::new();
-                for (k, v) in node.iter(txn) {
-                    let value = Js::from_value(&v, &c.doc);
-                    js_sys::Reflect::set(&map, &k.into(), &value.into())?;
-                }
-                Ok(map.into())
-            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let map = js_sys::Object::new();
+                    for (k, v) in target.iter(tx) {
+                        let value = Js::from_value(&v, c.doc.clone());
+                        js_sys::Reflect::set(&map, &k.into(), &value.into())?;
+                    }
+                    Ok(map.into())
+                })
+            }
         }
     }
 
@@ -229,10 +234,11 @@ impl YMap {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, txn| {
-                    array.observe_with(abi, move |_, e| {
-                        let e = YMapEvent::new(e, doc.clone());
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_with(abi, move |_, e| {
+                        let e = YMapEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -266,10 +272,11 @@ impl YMap {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, _| {
-                    array.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(doc.clone(), e);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_deep_with(abi, move |_, e| {
+                        let e = crate::js::convert::events_into_js(&doc, e);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -297,18 +304,18 @@ impl YMap {
 #[wasm_bindgen]
 pub struct YMapEvent {
     inner: &'static MapEvent,
-    doc: crate::Doc,
+    doc: Js,
     target: Option<JsValue>,
     keys: Option<JsValue>,
 }
 
 #[wasm_bindgen]
 impl YMapEvent {
-    pub(crate) fn new<'doc>(event: &MapEvent, doc: crate::Doc) -> Self {
+    pub(crate) fn new<'doc>(event: &MapEvent, doc: &Js) -> Self {
         let inner: &'static MapEvent = unsafe { std::mem::transmute(event) };
         YMapEvent {
             inner,
-            doc,
+            doc: doc.clone(),
             target: None,
             keys: None,
         }
@@ -316,7 +323,9 @@ impl YMapEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        self.doc.transaction_origin().unwrap_or(JsValue::UNDEFINED)
+        let doc = self.doc.clone().into_doc();
+        let tx = doc.current_transaction().unwrap();
+        tx.origin()
     }
 
     /// Returns an array of keys and indexes creating a path from root type down to current instance
@@ -351,8 +360,8 @@ impl YMapEvent {
             let result = js_sys::Object::new();
             for (key, value) in keys.iter() {
                 let key = JsValue::from(key.as_ref());
-                let value = crate::js::convert::entry_change_into_js(value, &self.doc)?;
-                js_sys::Reflect::set(&result, &key, &value).unwrap();
+                let value = crate::js::convert::entry_change_into_js(value, self.doc.clone())?;
+                js_sys::Reflect::set(&result, &key, &value)?;
             }
             let keys: JsValue = result.into();
             self.keys = Some(keys.clone());

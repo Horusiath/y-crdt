@@ -18,7 +18,7 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
     }
 
     #[inline]
-    pub fn integrated(shared_ref: S, doc: crate::Doc) -> Self {
+    pub fn integrated(shared_ref: S, doc: Js) -> Self {
         SharedCollection::Integrated(Integrated::new(shared_ref, doc))
     }
 
@@ -34,7 +34,7 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
         }
     }
 
-    pub fn try_integrated(&self) -> Result<(&BranchID, &crate::Doc)> {
+    pub fn try_integrated(&self) -> Result<(&BranchID, &Js)> {
         match self {
             SharedCollection::Integrated(i) => {
                 let branch_id = i.hook.id();
@@ -73,11 +73,11 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
 
 pub struct Integrated<S> {
     pub hook: Hook<S>,
-    pub doc: crate::Doc,
+    pub doc: Js,
 }
 
 impl<S: SharedRef + 'static> Integrated<S> {
-    pub fn new(shared_ref: S, doc: crate::Doc) -> Self {
+    pub fn new(shared_ref: S, doc: Js) -> Self {
         let desc = shared_ref.hook();
         Integrated { hook: desc, doc }
     }
@@ -86,7 +86,7 @@ impl<S: SharedRef + 'static> Integrated<S> {
     where
         F: FnOnce(&S, &mut YTransaction<Js>) -> Result<T>,
     {
-        self.doc.transact(JsValue::UNDEFINED, |tx| {
+        crate::Doc::transact(&self.doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = self
                 .hook
                 .get(tx)

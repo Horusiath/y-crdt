@@ -1,5 +1,5 @@
 use crate::collection::{Integrated, SharedCollection};
-use crate::js::{Callback, Js, ValueRef, YRange};
+use crate::js::{Callback, Js, OptionDisposed, ValueRef, YRange};
 use crate::transaction::Transaction as YTransaction;
 use crate::weak::YWeakLink;
 use crate::Snapshot;
@@ -287,8 +287,8 @@ impl YText {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
             SharedCollection::Integrated(c) => {
-                let doc = c.doc.clone();
-                c.transact(|c, txn| {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
                     let hi: Option<Snapshot> = snapshot
                         .into_serde()
                         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -296,11 +296,11 @@ impl YText {
                         .into_serde()
                         .map_err(|e| JsValue::from_str(&e.to_string()))?;
                     let array = js_sys::Array::new();
-                    let delta = c.diff_range(txn, hi.as_deref(), lo.as_deref(), |change| {
+                    let delta = target.diff_range(tx, hi.as_deref(), lo.as_deref(), |change| {
                         crate::js::convert::ychange_to_js(change, &compute_ychange).unwrap()
                     });
                     for d in delta {
-                        let d = crate::js::convert::diff_into_js(d, &doc)?;
+                        let d = crate::js::convert::diff_into_js(d, &c.doc)?;
                         array.push(&d);
                     }
                     Ok(array)
@@ -337,10 +337,11 @@ impl YText {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, txn| {
-                    array.observe_with(abi, move |_, e| {
-                        let e = YTextEvent::new(e, doc.clone());
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_with(abi, move |_, e| {
+                        let e = YTextEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -374,10 +375,11 @@ impl YText {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, _| {
-                    array.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(doc.clone(), e);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let target = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    target.observe_deep_with(abi, move |_, e| {
+                        let e = crate::js::convert::events_into_js(&doc, e);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -405,18 +407,18 @@ impl YText {
 #[wasm_bindgen]
 pub struct YTextEvent {
     inner: &'static TextEvent,
-    doc: crate::Doc,
+    doc: Js,
     target: Option<JsValue>,
     delta: Option<JsValue>,
 }
 
 #[wasm_bindgen]
 impl YTextEvent {
-    pub(crate) fn new<'doc>(event: &TextEvent, doc: crate::Doc) -> Self {
+    pub(crate) fn new<'doc>(event: &TextEvent, doc: &Js) -> Self {
         let inner: &'static TextEvent = unsafe { std::mem::transmute(event) };
         YTextEvent {
             inner,
-            doc,
+            doc: doc.clone(),
             target: None,
             delta: None,
         }
@@ -443,12 +445,9 @@ impl YTextEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        let origin = self.doc.transaction_origin();
-        if let Some(origin) = origin {
-            origin
-        } else {
-            JsValue::UNDEFINED
-        }
+        let doc = self.doc.clone().into_doc();
+        let tx = doc.current_transaction().unwrap();
+        tx.origin()
     }
 
     /// Returns a list of text changes made over corresponding `YText` collection within

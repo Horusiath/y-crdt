@@ -1,6 +1,5 @@
 use crate::array::YArray;
 use crate::collection::SharedCollection;
-use crate::doc::DocState;
 use crate::js::Js;
 use crate::map::YMap;
 use crate::text::YText;
@@ -27,56 +26,21 @@ use yrs::{
     XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 
-pub struct DocRefMut {
-    doc: crate::Doc,
-    ref_: RefMut<'static, DocState>,
-}
-
-impl DocRefMut {
-    pub fn new(doc: crate::doc::Doc) -> Self {
-        let doc_clone = doc.clone();
-        let ref_: RefMut<'static, DocState> =
-            unsafe { std::mem::transmute(doc.state.borrow_mut()) };
-
-        DocRefMut {
-            doc: doc_clone,
-            ref_,
-        }
-    }
-}
-
-impl Deref for DocRefMut {
-    type Target = yrs::Doc;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.ref_.deref()
-    }
-}
-
-impl DerefMut for DocRefMut {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.ref_.deref_mut()
-    }
-}
-
-#[repr(transparent)]
 #[wasm_bindgen]
 pub struct Transaction {
     inner: YTransaction<Js>,
+    doc: Js,
 }
 
 impl Transaction {
-    pub(crate) fn new(doc: crate::Doc, origin: JsValue) -> Self {
-        let doc = DocRefMut::new(doc);
+    pub(crate) fn new(doc: Js, origin: JsValue) -> Self {
         let origin: Option<Origin> = if origin.is_undefined() {
             None
         } else {
             Some(Js::from(origin).into())
         };
-        let inner = YTransaction::new(doc, origin);
-        Transaction { inner }
+        let inner = YTransaction::new(doc.clone(), origin);
+        Transaction { inner, doc }
     }
 }
 
@@ -89,13 +53,20 @@ impl Deref for Transaction {
     }
 }
 
+impl DerefMut for Transaction {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 #[wasm_bindgen]
 impl Transaction {
     /// Returns state vector describing the state of the document
     /// at the moment when the transaction began.
     #[wasm_bindgen(getter, js_name = beforeState)]
     pub fn before_state(&self) -> js_sys::Map {
-        let tx = self.as_deref();
+        let tx = self.deref();
         let sv = tx.before_state();
         crate::js::convert::state_vector_to_js(&sv)
     }
@@ -104,7 +75,7 @@ impl Transaction {
     /// the document.
     #[wasm_bindgen(getter, js_name = afterState)]
     pub fn after_state(&self) -> js_sys::Map {
-        let tx = self.as_deref();
+        let tx = self.deref();
         let sv = tx.after_state();
         crate::js::convert::state_vector_to_js(&sv)
     }
@@ -112,7 +83,7 @@ impl Transaction {
     #[wasm_bindgen(getter, js_name = pendingStructs)]
     #[inline]
     pub fn pending_structs(&self) -> Result<JsValue> {
-        let tx = self.as_deref();
+        let tx = self.deref();
         if let Some(update) = tx.doc().pending_update() {
             let missing = crate::js::convert::state_vector_to_js(&update.missing);
             let update = js_sys::Uint8Array::from(update.update.encode_v1().as_slice());
@@ -130,8 +101,9 @@ impl Transaction {
     #[wasm_bindgen(getter, js_name = pendingDeleteSet)]
     #[inline]
     pub fn pending_ds(&self) -> Option<js_sys::Map> {
-        let tx = self.as_deref();
-        let ds = tx.doc().pending_ds()?;
+        let tx = self.deref();
+        let doc = tx.doc();
+        let ds = doc.pending_ds()?;
         Some(crate::js::convert::delete_set_to_js(&ds))
     }
 
@@ -139,7 +111,7 @@ impl Transaction {
     /// all blocks removed as part of a current transaction.
     #[wasm_bindgen(getter, js_name = deleteSet)]
     pub fn delete_set(&self) -> js_sys::Map {
-        let tx = self.as_deref();
+        let tx = self.deref();
         match tx.delete_set() {
             None => js_sys::Map::new(),
             Some(ds) => crate::js::convert::delete_set_to_js(&ds),
@@ -148,7 +120,7 @@ impl Transaction {
 
     #[wasm_bindgen(getter, js_name = origin)]
     pub fn origin(&self) -> JsValue {
-        let tx = self.as_deref();
+        let tx = self.deref();
         if let Some(origin) = tx.origin() {
             Js::from(origin).into()
         } else {
@@ -165,35 +137,42 @@ impl Transaction {
     pub fn get(&self, id: JsValue) -> crate::Result<JsValue> {
         let branch_id: BranchID =
             JsValue::into_serde(&id).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let doc = self.doc().doc.clone();
-        let txn = self.as_deref();
-        Ok(match branch_id.get_branch(&txn) {
+        let doc = self.deref().doc();
+        let doc = &*doc;
+        let txn = self.deref();
+        Ok(match branch_id.get_branch(doc) {
             None => JsValue::UNDEFINED,
             Some(b) if b.is_deleted() => JsValue::UNDEFINED,
-            Some(b) => match b.type_ref() {
-                TypeRef::Array => {
-                    YArray(SharedCollection::integrated(ArrayRef::from(b), doc)).into()
+            Some(b) => {
+                let js = self.doc.clone();
+                match b.type_ref() {
+                    TypeRef::Array => {
+                        YArray(SharedCollection::integrated(ArrayRef::from(b), js)).into()
+                    }
+                    TypeRef::Map => YMap(SharedCollection::integrated(MapRef::from(b), js)).into(),
+                    TypeRef::Text => {
+                        YText(SharedCollection::integrated(TextRef::from(b), js)).into()
+                    }
+                    TypeRef::XmlElement(_) => {
+                        YXmlElement(SharedCollection::integrated(XmlElementRef::from(b), js)).into()
+                    }
+                    TypeRef::XmlFragment => {
+                        YXmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), js))
+                            .into()
+                    }
+                    TypeRef::XmlText => {
+                        YXmlText(SharedCollection::integrated(XmlTextRef::from(b), js)).into()
+                    }
+                    TypeRef::WeakLink(_) => {
+                        YWeakLink(SharedCollection::integrated(WeakRef::from(b), js)).into()
+                    }
+                    TypeRef::SubDoc => match b.as_subdoc() {
+                        None => JsValue::UNDEFINED,
+                        Some(doc) => crate::Doc::from_subdoc(doc).into(),
+                    },
+                    TypeRef::XmlHook | TypeRef::Undefined => JsValue::UNDEFINED,
                 }
-                TypeRef::Map => YMap(SharedCollection::integrated(MapRef::from(b), doc)).into(),
-                TypeRef::Text => YText(SharedCollection::integrated(TextRef::from(b), doc)).into(),
-                TypeRef::XmlElement(_) => {
-                    YXmlElement(SharedCollection::integrated(XmlElementRef::from(b), doc)).into()
-                }
-                TypeRef::XmlFragment => {
-                    YXmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), doc)).into()
-                }
-                TypeRef::XmlText => {
-                    YXmlText(SharedCollection::integrated(XmlTextRef::from(b), doc)).into()
-                }
-                TypeRef::WeakLink(_) => {
-                    YWeakLink(SharedCollection::integrated(WeakRef::from(b), doc)).into()
-                }
-                TypeRef::SubDoc => match b.as_subdoc() {
-                    None => JsValue::UNDEFINED,
-                    Some(doc) => crate::Doc::from_subdoc(doc).into(),
-                },
-                TypeRef::XmlHook | TypeRef::Undefined => JsValue::UNDEFINED,
-            },
+            }
         })
     }
 
@@ -202,7 +181,7 @@ impl Transaction {
     /// ywasm transactions are auto-committed when they are `free`d.
     #[wasm_bindgen(js_name = commit)]
     pub fn commit(&mut self) -> Result<()> {
-        self.inner.execute_deref(|tx| tx.commit());
+        self.inner.commit();
         Ok(())
     }
 
@@ -235,7 +214,7 @@ impl Transaction {
     /// ```
     #[wasm_bindgen(js_name = stateVectorV1)]
     pub fn state_vector_v1(&self) -> Uint8Array {
-        let tx = self.as_deref();
+        let tx = self.deref();
         let sv = tx.state_vector();
         let payload = sv.encode_v1();
         Uint8Array::from(payload.as_slice())
@@ -271,7 +250,7 @@ impl Transaction {
     #[wasm_bindgen(js_name = diffV1)]
     pub fn diff_v1(&self, vector: Option<Uint8Array>) -> Result<Uint8Array> {
         let sv = crate::js::convert::state_vector_from_js(vector)?.unwrap_or_default();
-        let tx = self.as_deref();
+        let tx = self.deref();
         let payload = tx.encode_diff_v1(&sv);
         Ok(Uint8Array::from(payload.as_slice()))
     }
@@ -306,7 +285,7 @@ impl Transaction {
     #[wasm_bindgen(js_name = diffV2)]
     pub fn diff_v2(&self, vector: Option<Uint8Array>) -> Result<Uint8Array> {
         let sv = crate::js::convert::state_vector_from_js(vector)?.unwrap_or_default();
-        let tx = self.as_deref();
+        let tx = self.deref();
         let payload = tx.encode_diff_v2(&sv);
         Ok(Uint8Array::from(payload.as_slice()))
     }
@@ -387,14 +366,14 @@ impl Transaction {
 
     #[wasm_bindgen(js_name = encodeUpdate)]
     pub fn encode_update(&self) -> Uint8Array {
-        let tx = self.as_deref();
+        let tx = self.deref();
         let payload = tx.encode_update_v1();
         Uint8Array::from(payload.as_slice())
     }
 
     #[wasm_bindgen(js_name = encodeUpdateV2)]
     pub fn encode_update_v2(&self) -> Uint8Array {
-        let tx = self.as_deref();
+        let tx = self.deref();
         let payload = tx.encode_update_v2();
         Uint8Array::from(payload.as_slice())
     }
@@ -426,7 +405,7 @@ impl Transaction {
     pub fn select_all(&self, json_path: &str) -> Result<js_sys::Array> {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let doc = self.doc();
-        let txn = self.as_deref();
+        let txn = self.deref();
         let mut iter = txn.json_path(&query);
         let result = js_sys::Array::new();
         while let Some(value) = iter.next() {
@@ -455,7 +434,7 @@ impl Transaction {
     pub fn select_one(&self, json_path: &str) -> Result<JsValue> {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let doc = self.doc().clone();
-        let txn = self.as_deref();
+        let txn = self.deref();
         let mut iter = txn.json_path(&query);
         match iter.next() {
             None => Ok(JsValue::UNDEFINED),

@@ -18,19 +18,20 @@ use crate::Result;
 #[wasm_bindgen]
 pub struct YUndoManager {
     manager: yrs::undo::UndoManager<JsValue>,
-    doc: crate::Doc,
+    doc: Js,
 }
 
 impl YUndoManager {
-    fn get_scope(doc: &mut crate::Doc, js: &JsValue) -> Result<BranchPtr> {
+    fn get_scope(doc: &Js, js: &JsValue) -> Result<BranchPtr> {
         let shared = Shared::from_ref(js)?;
         let branch_id = if let Some(id) = shared.branch_id() {
             id
         } else {
             return Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP));
         };
-        doc.transact(JsValue::UNDEFINED, move |txn| {
-            match branch_id.get_branch(&txn) {
+        crate::Doc::transact(doc, JsValue::UNDEFINED, move |txn| {
+            let doc = txn.doc();
+            match branch_id.get_branch(&*doc) {
                 Some(branch) if !branch.is_deleted() => Ok(branch),
                 _ => Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),
             }
@@ -41,8 +42,13 @@ impl YUndoManager {
 #[wasm_bindgen]
 impl YUndoManager {
     #[wasm_bindgen(constructor)]
-    pub fn new(doc: &mut crate::Doc, scope: JsValue, options: JsValue) -> Result<YUndoManager> {
-        let scope = Self::get_scope(doc, &scope)?;
+    pub fn new(
+        #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
+        scope: JsValue,
+        options: JsValue,
+    ) -> Result<YUndoManager> {
+        let doc = Js::new(doc);
+        let scope = Self::get_scope(&doc, &scope)?;
         let mut o = yrs::undo::Options {
             capture_timeout_millis: 500,
             tracked_origins: HashSet::new(),
@@ -67,10 +73,11 @@ impl YUndoManager {
                 }
             }
         }
-        let doc = doc.clone();
 
-        let manager =
-            yrs::undo::UndoManager::with_scope_and_options(&mut *doc.state.borrow_mut(), &scope, o);
+        let manager = {
+            let mut doc = doc.clone().into_doc_mut();
+            yrs::undo::UndoManager::with_scope_and_options(&mut *doc, &scope, o)
+        };
         Ok(Self { manager, doc })
     }
 
@@ -95,8 +102,8 @@ impl YUndoManager {
 
     #[wasm_bindgen(js_name = clear)]
     pub fn clear(&mut self) {
-        let doc = self.doc.state.borrow();
-        self.manager.clear(doc.deref());
+        let doc = self.doc.clone().into_doc();
+        self.manager.clear(&*doc);
     }
 
     #[wasm_bindgen(js_name = stopCapturing)]
@@ -106,14 +113,14 @@ impl YUndoManager {
 
     #[wasm_bindgen(js_name = undo)]
     pub fn undo(&mut self) -> bool {
-        let mut doc = self.doc.state.borrow_mut();
-        self.manager.undo(doc.deref_mut())
+        let mut doc = self.doc.clone().into_doc_mut();
+        self.manager.undo(&mut *doc)
     }
 
     #[wasm_bindgen(js_name = redo)]
     pub fn redo(&mut self) -> bool {
-        let mut doc = self.doc.state.borrow_mut();
-        self.manager.redo(doc.deref_mut())
+        let mut doc = self.doc.clone().into_doc_mut();
+        self.manager.redo(&mut *doc)
     }
 
     #[wasm_bindgen(getter, js_name = canUndo)]

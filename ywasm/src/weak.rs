@@ -1,5 +1,5 @@
 use crate::collection::SharedCollection;
-use crate::js::{Callback, Js};
+use crate::js::{Callback, Js, OptionDisposed};
 use crate::transaction::Transaction as YTransaction;
 use crate::Result;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use yrs::{ArrayRef, DeepObservable, Doc, GetString, Observable, SharedRef, WeakP
 
 pub(crate) struct PrelimWrapper {
     prelim: WeakPrelim<BranchPtr>,
-    doc: crate::Doc,
+    doc: Js,
 }
 
 #[wasm_bindgen]
@@ -20,7 +20,7 @@ pub(crate) struct PrelimWrapper {
 pub struct YWeakLink(pub(crate) SharedCollection<PrelimWrapper, WeakRef<BranchPtr>>);
 
 impl YWeakLink {
-    pub(crate) fn from_prelim<S: SharedRef>(prelim: WeakPrelim<S>, doc: crate::Doc) -> Self {
+    pub(crate) fn from_prelim<S: SharedRef>(prelim: WeakPrelim<S>, doc: Js) -> Self {
         let prelim = prelim.upcast();
         YWeakLink(SharedCollection::Prelim(PrelimWrapper { prelim, doc }))
     }
@@ -28,13 +28,13 @@ impl YWeakLink {
     pub(crate) fn source(&self) -> Arc<LinkSource> {
         match &self.0 {
             SharedCollection::Integrated(c) => c
-                .transact(|shared_ref, txn| Ok(shared_ref.source().clone()))
+                .transact(|shared_ref, _| Ok(shared_ref.source().clone()))
                 .unwrap(),
             SharedCollection::Prelim(v) => v.prelim.source().clone(),
         }
     }
 
-    fn doc(&self) -> &crate::Doc {
+    fn doc(&self) -> &Js {
         match &self.0 {
             SharedCollection::Integrated(c) => &c.doc,
             SharedCollection::Prelim(v) => &v.doc,
@@ -81,24 +81,24 @@ impl YWeakLink {
         use yrs::MapRef;
 
         match &self.0 {
-            SharedCollection::Prelim(c) => {
+            SharedCollection::Prelim(c) => crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
                 let weak_ref: WeakPrelim<MapRef> = WeakPrelim::from(c.prelim.clone());
-                let value = c
-                    .doc
-                    .transact(JsValue::UNDEFINED, |tx| weak_ref.try_deref_raw(tx));
-                match value {
+                match weak_ref.try_deref_raw(tx) {
                     None => Ok(JsValue::UNDEFINED),
-                    Some(value) => Ok(Js::from_value(&value, &c.doc).into()),
-                }
-            }
-            SharedCollection::Integrated(c) => c.transact(|weak_ref, txn| {
-                let weak_ref: WeakRef<MapRef> = WeakRef::from(weak_ref.clone());
-                let value = weak_ref.try_deref_value(txn);
-                match value {
-                    None => Ok(JsValue::UNDEFINED),
-                    Some(value) => Ok(Js::from_value(&value, &c.doc).into()),
+                    Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
                 }
             }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                    let weak_ref: WeakRef<MapRef> = WeakRef::from(weak_ref.clone());
+                    let value = weak_ref.try_deref_value(tx);
+                    match value {
+                        None => Ok(JsValue::UNDEFINED),
+                        Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
+                    }
+                })
+            }
         }
     }
 
@@ -108,22 +108,23 @@ impl YWeakLink {
         use yrs::ArrayRef;
 
         match &self.0 {
-            SharedCollection::Prelim(c) => {
+            SharedCollection::Prelim(c) => crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
                 let weak_ref: WeakPrelim<ArrayRef> = WeakPrelim::from(c.prelim.clone());
-                c.doc.transact(JsValue::UNDEFINED, |tx| {
-                    let values = weak_ref
+                let values = weak_ref
+                    .unquote(tx)
+                    .map(|value| Js::from_value(&value, c.doc.clone()));
+                Ok(js_sys::Array::from_iter(values))
+            }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                    let weak_ref: WeakRef<ArrayRef> = WeakRef::from(weak_ref.clone());
+                    let iter = weak_ref
                         .unquote(tx)
-                        .map(|value| Js::from_value(&value, &c.doc));
-                    Ok(js_sys::Array::from_iter(values))
+                        .map(|value| Js::from_value(&value, c.doc.clone()));
+                    Ok(js_sys::Array::from_iter(iter))
                 })
             }
-            SharedCollection::Integrated(c) => c.transact(|weak_ref, txn| {
-                let weak_ref: WeakRef<ArrayRef> = WeakRef::from(weak_ref.clone());
-                let iter = weak_ref
-                    .unquote(txn)
-                    .map(|value| Js::from_value(&value, &c.doc));
-                Ok(js_sys::Array::from_iter(iter))
-            }),
         }
     }
 
@@ -132,16 +133,18 @@ impl YWeakLink {
         use yrs::XmlTextRef;
 
         match &self.0 {
-            SharedCollection::Prelim(c) => {
+            SharedCollection::Prelim(c) => crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
                 let weak_ref: WeakPrelim<XmlTextRef> = WeakPrelim::from(c.prelim.clone());
-                c.doc
-                    .transact(JsValue::UNDEFINED, |tx| Ok(weak_ref.get_string(tx)))
-            }
-            SharedCollection::Integrated(c) => c.transact(|c, txn| {
-                let weak_ref: WeakRef<XmlTextRef> = WeakRef::from(c.clone());
-                let string = weak_ref.get_string(txn);
-                Ok(string)
+                Ok(weak_ref.get_string(tx))
             }),
+            SharedCollection::Integrated(c) => {
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                    let weak_ref: WeakRef<XmlTextRef> = WeakRef::from(weak_ref.clone());
+                    let string = weak_ref.get_string(tx);
+                    Ok(string)
+                })
+            }
         }
     }
 
@@ -155,10 +158,11 @@ impl YWeakLink {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, txn| {
-                    array.observe_with(abi, move |_, e| {
-                        let e = YWeakLinkEvent::new(e, doc.clone());
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    weak_ref.observe_with(abi, move |_, e| {
+                        let e = YWeakLinkEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -192,10 +196,11 @@ impl YWeakLink {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                let doc = c.doc.clone();
-                c.transact(|array, _| {
-                    array.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(doc.clone(), e);
+                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                    let doc = c.doc.clone();
+                    weak_ref.observe_deep_with(abi, move |_, e| {
+                        let e = crate::js::convert::events_into_js(&doc, e);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -223,19 +228,24 @@ impl YWeakLink {
 #[wasm_bindgen]
 pub struct YWeakLinkEvent {
     inner: &'static WeakEvent,
-    doc: crate::Doc,
+    doc: Js,
     target: Option<JsValue>,
     origin: JsValue,
 }
 
 #[wasm_bindgen]
 impl YWeakLinkEvent {
-    pub(crate) fn new<'doc>(event: &WeakEvent, doc: crate::Doc) -> Self {
+    pub(crate) fn new<'doc>(event: &WeakEvent, doc: &Js) -> Self {
         let inner: &'static WeakEvent = unsafe { std::mem::transmute(event) };
-        let origin = doc.transaction_origin().unwrap_or(JsValue::UNDEFINED);
+        let origin = doc
+            .clone()
+            .into_doc()
+            .current_transaction()
+            .unwrap()
+            .origin();
         YWeakLinkEvent {
             inner,
-            doc,
+            doc: doc.clone(),
             origin,
             target: None,
         }
