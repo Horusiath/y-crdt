@@ -340,7 +340,9 @@ impl TransactionState {
                 // subdoc must be already present in the document since it was added
                 // during integration of the ItemContent::Doc
                 let mut borrowed = subdoc.inner.borrow_mut();
-                let subdoc = borrowed.doc_mut();
+                let mut subdoc = borrowed.get_mut();
+                let subdoc = &mut ***subdoc;
+                let mut subdoc = subdoc.get_mut();
                 subdoc.options.client_id = client_id;
                 if let Some(collection_id) = &collection_id {
                     subdoc.options.collection_id = Some(collection_id.clone());

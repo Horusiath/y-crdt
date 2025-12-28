@@ -88,8 +88,10 @@ impl Out {
             Out::XmlFragment(v) => v.get_string(txn),
             Out::XmlText(v) => v.get_string(txn),
             Out::SubDoc(v) => {
-                let borrowed = v.borrow();
-                borrowed.doc().to_string()
+                let subdoc = v.borrow();
+                let subdoc = &**subdoc;
+                let subdoc = subdoc.get_ref();
+                subdoc.to_string()
             }
             #[cfg(feature = "weak")]
             Out::WeakLink(v) => {
@@ -141,8 +143,10 @@ impl AsPrelim for Out {
             Out::XmlFragment(v) => In::XmlFragment(v.as_prelim(txn)),
             Out::XmlText(v) => In::XmlText(v.as_prelim(txn)),
             Out::SubDoc(v) => {
-                let borrowed = v.borrow();
-                In::Doc(Doc::with_options(borrowed.doc().options.clone()))
+                let subdoc = v.borrow();
+                let subdoc = &**subdoc;
+                let subdoc = subdoc.get_ref();
+                In::Doc(Doc::with_options(subdoc.options.clone()))
             }
             #[cfg(feature = "weak")]
             Out::WeakLink(v) => In::WeakLink(v.as_prelim(txn)),
@@ -254,9 +258,11 @@ impl ToJson for Out {
             Out::XmlElement(v) => Any::from(v.get_string(txn)),
             Out::XmlText(v) => Any::from(v.get_string(txn)),
             Out::XmlFragment(v) => Any::from(v.get_string(txn)),
-            Out::SubDoc(doc) => {
-                let borrowed = doc.borrow();
-                borrowed.doc().to_json()
+            Out::SubDoc(v) => {
+                let subdoc = v.borrow();
+                let subdoc = &**subdoc;
+                let subdoc = subdoc.get_ref();
+                subdoc.to_json()
             }
             #[cfg(feature = "weak")]
             Out::WeakLink(_) => Any::Undefined,
@@ -278,8 +284,10 @@ impl std::fmt::Display for Out {
             #[cfg(feature = "weak")]
             Out::WeakLink(_) => write!(f, "WeakRef"),
             Out::SubDoc(subdoc) => {
-                let borrowed = subdoc.borrow();
-                write!(f, "Doc(guid:{})", borrowed.doc().options.guid)
+                let subdoc = subdoc.borrow();
+                let subdoc = &**subdoc;
+                let subdoc = subdoc.get_ref();
+                write!(f, "Doc(guid:{})", subdoc.options.guid)
             }
             Out::UndefinedRef(_) => write!(f, "UndefinedRef"),
         }

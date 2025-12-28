@@ -599,19 +599,23 @@ impl std::fmt::Display for DocId {
     }
 }
 
-pub struct SubDoc<'tx, D: RefProvider<Doc>> {
+pub struct SubDocRef<'tx, D: RefProvider<Doc>> {
     parent_txn: &'tx Transaction<D>,
-    subdoc_ref: CellRef<'tx, Box<dyn DocLike>>,
+    transient_ref: CellRef<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
+    subdoc_ref: crate::Ref<'tx, Doc>,
 }
 
-impl<'tx, D: RefProvider<Doc>> SubDoc<'tx, D> {
+impl<'tx, D: RefProvider<Doc>> SubDocRef<'tx, D> {
     pub(crate) fn new(
         parent_txn: &'tx Transaction<D>,
         subdoc: CellRef<'tx, Box<dyn DocLike>>,
     ) -> Self {
-        SubDoc {
+        let subdoc_ref: &'tx dyn DocLike = unsafe { std::mem::transmute(&**subdoc) };
+        let subdoc_ref: crate::Ref<'tx, Doc> = subdoc_ref.get_ref();
+        SubDocRef {
             parent_txn,
-            subdoc_ref: subdoc,
+            transient_ref: subdoc,
+            subdoc_ref,
         }
     }
 
@@ -620,37 +624,42 @@ impl<'tx, D: RefProvider<Doc>> SubDoc<'tx, D> {
     }
 }
 
-impl<'tx, D: RefProvider<Doc>> Deref for SubDoc<'tx, D> {
+impl<'tx, D: RefProvider<Doc>> Deref for SubDocRef<'tx, D> {
     type Target = Doc;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
-        self.subdoc_ref.deref().doc()
+        self.subdoc_ref.deref()
     }
 }
 
 pub struct SubDocMut<'tx> {
     parent_scope: &'tx mut Option<Box<Subdocs>>,
-    subdoc: CellMut<'tx, Box<dyn DocLike>>,
+    transient_ref: CellMut<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
+    subdoc_ref: crate::Mut<'tx, Doc>,
 }
 
 impl<'tx> SubDocMut<'tx> {
     pub(crate) fn new(
         parent_scope: &'tx mut Option<Box<Subdocs>>,
-        subdoc: CellMut<'tx, Box<dyn DocLike>>,
+        mut subdoc: CellMut<'tx, Box<dyn DocLike>>,
     ) -> Self {
+        let subdoc_ref: &'tx mut dyn DocLike = unsafe { std::mem::transmute(&mut **subdoc) };
+        let subdoc_ref: crate::Mut<'tx, Doc> = subdoc_ref.get_mut();
         SubDocMut {
             parent_scope,
-            subdoc,
+            transient_ref: subdoc,
+            subdoc_ref,
         }
     }
 
     pub fn load(&mut self) {
-        let subdoc = self.subdoc.doc_mut();
+        let subdoc = self.subdoc_ref.deref_mut();
         subdoc.load(self.parent_scope.get_or_insert_default());
     }
 
     pub fn destroy(mut self) {
-        let subdoc = self.subdoc.doc_mut();
+        let subdoc = self.subdoc_ref.deref_mut();
         subdoc.destroy(self.parent_scope.get_or_insert_default());
     }
 }
@@ -658,14 +667,16 @@ impl<'tx> SubDocMut<'tx> {
 impl<'tx> Deref for SubDocMut<'tx> {
     type Target = Doc;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
-        self.subdoc.doc()
+        self.subdoc_ref.deref()
     }
 }
 
 impl<'tx> DerefMut for SubDocMut<'tx> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.subdoc.doc_mut()
+        self.subdoc_ref.deref_mut()
     }
 }
 
@@ -692,7 +703,7 @@ impl<'tx, D: RefProvider<Doc>> SubdocRefs<'tx, D> {
 }
 
 impl<'tx, D: RefProvider<Doc>> Iterator for SubdocRefs<'tx, D> {
-    type Item = SubDoc<'tx, D>;
+    type Item = SubDocRef<'tx, D>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (_, id) = self.inner.next()?;
@@ -700,7 +711,7 @@ impl<'tx, D: RefProvider<Doc>> Iterator for SubdocRefs<'tx, D> {
         let block = parent_doc.blocks.get_block(id)?.as_item()?;
         let item: &'tx Item = unsafe { std::mem::transmute(block.deref()) };
         if let ItemContent::Doc(subdoc) = &item.content {
-            Some(SubDoc::new(self.txn, subdoc.borrow()))
+            Some(SubDocRef::new(self.txn, subdoc.borrow()))
         } else {
             None
         }
@@ -884,31 +895,19 @@ impl Prelim for Doc {
 }
 
 #[cfg(not(feature = "sync"))]
-pub trait DocLike: 'static {
-    fn doc(&self) -> &Doc;
-    fn doc_mut(&mut self) -> &mut Doc;
-}
+pub trait DocLike: std::any::Any + MutProvider<Doc> + 'static {}
+#[cfg(not(feature = "sync"))]
+impl<T> DocLike for T where T: std::any::Any + MutProvider<Doc> + 'static {}
 
 #[cfg(feature = "sync")]
-pub trait DocLike: Send + Sync + 'static {
-    fn doc(&self) -> &Doc;
-    fn doc_mut(&mut self) -> &mut Doc;
-}
-
-impl DocLike for Doc {
-    #[inline]
-    fn doc(&self) -> &Doc {
-        self
-    }
-
-    #[inline]
-    fn doc_mut(&mut self) -> &mut Doc {
-        self
-    }
-}
+pub trait DocLike: std::any::Any + MutProvider<Doc> + Send + Sync + 'static {}
+#[cfg(feature = "sync")]
+impl<T> DocLike for T where T: std::any::Any + MutProvider<Doc> + Send + Sync + 'static {}
 
 #[derive(Clone)]
 pub struct SubDocHook {
+    //TODO: once we manage to remove Clone constraint,
+    //      we can unwarp Cell and use Box<dyn DocLike> directly
     pub(crate) inner: Cell<Box<dyn DocLike>>,
 }
 
@@ -918,14 +917,17 @@ impl SubDocHook {
     }
 
     pub fn guid(&self) -> DocId {
-        self.inner.borrow().doc().guid()
+        let doc = self.inner.borrow();
+        let doc = &**doc;
+        let doc = doc.get_ref();
+        doc.guid()
     }
 
     pub fn as_ref<'tx, D: RefProvider<Doc>>(
         &'tx self,
         parent_txn: &'tx Transaction<D>,
-    ) -> SubDoc<'tx, D> {
-        SubDoc::new(parent_txn, self.inner.borrow())
+    ) -> SubDocRef<'tx, D> {
+        SubDocRef::new(parent_txn, self.inner.borrow())
     }
 
     pub fn as_mut<'tx, D: MutProvider<Doc>>(
@@ -949,16 +951,22 @@ impl SubDocHook {
 impl PartialEq for SubDocHook {
     fn eq(&self, other: &Self) -> bool {
         let v1 = self.borrow();
+        let v1 = &**v1;
+        let v1 = v1.get_ref();
         let v2 = other.borrow();
-        v1.doc() == v2.doc()
+        let v2 = &**v2;
+        let v2 = v2.get_ref();
+        &*v1 == &*v2
     }
 }
 
 impl std::fmt::Debug for SubDocHook {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let borrowed = self.inner.borrow();
+        let doc = self.inner.borrow();
+        let doc = &**doc;
+        let doc = doc.get_ref();
         f.debug_struct("SubDocHook")
-            .field("guid", &borrowed.doc().guid())
+            .field("guid", &doc.guid())
             .finish()
     }
 }

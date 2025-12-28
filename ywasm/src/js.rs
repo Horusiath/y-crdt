@@ -18,7 +18,7 @@ use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, RefMutFrom
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::{Branch, BranchPtr};
-use yrs::doc::DocLike;
+use yrs::doc::{DocLike, SubDocHook};
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
     TypeRef, TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
@@ -126,7 +126,7 @@ impl Js {
             Out::Text(c) => Js(YText(SharedCollection::integrated(c.clone(), doc)).into()),
             Out::Map(c) => Js(YMap(SharedCollection::integrated(c.clone(), doc)).into()),
             Out::Array(c) => Js(YArray(SharedCollection::integrated(c.clone(), doc)).into()),
-            Out::SubDoc(doc) => Js(Doc(doc).into()),
+            Out::SubDoc(subdoc) => crate::Doc::from_subdoc(subdoc, doc),
             Out::WeakLink(c) => Js(YWeakLink(SharedCollection::integrated(c.clone(), doc)).into()),
             Out::XmlElement(c) => {
                 Js(YXmlElement(SharedCollection::integrated(c.clone(), doc)).into())
@@ -201,7 +201,7 @@ impl Deref for DocRef {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.0.doc()
+        &*self.0
     }
 }
 
@@ -211,13 +211,13 @@ impl Deref for DocMut {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.0.doc()
+        &*self.0
     }
 }
 impl DerefMut for DocMut {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.doc_mut()
+        &mut *self.0
     }
 }
 
@@ -307,7 +307,8 @@ impl Prelim for Js {
                 match &shared {
                     Shared::Weak(_) => { /* WeakRefs can always be integrated */ }
                     Shared::Doc(doc) if doc.prelim() => {
-                        return (ItemContent::Doc(None, doc.0.clone()), None);
+                        let subdoc = SubDocHook::new(yrs::Cell::new(Box::new(self)));
+                        return (ItemContent::Doc(subdoc), None);
                     }
                     other if !other.prelim() => {
                         panic!("{}", crate::js::errors::NOT_PRELIM);

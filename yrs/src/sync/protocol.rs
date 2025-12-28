@@ -5,7 +5,7 @@ use crate::error::UpdateError;
 use crate::sync::{awareness, Awareness, AwarenessUpdate};
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{Doc, StateVector, Update};
+use crate::{Doc, Mut, MutProvider, Ref, RefProvider, StateVector, Update};
 use smallvec::SmallVec;
 use thiserror::Error;
 /*
@@ -35,8 +35,8 @@ use thiserror::Error;
 
 #[derive(Debug)]
 pub struct DefaultProtocol {
-    doc: Doc,
-    awareness: Awareness,
+    pub doc: Doc,
+    pub awareness: Awareness,
 }
 
 impl DefaultProtocol {
@@ -56,37 +56,37 @@ impl Default for DefaultProtocol {
         Self::new(Doc::new())
     }
 }
-
-impl DocLike for DefaultProtocol {
+impl RefProvider<Doc> for DefaultProtocol {
     #[inline]
-    fn doc(&self) -> &Doc {
-        &self.doc
+    fn get_ref(&self) -> Ref<'_, Doc> {
+        self.doc.get_ref()
     }
+}
+impl MutProvider<Doc> for DefaultProtocol {
     #[inline]
-    fn doc_mut(&mut self) -> &mut Doc {
-        &mut self.doc
+    fn get_mut(&mut self) -> Mut<'_, Doc> {
+        self.doc.get_mut()
+    }
+}
+impl RefProvider<Awareness> for DefaultProtocol {
+    #[inline]
+    fn get_ref(&self) -> Ref<'_, Awareness> {
+        self.awareness.get_ref()
+    }
+}
+impl MutProvider<Awareness> for DefaultProtocol {
+    #[inline]
+    fn get_mut(&mut self) -> Mut<'_, Awareness> {
+        self.awareness.get_mut()
     }
 }
 
-impl Protocol for DefaultProtocol {
-    #[inline]
-    fn awareness(&self) -> &Awareness {
-        &self.awareness
-    }
-
-    #[inline]
-    fn awareness_mut(&mut self) -> &mut Awareness {
-        &mut self.awareness
-    }
-}
+impl<P> Protocol for P where P: MutProvider<Doc> + MutProvider<Awareness> + 'static {}
 
 /// Trait implementing a y-sync protocol. The default implementation can be found in
 /// [DefaultProtocol], but its implementation steps can be potentially changed by the user if
 /// necessary.
-pub trait Protocol: DocLike {
-    fn awareness(&self) -> &Awareness;
-    fn awareness_mut(&mut self) -> &mut Awareness;
-
+pub trait Protocol: MutProvider<Doc> + MutProvider<Awareness> + 'static {
     /// To be called whenever a new connection has been accepted. Returns an encoded list of
     /// messages to be sent back to initiator. This binary may contain multiple messages inside,
     /// stored one after another.
@@ -95,8 +95,10 @@ pub trait Protocol: DocLike {
         E: Encoder,
     {
         let (sv, update) = {
-            let sv = self.doc().transact().state_vector().clone();
-            let update = self.awareness().update()?;
+            let doc = <Self as RefProvider<Doc>>::get_ref(self);
+            let awareness = <Self as RefProvider<Awareness>>::get_ref(self);
+            let sv = doc.transact().state_vector().clone();
+            let update = awareness.update()?;
             (sv, update)
         };
         Message::Sync(SyncMessage::SyncStep1(sv)).encode(reply);
@@ -143,14 +145,16 @@ pub trait Protocol: DocLike {
     /// Y-sync protocol sync-step-1 - given a [StateVector] of a remote side, calculate missing
     /// updates. Returns a sync-step-2 message containing a calculated update.
     fn handle_sync_step1(&mut self, sv: StateVector) -> Result<Option<Message>, Error> {
-        let update = self.doc().transact().encode_state_as_update_v1(&sv);
+        let doc = <Self as RefProvider<Doc>>::get_ref(self);
+        let update = doc.transact().encode_state_as_update_v1(&sv);
         Ok(Some(Message::Sync(SyncMessage::SyncStep2(update))))
     }
 
     /// Handle reply for a sync-step-1 send from this replica previously. By default just apply
     /// an update to current `awareness` document instance.
     fn handle_sync_step2(&mut self, update: Update) -> Result<Option<Message>, Error> {
-        let mut txn = self.doc_mut().transact_mut();
+        let mut doc = <Self as MutProvider<Doc>>::get_mut(self);
+        let mut txn = doc.transact_mut();
         txn.apply_update(update)?;
         Ok(None)
     }
@@ -174,7 +178,8 @@ pub trait Protocol: DocLike {
     /// Returns an [AwarenessUpdate] which is a serializable representation of a current `awareness`
     /// instance.
     fn handle_awareness_query(&mut self) -> Result<Option<Message>, Error> {
-        let update = self.awareness().update()?;
+        let awareness = <Self as RefProvider<Awareness>>::get_ref(self);
+        let update = awareness.update()?;
         Ok(Some(Message::Awareness(update)))
     }
 
@@ -184,7 +189,8 @@ pub trait Protocol: DocLike {
         &mut self,
         update: AwarenessUpdate,
     ) -> Result<Option<Message>, Error> {
-        self.awareness_mut().apply_update(update)?;
+        let mut awareness = <Self as MutProvider<Awareness>>::get_mut(self);
+        awareness.apply_update(update)?;
         Ok(None)
     }
 
@@ -405,7 +411,7 @@ mod test {
         txt.push(&mut doc.transact_mut(), "hello world");
         let mut protocol = DefaultProtocol::new(doc);
         protocol
-            .awareness_mut()
+            .awareness
             .set_local_state(json!({
               "user":{
                 "name": "Anonymous 50",
@@ -417,15 +423,15 @@ mod test {
 
         let messages = [
             crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep1(
-                protocol.doc().transact().state_vector().clone(),
+                protocol.doc.transact().state_vector().clone(),
             )),
             crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep2(
                 protocol
-                    .doc()
+                    .doc
                     .transact()
                     .encode_state_as_update_v1(&StateVector::default()),
             )),
-            crate::sync::Message::Awareness(protocol.awareness().update().unwrap()),
+            crate::sync::Message::Awareness(protocol.awareness.update().unwrap()),
             crate::sync::Message::Auth(Some(
                 "reason
             }"
@@ -458,7 +464,7 @@ mod test {
 
         assert_eq!(
             reader.next().unwrap().unwrap(),
-            crate::sync::Message::Awareness(protocol.awareness().update().unwrap())
+            crate::sync::Message::Awareness(protocol.awareness.update().unwrap())
         );
 
         assert!(reader.next().is_none());
@@ -470,15 +476,13 @@ mod test {
         let mut a2 = DefaultProtocol::default();
 
         let expected = {
-            let txt = a1.doc_mut().get_or_insert_text("test");
-            let mut txn = a1.doc_mut().transact_mut();
+            let txt = a1.doc.get_or_insert_text("test");
+            let mut txn = a1.doc.transact_mut();
             txt.push(&mut txn, "hello");
             txn.encode_state_as_update_v1(&StateVector::default())
         };
 
-        let result = a1
-            .handle_sync_step1(a2.doc().state_vector().clone())
-            .unwrap();
+        let result = a1.handle_sync_step1(a2.doc.state_vector().clone()).unwrap();
 
         assert_eq!(
             result,
@@ -495,8 +499,8 @@ mod test {
             assert!(result2.is_none());
         }
 
-        let txt = a2.doc().transact().get_text("test").unwrap();
-        assert_eq!(txt.get_string(&a2.doc().transact()), "hello".to_owned());
+        let txt = a2.doc.transact().get_text("test").unwrap();
+        assert_eq!(txt.get_string(&a2.doc.transact()), "hello".to_owned());
     }
 
     #[test]
@@ -505,8 +509,8 @@ mod test {
         let mut p2 = DefaultProtocol::default();
 
         let data = {
-            let txt = p1.doc_mut().get_or_insert_text("test");
-            let mut txn = p1.doc_mut().transact_mut();
+            let txt = p1.doc.get_or_insert_text("test");
+            let mut txn = p1.doc.transact_mut();
             txt.push(&mut txn, "hello");
             txn.encode_update_v1()
         };
@@ -515,8 +519,8 @@ mod test {
 
         assert!(result.is_none());
 
-        let txt = p2.doc().transact().get_text("test").unwrap();
-        assert_eq!(txt.get_string(&p2.doc().transact()), "hello".to_owned());
+        let txt = p2.doc.transact().get_text("test").unwrap();
+        assert_eq!(txt.get_string(&p2.doc.transact()), "hello".to_owned());
     }
 
     #[test]
@@ -524,13 +528,13 @@ mod test {
         let mut p1 = DefaultProtocol::new(Doc::with_client_id(1));
         let mut p2 = DefaultProtocol::new(Doc::with_client_id(2));
 
-        p1.awareness_mut().set_local_state(json!({"x":3})).unwrap();
+        p1.awareness.set_local_state(json!({"x":3})).unwrap();
         let result = p1.handle_awareness_query().unwrap();
 
         assert_eq!(
             result,
             Some(crate::sync::Message::Awareness(
-                p1.awareness().update().unwrap()
+                p1.awareness.update().unwrap()
             ))
         );
 
@@ -540,7 +544,7 @@ mod test {
         }
 
         let a2_clients: HashMap<_, _> = p2
-            .awareness()
+            .awareness
             .iter()
             .flat_map(|(id, state)| state.data.clone().map(|data| (*id, data)))
             .collect();

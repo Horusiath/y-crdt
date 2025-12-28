@@ -728,7 +728,8 @@ impl ItemPtr {
                 ItemContent::Doc(subdoc) => {
                     let should_load = {
                         let mut borrowed = subdoc.borrow_mut();
-                        let borrowed = borrowed.doc_mut();
+                        let borrowed = &mut **borrowed;
+                        let mut borrowed = borrowed.get_mut();
                         doc.subdocs.insert((borrowed.guid(), this.id));
                         borrowed.subdoc = Some(self_ptr);
                         borrowed.should_load()
@@ -1772,7 +1773,9 @@ impl ItemContent {
             }
             ItemContent::Doc(doc) => {
                 let doc = doc.borrow();
-                doc.doc().options.encode(encoder)
+                let doc = &**doc;
+                let doc = doc.get_ref();
+                doc.options.encode(encoder)
             }
             ItemContent::Move(m) => m.encode(encoder),
         }
@@ -1805,7 +1808,9 @@ impl ItemContent {
             }
             ItemContent::Doc(doc) => {
                 let doc = doc.borrow();
-                doc.doc().options.encode(encoder)
+                let doc = &**doc;
+                let doc = doc.get_ref();
+                doc.options.encode(encoder)
             }
             ItemContent::Move(m) => m.encode(encoder),
         }
@@ -2099,8 +2104,10 @@ impl std::fmt::Display for ItemContent {
             },
             ItemContent::Move(m) => std::fmt::Display::fmt(m.as_ref(), f),
             ItemContent::Doc(doc) => {
-                let borrowed = doc.borrow();
-                std::fmt::Display::fmt(borrowed.doc(), f)
+                let doc = doc.borrow();
+                let doc = &**doc;
+                let doc = doc.get_ref();
+                std::fmt::Display::fmt(&*doc, f)
             }
             _ => Ok(()),
         }

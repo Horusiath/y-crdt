@@ -19,7 +19,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDoc};
+use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDocRef};
 
 /// A ywasm document type. Documents are most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
@@ -48,6 +48,7 @@ use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDoc};
 #[wasm_bindgen]
 pub struct Doc {
     doc: yrs::Doc,
+    this: Js,
     current_transaction: Option<crate::Transaction>,
     parent_doc: Option<Js>,
 }
@@ -56,6 +57,7 @@ impl From<yrs::Doc> for Doc {
     fn from(doc: yrs::Doc) -> Self {
         Doc {
             doc,
+            this: Js::new(JsValue::UNDEFINED),
             current_transaction: None,
             parent_doc: None,
         }
@@ -79,12 +81,21 @@ impl DerefMut for Doc {
 }
 
 impl Doc {
-    pub fn from_subdoc(subdoc: SubDocHook, parent: crate::Doc) -> Self {
-        todo!()
-    }
-
     pub(crate) fn current_transaction(&self) -> Option<&crate::Transaction> {
         self.current_transaction.as_ref()
+    }
+
+    pub fn from_subdoc(subdoc: &SubDocHook, parent: Js) -> Js {
+        let doc_ref = subdoc.borrow();
+        let doc_ref: &dyn DocLike = &**doc_ref;
+        let doc_ref: &dyn std::any::Any = doc_ref;
+        let doc_ref: &Js = doc_ref.downcast_ref().unwrap();
+        let doc = doc_ref.clone();
+        {
+            let mut doc = doc_ref.clone().into_doc_mut();
+            doc.parent_doc = Some(parent);
+        }
+        doc
     }
 
     pub(crate) fn transact<F, T>(js: &Js, origin: JsValue, f: F) -> T
@@ -111,7 +122,7 @@ impl Doc {
     /// globally unique identifier (it's up to caller to ensure that requirement). Otherwise it will
     /// be assigned a randomly generated number.
     #[wasm_bindgen(constructor)]
-    pub fn new(options: &JsValue) -> Result<Doc> {
+    pub fn new(options: &JsValue) -> Result<JsValue> {
         use gloo_utils::format::JsValueSerdeExt;
         let js_options = options
             .into_serde::<Option<DocOptions>>()
@@ -122,8 +133,17 @@ impl Doc {
             o.fill(&mut options);
         }
         let doc = yrs::Doc::with_options(options);
+        let doc = Self::from(doc);
 
-        Ok(Self::from(doc))
+        // we need a self-reference to JsValue representing current document
+        let js_value = JsValue::from(doc);
+        {
+            let js = Js::new(js_value.clone());
+            let mut doc = unsafe { Self::ref_mut_from_abi(js_value.clone().into_abi()) };
+            doc.this = js;
+        }
+
+        Ok(js_value)
     }
 
     #[wasm_bindgen(getter, js_name = type)]
@@ -180,11 +200,10 @@ impl Doc {
     /// onto `YText` instance.
     #[wasm_bindgen(js_name = getText)]
     pub fn get_text(&mut self, name: &str) -> YText {
-        let doc: JsValue = self.into();
-        let doc = Js::new(doc);
-        self.transact(JsValue::UNDEFINED, |tx| {
+        let doc = &self.this;
+        Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_text(name);
-            YText(SharedCollection::integrated(shared_ref, instance))
+            YText(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -197,10 +216,10 @@ impl Doc {
     /// onto `YArray` instance.
     #[wasm_bindgen(js_name = getArray)]
     pub fn get_array(&mut self, name: &str) -> YArray {
-        let instance = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        let doc = &self.this;
+        Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_array(name);
-            YArray(SharedCollection::integrated(shared_ref, instance))
+            YArray(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -213,10 +232,10 @@ impl Doc {
     /// onto `YMap` instance.
     #[wasm_bindgen(js_name = getMap)]
     pub fn get_map(&mut self, name: &str) -> YMap {
-        let instance = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        let doc = &self.this;
+        Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_map(name);
-            YMap(SharedCollection::integrated(shared_ref, instance))
+            YMap(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -229,40 +248,41 @@ impl Doc {
     /// onto `YXmlFragment` instance.
     #[wasm_bindgen(js_name = getXmlFragment)]
     pub fn get_xml_fragment(&self, name: &str) -> YXmlFragment {
-        let instance = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        let doc = &self.this;
+        Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_xml_fragment(name);
-            YXmlFragment(SharedCollection::integrated(shared_ref, instance))
+            YXmlFragment(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
     #[wasm_bindgen(js_name = on)]
-    pub fn on(&self, event: &str, callback: js_sys::Function) -> Result<()> {
+    pub fn on(&mut self, event: &str, callback: js_sys::Function) -> Result<()> {
         let abi = callback.subscription_key();
-        let mut doc = self.state.borrow_mut();
         let result = match event {
-            "update" => doc.observe_update_v1_with(abi, move |txn, e| {
+            "update" => self.doc.observe_update_v1_with(abi, move |txn, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
                 callback.call1(&JsValue::UNDEFINED, &update).unwrap();
             }),
-            "updateV2" => doc.observe_update_v2_with(abi, move |txn, e| {
+            "updateV2" => self.doc.observe_update_v2_with(abi, move |txn, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
                 callback.call1(&JsValue::UNDEFINED, &update).unwrap();
             }),
-            "subdocs" => doc.observe_subdocs_with(abi, move |e| {
-                let event: JsValue = YSubdocsEvent::new(e).into();
+            "subdocs" => self.doc.observe_subdocs_with(abi, move |e| {
+                let event: JsValue = YSubdocsEvent::new(e, &self.this).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
             }),
-            "destroy" => doc.observe_destroy_with(abi, move |e| {
+            "destroy" => self.doc.observe_destroy_with(abi, move |e| {
                 let event: JsValue = Doc::from(e.clone()).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
             }),
-            "afterTransaction" => doc.observe_after_transaction_with(abi, move |txn| {
+            "afterTransaction" => self.doc.observe_after_transaction_with(abi, move |txn| {
                 callback.call0(&JsValue::UNDEFINED).unwrap();
             }),
-            "cleanup" => doc.observe_transaction_cleanup_with(abi, move |txn, _| {
-                callback.call0(&JsValue::UNDEFINED).unwrap();
-            }),
+            "cleanup" => self
+                .doc
+                .observe_transaction_cleanup_with(abi, move |txn, _| {
+                    callback.call0(&JsValue::UNDEFINED).unwrap();
+                }),
             other => {
                 return Err(JsValue::from_str(&format!("unknown event: '{}'", other)).into());
             }
@@ -271,16 +291,15 @@ impl Doc {
     }
 
     #[wasm_bindgen(js_name = off)]
-    pub fn off(&self, event: &str, callback: js_sys::Function) -> Result<bool> {
+    pub fn off(&mut self, event: &str, callback: js_sys::Function) -> Result<bool> {
         let abi = callback.subscription_key();
-        let mut doc = self.state.borrow_mut();
         let unsubscribed = match event {
-            "update" => doc.unobserve_update_v1(abi),
-            "updateV2" => doc.unobserve_update_v2(abi),
-            "subdocs" => doc.unobserve_subdocs(abi),
-            "destroy" => doc.unobserve_destroy(abi),
-            "afterTransaction" => doc.unobserve_after_transaction(abi),
-            "cleanup" => doc.unobserve_transaction_cleanup(abi),
+            "update" => self.doc.unobserve_update_v1(abi),
+            "updateV2" => self.doc.unobserve_update_v2(abi),
+            "subdocs" => self.doc.unobserve_subdocs(abi),
+            "destroy" => self.doc.unobserve_destroy(abi),
+            "afterTransaction" => self.doc.unobserve_after_transaction(abi),
+            "cleanup" => self.doc.unobserve_transaction_cleanup(abi),
             other => {
                 return Err(JsValue::from_str(&format!("unknown event: '{}'", other)).into());
             }
@@ -292,15 +311,11 @@ impl Doc {
     /// (if it is a subdocument).
     #[wasm_bindgen(js_name = load)]
     pub fn load(&self) -> Result<()> {
-        let this = self.state.borrow();
-        match &this.parent_doc {
-            Some(parent_doc) => {
-                let child_doc = &mut this.doc;
-                parent_doc.transact(JsValue::UNDEFINED, |parent_txn| {
-                    child_doc.load(parent_txn.deref_mut().subdoc_scope());
-                    Ok(())
-                })
-            }
+        match &self.parent_doc {
+            Some(parent_doc) => Self::transact(parent_doc, JsValue::UNDEFINED, |parent_txn| {
+                child_doc.load(parent_txn.deref_mut().subdoc_scope());
+                Ok(())
+            }),
             None => Err(JsValue::from_str("not a subdocument").into()),
         }
     }
@@ -308,11 +323,9 @@ impl Doc {
     /// Emit `onDestroy` event and unregister all event handlers.
     #[wasm_bindgen(js_name = destroy)]
     pub fn destroy(&self) -> Result<()> {
-        let this = self.state.borrow();
-        match &this.parent_doc {
-            Some(parent_doc) => parent_doc.transact(JsValue::UNDEFINED, |parent_txn| {
-                let child_doc = &mut this.inner;
-                child_doc.load(parent_txn.deref_mut().subdoc_scope());
+        match &self.parent_doc {
+            Some(parent_doc) => Self::transact(parent_doc, JsValue::UNDEFINED, |parent_txn| {
+                self.load(parent_txn.deref_mut().subdoc_scope());
                 Ok(())
             }),
             None => Err(JsValue::from_str("not a subdocument").into()),
@@ -323,7 +336,11 @@ impl Doc {
     #[wasm_bindgen(js_name = getSubdocs)]
     pub fn subdocs(&self) -> Result<js_sys::Array> {
         let res = js_sys::Array::new();
-        self.transact(JsValue::UNDEFINED, |txn| for subdoc in txn.subdoc_refs() {});
+        Self::transact(&self.this, JsValue::UNDEFINED, |txn| {
+            for subdoc in txn.subdoc_refs() {
+                todo!()
+            }
+        });
         Ok(res)
     }
 
@@ -331,9 +348,8 @@ impl Doc {
     /// this document.
     #[wasm_bindgen(js_name = getSubdocGuids)]
     pub fn subdoc_guids(&self) -> js_sys::Set {
-        let doc = self.state.borrow();
         let set = js_sys::Array::new();
-        for guid in doc.subdoc_guids() {
+        for guid in self.doc.subdoc_guids() {
             set.push(&JsValue::from_str(&guid.to_string()));
         }
         js_sys::Set::new(&set)
@@ -357,9 +373,8 @@ impl Doc {
     #[wasm_bindgen(js_name = roots)]
     pub fn roots(&self) -> js_sys::Map {
         let result = js_sys::Map::new();
-        let doc = self.state.borrow();
-        for (key, value) in doc.root_refs() {
-            let value = Js::from_value(&value, &self);
+        for (key, value) in self.doc.root_refs() {
+            let value = Js::from_value(&value, self.this.clone());
             result.set(&JsValue::from_str(&key), &value);
         }
         result
@@ -383,11 +398,12 @@ impl Doc {
     #[wasm_bindgen(js_name = selectAll)]
     pub fn select_all(&self, json_path: &str) -> Result<js_sys::Array> {
         let jpath = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let result: Vec<_> =
-            self.transact(JsValue::UNDEFINED, |txn| txn.json_path(&jpath).collect());
+        let result: Vec<_> = Self::transact(&self.this, JsValue::UNDEFINED, |txn| {
+            txn.json_path(&jpath).collect()
+        });
         let array = js_sys::Array::new();
         for res in result {
-            array.push(&Js::from_value(&res, self).into());
+            array.push(&Js::from_value(&res, self.this.clone()).into());
         }
         Ok(array)
     }
@@ -410,9 +426,11 @@ impl Doc {
     #[wasm_bindgen(js_name = selectOne)]
     pub fn select_one(&self, json_path: &str) -> Result<JsValue> {
         let jpath = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let result = self.transact(JsValue::UNDEFINED, |txn| txn.json_path(&jpath).next());
+        let result = Self::transact(&self.this, JsValue::UNDEFINED, |txn| {
+            txn.json_path(&jpath).next()
+        });
         match result {
-            Some(value) => Ok(Js::from_value(&value, self).into()),
+            Some(value) => Ok(Js::from_value(&value, self.this.clone()).into()),
             None => Ok(JsValue::UNDEFINED),
         }
     }
@@ -427,19 +445,22 @@ pub struct YSubdocsEvent {
 
 #[wasm_bindgen]
 impl YSubdocsEvent {
-    fn new(e: &yrs::SubdocsEvent) -> Self {
-        let added = js_sys::Array::from_iter(e.added().into_iter().map(|doc| {
-            let js: JsValue = Doc::from(doc).into();
-            js
-        }));
-        let removed = js_sys::Array::from_iter(e.removed().into_iter().map(|doc| {
-            let js: JsValue = Doc::from(doc).into();
-            js
-        }));
-        let loaded = js_sys::Array::from_iter(e.loaded().into_iter().map(|doc| {
-            let js: JsValue = Doc::from(doc).into();
-            js
-        }));
+    fn new(e: &yrs::SubdocsEvent, parent_doc: &Js) -> Self {
+        let added = js_sys::Array::from_iter(
+            e.added()
+                .into_iter()
+                .map(|doc| crate::Doc::from_subdoc(doc, parent_doc.clone())),
+        );
+        let removed = js_sys::Array::from_iter(
+            e.removed()
+                .into_iter()
+                .map(|doc| crate::Doc::from_subdoc(doc, parent_doc.clone())),
+        );
+        let loaded = js_sys::Array::from_iter(
+            e.loaded()
+                .into_iter()
+                .map(|doc| crate::Doc::from_subdoc(doc, parent_doc.clone())),
+        );
         YSubdocsEvent {
             added,
             removed,
