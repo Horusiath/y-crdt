@@ -1,22 +1,18 @@
-use crate::array::YArray;
+use crate::array::Array;
 use crate::collection::SharedCollection;
 use crate::js::Js;
-use crate::map::YMap;
-use crate::text::YText;
-use crate::weak::YWeakLink;
-use crate::xml_elem::YXmlElement;
-use crate::xml_frag::YXmlFragment;
-use crate::xml_text::YXmlText;
+use crate::map::Map;
+use crate::text::Text;
+use crate::weak::WeakLink;
+use crate::xml_elem::XmlElement;
+use crate::xml_frag::XmlFragment;
+use crate::xml_text::XmlText;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
-use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
-use wasm_bindgen::__rt::{RcRefMut, WasmRefCell};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
-use yrs::doc::DocLike;
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TypeRef;
 use yrs::updates::decoder::Decode;
@@ -148,24 +144,24 @@ impl Transaction {
                 let js = self.doc.clone();
                 match b.type_ref() {
                     TypeRef::Array => {
-                        YArray(SharedCollection::integrated(ArrayRef::from(b), js)).into()
+                        Array(SharedCollection::integrated(ArrayRef::from(b), js)).into()
                     }
-                    TypeRef::Map => YMap(SharedCollection::integrated(MapRef::from(b), js)).into(),
+                    TypeRef::Map => Map(SharedCollection::integrated(MapRef::from(b), js)).into(),
                     TypeRef::Text => {
-                        YText(SharedCollection::integrated(TextRef::from(b), js)).into()
+                        Text(SharedCollection::integrated(TextRef::from(b), js)).into()
                     }
                     TypeRef::XmlElement(_) => {
-                        YXmlElement(SharedCollection::integrated(XmlElementRef::from(b), js)).into()
+                        XmlElement(SharedCollection::integrated(XmlElementRef::from(b), js)).into()
                     }
                     TypeRef::XmlFragment => {
-                        YXmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), js))
+                        XmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), js))
                             .into()
                     }
                     TypeRef::XmlText => {
-                        YXmlText(SharedCollection::integrated(XmlTextRef::from(b), js)).into()
+                        XmlText(SharedCollection::integrated(XmlTextRef::from(b), js)).into()
                     }
                     TypeRef::WeakLink(_) => {
-                        YWeakLink(SharedCollection::integrated(WeakRef::from(b), js)).into()
+                        WeakLink(SharedCollection::integrated(WeakRef::from(b), js)).into()
                     }
                     TypeRef::SubDoc => match b.as_subdoc() {
                         None => JsValue::UNDEFINED,

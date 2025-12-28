@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use js_sys::Reflect;
@@ -8,20 +7,18 @@ use wasm_bindgen::JsValue;
 
 use yrs::branch::BranchPtr;
 use yrs::undo::EventKind;
-use yrs::{Doc as YDoc, RefProvider};
+use yrs::RefProvider;
 
-use crate::doc::Doc;
 use crate::js::{Callback, Js, Shared};
-use crate::transaction::Transaction;
 use crate::Result;
 
 #[wasm_bindgen]
-pub struct YUndoManager {
+pub struct UndoManager {
     manager: yrs::undo::UndoManager<JsValue>,
     doc: Js,
 }
 
-impl YUndoManager {
+impl UndoManager {
     fn get_scope(doc: &Js, js: &JsValue) -> Result<BranchPtr> {
         let shared = Shared::from_ref(js)?;
         let branch_id = if let Some(id) = shared.branch_id() {
@@ -40,13 +37,13 @@ impl YUndoManager {
 }
 
 #[wasm_bindgen]
-impl YUndoManager {
+impl UndoManager {
     #[wasm_bindgen(constructor)]
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
         scope: JsValue,
         options: JsValue,
-    ) -> Result<YUndoManager> {
+    ) -> Result<UndoManager> {
         let doc = Js::new(doc);
         let scope = Self::get_scope(&doc, &scope)?;
         let mut o = yrs::undo::Options {

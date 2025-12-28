@@ -1,6 +1,6 @@
 use base64_light::base64_decode;
 use gloo_utils::format::JsValueSerdeExt;
-use js_sys::Uint8Array;
+use js_sys::{Function, Uint8Array};
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Formatter;
@@ -29,22 +29,22 @@ mod xml_text;
 
 type Result<T> = std::result::Result<T, JsValue>;
 
-pub use crate::array::YArray as Array;
+pub use crate::array::Array;
 pub use crate::array::YArrayEvent as ArrayEvent;
 pub use crate::doc::Doc;
 use crate::js::{Js, Shared};
-pub use crate::map::YMap as Map;
+pub use crate::map::Map;
 pub use crate::map::YMapEvent as MapEvent;
-pub use crate::text::YText as Text;
+pub use crate::text::Text;
 pub use crate::text::YTextEvent as TextEvent;
 pub use crate::transaction::Transaction;
+pub use crate::undo::UndoManager;
 pub use crate::undo::YUndoEvent as UndoEvent;
-pub use crate::undo::YUndoManager as UndoManager;
-pub use crate::weak::YWeakLink as WeakLink;
-pub use crate::weak::YWeakLinkEvent as WeakLinkEvent;
-pub use crate::xml_elem::YXmlElement as XmlElem;
-pub use crate::xml_frag::YXmlFragment as XmlFragment;
-pub use crate::xml_text::YXmlText as XmlText;
+pub use crate::weak::WeakLink;
+pub use crate::weak::WeakLinkEvent;
+pub use crate::xml_elem::XmlElement as XmlElem;
+pub use crate::xml_frag::XmlFragment;
+pub use crate::xml_text::XmlText;
 
 /// When called will call console log errors whenever internal panic is called from within
 /// WebAssembly module.
@@ -258,10 +258,11 @@ pub fn encode_state_as_update_v2(
 pub fn apply_update(
     #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
     update: js_sys::Uint8Array,
-    origin: JsValue,
+    origin: Option<JsValue>,
 ) -> Result<()> {
     let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    let origin = origin.unwrap_or(JsValue::UNDEFINED);
+    crate::Doc::transact(&doc, origin, |tx| {
         let diff: Vec<u8> = update.to_vec();
         match Update::decode_v1(&diff) {
             Ok(update) => tx
@@ -294,10 +295,11 @@ pub fn apply_update(
 pub fn apply_update_v2(
     #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
     update: js_sys::Uint8Array,
-    origin: JsValue,
+    origin: Option<JsValue>,
 ) -> Result<()> {
     let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    let origin = origin.unwrap_or(JsValue::UNDEFINED);
+    crate::Doc::transact(&doc, origin, |tx| {
         let diff: Vec<u8> = update.to_vec();
         match Update::decode_v2(&diff) {
             Ok(update) => tx
@@ -401,6 +403,17 @@ pub fn decode_snapshot_v1(snapshot: &[u8]) -> Result<JsValue> {
     Ok(JsValue::from_str(&base64_light::base64_encode_bytes(
         snapshot,
     )))
+}
+
+#[wasm_bindgen(js_name = transact)]
+pub fn transact(
+    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: &JsValue,
+    func: Function,
+    origin: Option<JsValue>,
+) -> Result<JsValue> {
+    let doc = Js::new(doc.clone());
+    let origin = origin.unwrap_or(JsValue::UNDEFINED);
+    crate::Doc::transact(&doc, origin, |tx| func.call0(&JsValue::UNDEFINED))
 }
 
 #[wasm_bindgen(js_name = encodeStateFromSnapshotV1)]

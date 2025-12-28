@@ -7,12 +7,12 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testOnUpdate = tc => {
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     const text1 = d1.getText('text')
     text1.insert(0, 'hello')
     let update = Y.encodeStateAsUpdate(d1)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     const text2 = d2.getText('text')
     let actual;
     let origin;
@@ -42,15 +42,15 @@ export const testOnUpdate = tc => {
 }
 
 /**
- * @param {t.TestCase} tccls
+ * @param {t.TestCase} tc
  */
 export const testOnUpdateV2 = tc => {
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     const text1 = d1.getText('text')
     text1.insert(0, 'hello')
     let expected = Y.encodeStateAsUpdateV2(d1)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     const text2 = d2.getText('text')
     let actual;
     const callback = e => actual = e
@@ -76,7 +76,7 @@ export const testOnUpdateV2 = tc => {
  * @param {t.TestCase} tc
  */
 export const testOnAfterTransaction = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     const text = doc.getText('text')
     let event;
     let callback = txn => {
@@ -115,7 +115,7 @@ export const testOnAfterTransaction = tc => {
  * @param {t.TestCase} tc
  */
 export const testSnapshots = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     const text = doc.getText('text')
     text.insert(0, 'hello')
     const prev = Y.snapshot(doc)
@@ -133,14 +133,14 @@ export const testSnapshots = tc => {
  * @param {t.TestCase} tc
  */
 export const testSnapshotState = tc => {
-    const d1 = new Y.YDoc({clientID: 1, gc: false})
+    const d1 = new Y.Doc({clientID: 1, gc: false})
     const txt1 = d1.getText('text')
     txt1.insert(0, 'hello')
     const prev = Y.snapshot(d1)
     txt1.insert(5, ' world')
     const state = Y.encodeStateFromSnapshotV1(d1, prev)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     const txt2 = d2.getText('text')
     Y.applyUpdate(d2, state)
 
@@ -151,7 +151,7 @@ export const testSnapshotState = tc => {
  * @param {t.TestCase} tc
  */
 export const testSubdoc = tc => {
-    const doc = new Y.YDoc()
+    const doc = new Y.Doc()
     doc.load() // doesn't do anything
     {
         /**
@@ -166,7 +166,7 @@ export const testSubdoc = tc => {
         }
         doc.on('subdocs', callback)
         const subdocs = doc.getMap('mysubdocs')
-        const docA = new Y.YDoc({guid: 'a'})
+        const docA = new Y.Doc({guid: 'a'})
         docA.load()
         subdocs.set('a', docA)
         t.compare(event, [['a'], [], ['a']])
@@ -181,12 +181,12 @@ export const testSubdoc = tc => {
         subdocs.get('a').load()
         t.compare(event, [[], [], ['a']])
 
-        subdocs.set('b', new Y.YDoc({guid: 'a', shouldLoad: false}))
+        subdocs.set('b', new Y.Doc({guid: 'a', shouldLoad: false}))
         t.compare(event, [['a'], [], []])
         subdocs.get('b').load()
         t.compare(event, [[], [], ['a']])
 
-        const docC = new Y.YDoc({guid: 'c'})
+        const docC = new Y.Doc({guid: 'c'})
         docC.load()
         subdocs.set('c', docC)
         t.compare(event, [['c'], [], ['c']])
@@ -194,7 +194,7 @@ export const testSubdoc = tc => {
         t.compare(doc.getSubdocGuids(), new Set(['a', 'c']))
     }
 
-    const doc2 = new Y.YDoc()
+    const doc2 = new Y.Doc()
     // root-level types must be prepared in advance for subdocs to work atm
     const subdocs2 = doc2.getMap('mysubdocs')
     {
@@ -216,7 +216,7 @@ export const testSubdoc = tc => {
         t.assert(inner.parentDoc != null, 'parent doc must be present')
         t.compare(inner.shouldLoad, false, 'after decoding shouldLoad is false by default')
         inner.load()
-        t.compare(inner.shouldLoad, true, 'after YDoc.load, shouldLoad is false by default')
+        t.compare(inner.shouldLoad, true, 'after Doc.load, shouldLoad is false by default')
         t.compare(event, [[], [], ['a']])
 
         t.compare(Array.from(doc2.getSubdocGuids()).sort(), ['a', 'c'])
@@ -231,20 +231,20 @@ export const testSubdoc = tc => {
  * @param {t.TestCase} tc
  */
 export const testLiveness = tc => {
-    const d1 = new Y.YDoc()
-    const r1 = d1.getMap('root')
-    const d2 = new Y.YDoc()
-    const r2 = d2.getMap('root')
-    const a1 = new Y.YMap()
+    const d1 = new Y.Doc()
+    const r1 = /** @type {Y.Map} */ d1.getMap('root')
+    const d2 = new Y.Doc()
+    const r2 = /** @type {Y.Map} */ d2.getMap('root')
+    const a1 = new Y.Map()
     r1.set('a', a1)
-    const aa1 = new Y.YMap()
+    const aa1 = new Y.Map()
     a1.set('aa', aa1)
 
     // all nodes should be alive
-    d1.transact(tx => {
-        t.assert(r1.alive(tx), 'root is always alive')
-        t.assert(a1.alive(tx), '1st level nesting (local)')
-        t.assert(aa1.alive(tx), '2nd level nesting (local)')
+    Y.transact(d1, () => {
+        t.assert(r1.alive(), 'root is always alive')
+        t.assert(a1.alive(), '1st level nesting (local)')
+        t.assert(aa1.alive(), '2nd level nesting (local)')
     })
 
     exchangeUpdates([d1, d2])
@@ -253,10 +253,10 @@ export const testLiveness = tc => {
     const aa2 = a2.get('aa')
 
     // all nodes should be alive on remote as well
-    d2.transact(tx => {
-        t.assert(r2.alive(tx), 'root is always alive')
-        t.assert(a2.alive(tx), '1st level nesting (local)')
-        t.assert(aa2.alive(tx), '2nd level nesting (local)')
+    Y.transact(d2, () => {
+        t.assert(r2.alive(), 'root is always alive')
+        t.assert(a2.alive(), '1st level nesting (local)')
+        t.assert(aa2.alive(), '2nd level nesting (local)')
     })
 
     // drop nodes on local
@@ -264,15 +264,15 @@ export const testLiveness = tc => {
     exchangeUpdates([d1, d2])
 
     // child nodes should be marked as dead
-    d1.transact(tx => {
-        t.assert(r1.alive(tx), 'root is always alive')
-        t.assert(!a1.alive(tx), 'child is deleted (local)')
-        t.assert(!aa1.alive(tx), 'parent was deleted (local)')
+    Y.transact(d1, () => {
+        t.assert(r1.alive(), 'root is always alive')
+        t.assert(!a1.alive(), 'child is deleted (local)')
+        t.assert(!aa1.alive(), 'parent was deleted (local)')
     })
-    d2.transact(tx => {
-        t.assert(r2.alive(tx), 'root is always alive')
-        t.assert(!a2.alive(tx), 'child is deleted (local)')
-        t.assert(!aa2.alive(tx), 'parent was deleted (local)')
+    Y.transact(d2, () => {
+        t.assert(r2.alive(), 'root is always alive')
+        t.assert(!a2.alive(), 'child is deleted (local)')
+        t.assert(!aa2.alive(), 'parent was deleted (local)')
     })
 }
 
@@ -280,7 +280,7 @@ export const testLiveness = tc => {
  * @param {t.TestCase} tc
  */
 export const testRoots = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const a = d1.getMap('a')
     const b = d1.getText('b')
     const c = d1.getArray('c')
@@ -290,30 +290,30 @@ export const testRoots = tc => {
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([k, v]) => [k, v.constructor])
     t.compare(roots, [
-        ['a', Y.YMap],
-        ['b', Y.YText],
-        ['c', Y.YArray],
-        ['d', Y.YXmlFragment]
+        ['a', Y.Map],
+        ['b', Y.Text],
+        ['c', Y.Array],
+        ['d', Y.XmlFragment]
     ])
 
     a.set('hello', 'world')
 
-    let d2 = new Y.YDoc()
+    let d2 = new Y.Doc()
     exchangeUpdates([d1, d2])
-    t.compare(d2.roots(), [['a', undefined]])
+    t.compare(d2.roots(), Map.of(['a', undefined]))
 }
 
 /**
  * @param {t.TestCase} tc
  */
 export const testIds = tc => {
-    const d1 = new Y.YDoc()
-    const a1 = d1.getArray('a')
+    const d1 = new Y.Doc()
+    const a1 = /** @type {Y.Array} */d1.getArray('a')
 
-    const d2 = new Y.YDoc()
+    const d2 = new Y.Doc()
     d2.getArray('a') // root types need to be pre-initialized
 
-    const m1 = new Y.YMap({'key1': 'value1'})
+    const m1 = new Y.Map({'key1': 'value1'})
     a1.push([m1]) // set nested type on a first doc
 
     const arrayId = a1.id
@@ -323,9 +323,9 @@ export const testIds = tc => {
     exchangeUpdates([d1, d2])
 
     // resolve instances using identifiers
-    const m2 = d2.transact(tx => tx.get(mapId))
+    const m2 = Y.transact(d2, tx => tx.get(mapId))
 
-    t.compare(m2.toJson(), {'key1': 'value1'})
+    t.compare(m2.toJSON(), {'key1': 'value1'})
 
     const a2 = d2.transact(tx => tx.get(arrayId))
 
@@ -336,7 +336,7 @@ export const testIds = tc => {
     exchangeUpdates([d1, d2])
 
     // check if first doc has correctly updated values
-    t.compare(a1.toJson(), ['abc', {'key1': 'value2'}])
+    t.compare(a1.toJSON(), ['abc', {'key1': 'value2'}])
 }
 
 
@@ -344,15 +344,15 @@ export const testIds = tc => {
  * @param {t.TestCase} tc
  */
 export const testSelectAll = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     const store = doc.getMap('store')
-    store.set('book', new Y.YArray([
-        new Y.YMap({
+    store.set('book', new Y.Array([
+        new Y.Map({
             "author": "Nigel Rees",
             "title": "Sayings of the Century",
             "price": 8.95
         }),
-        new Y.YMap({
+        new Y.Map({
             "author": "J. R. R. Tolkien",
             "title": "The Lord of the Rings",
             "isbn": "0-395-19395-8",
@@ -367,7 +367,7 @@ export const testSelectAll = tc => {
     t.compare([8.95, 22.99], doc.selectAll('$.store.book[*].price'))
 
     let result = doc.selectAll('$...price')
-    // we sort results because YMap doesn't guarantee order
+    // we sort results because Map doesn't guarantee order
     result.sort((a, b) => a - b)
     t.compare(result, [8.95, 22.99, 399])
 
@@ -380,17 +380,17 @@ export const testSelectAll = tc => {
  */
 export const testMergeUpdatesV1 = tc => {
     // Create three separate documents with different changes
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     const text1 = d1.getText('text')
     text1.insert(0, 'hello')
     const update1 = Y.encodeStateAsUpdate(d1)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     const text2 = d2.getText('text')
     text2.insert(0, 'world')
     const update2 = Y.encodeStateAsUpdate(d2)
 
-    const d3 = new Y.YDoc({clientID: 3})
+    const d3 = new Y.Doc({clientID: 3})
     const map3 = d3.getMap('map')
     map3.set('key', 'value')
     const update3 = Y.encodeStateAsUpdate(d3)
@@ -399,13 +399,13 @@ export const testMergeUpdatesV1 = tc => {
     const mergedUpdate = Y.mergeUpdatesV1([update1, update2, update3])
 
     // Apply merged update to a new document
-    const dMerged = new Y.YDoc({clientID: 4})
+    const dMerged = new Y.Doc({clientID: 4})
     const textMerged = dMerged.getText('text')
     const mapMerged = dMerged.getMap('map')
     Y.applyUpdate(dMerged, mergedUpdate)
 
     // Apply updates individually to another document for comparison
-    const dSequential = new Y.YDoc({clientID: 5})
+    const dSequential = new Y.Doc({clientID: 5})
     const textSequential = dSequential.getText('text')
     const mapSequential = dSequential.getMap('map')
     Y.applyUpdate(dSequential, update1)
@@ -423,17 +423,17 @@ export const testMergeUpdatesV1 = tc => {
  */
 export const testMergeUpdatesV2 = tc => {
     // Create three separate documents with different changes
-    const d1 = new Y.YDoc({clientID: 1})
-    const array1 = d1.getArray('array')
+    const d1 = new Y.Doc({clientID: 1})
+    const array1 = /** @type {Y.Array} */ d1.getArray('array')
     array1.insert(0, [1, 2, 3])
     const update1 = Y.encodeStateAsUpdateV2(d1)
 
-    const d2 = new Y.YDoc({clientID: 2})
-    const array2 = d2.getArray('array')
+    const d2 = new Y.Doc({clientID: 2})
+    const array2 = /** @type {Y.Array} */ d2.getArray('array')
     array2.insert(0, [4, 5, 6])
     const update2 = Y.encodeStateAsUpdateV2(d2)
 
-    const d3 = new Y.YDoc({clientID: 3})
+    const d3 = new Y.Doc({clientID: 3})
     const text3 = d3.getText('text')
     text3.insert(0, 'merged')
     const update3 = Y.encodeStateAsUpdateV2(d3)
@@ -442,21 +442,21 @@ export const testMergeUpdatesV2 = tc => {
     const mergedUpdate = Y.mergeUpdatesV2([update1, update2, update3])
 
     // Apply merged update to a new document
-    const dMerged = new Y.YDoc({clientID: 4})
-    const arrayMerged = dMerged.getArray('array')
+    const dMerged = new Y.Doc({clientID: 4})
+    const arrayMerged = /** @type {Y.Array} */ dMerged.getArray('array')
     const textMerged = dMerged.getText('text')
     Y.applyUpdateV2(dMerged, mergedUpdate)
 
     // Apply updates individually to another document for comparison
-    const dSequential = new Y.YDoc({clientID: 5})
-    const arraySequential = dSequential.getArray('array')
+    const dSequential = new Y.Doc({clientID: 5})
+    const arraySequential = /** @type {Y.Array} */ dSequential.getArray('array')
     const textSequential = dSequential.getText('text')
     Y.applyUpdateV2(dSequential, update1)
     Y.applyUpdateV2(dSequential, update2)
     Y.applyUpdateV2(dSequential, update3)
 
     // Both documents should have identical content
-    t.compare(arrayMerged.toJson(), arraySequential.toJson())
+    t.compare(arrayMerged.toJSON(), arraySequential.toJSON())
     t.compare(textMerged.toString(), textSequential.toString())
     t.compare(textMerged.toString(), 'merged')
 

@@ -7,10 +7,10 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testSet = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const x = d1.getMap('test')
 
-    var value = x.get('key')
+    let value = x.get('key')
     t.compare(value, undefined)
 
     x.set('key', 'value1')
@@ -26,14 +26,14 @@ export const testSet = tc => {
  * @param {t.TestCase} tc
  */
 export const testSetNested = tc => {
-    const d1 = new Y.YDoc()
-    const x = d1.getMap('test')
-    const nested = new Y.YMap({a: 'A'})
+    const d1 = new Y.Doc()
+    const x = /** @type {Y.Map} */ d1.getMap('test')
+    const nested = new Y.Map({a: 'A'})
 
     x.set('key', nested)
     nested.set('b', 'B')
 
-    let json = x.toJson()
+    let json = x.toJSON()
     t.compare(json, {
         key: {
             a: 'A',
@@ -46,12 +46,12 @@ export const testSetNested = tc => {
  * @param {t.TestCase} tc
  */
 export const testDelete = tc => {
-    const d1 = new Y.YDoc()
-    const x = d1.getMap('test')
+    const d1 = new Y.Doc()
+    const x = /** @type {Y.Map} */ d1.getMap('test')
 
     x.set('key', 'value1')
-    var len = x.length()
-    var value = x.get('key')
+    let len = x.length()
+    let value = x.get('key')
     t.compare(len, 1)
     t.compare(value, 'value1')
 
@@ -72,13 +72,13 @@ export const testDelete = tc => {
  * @param {t.TestCase} tc
  */
 export const testIterator = tc => {
-    const d1 = new Y.YDoc()
-    const x = d1.getMap('test')
+    const d1 = new Y.Doc()
+    const x = /** @type {Y.Map} */d1.getMap('test')
 
-    d1.transact(txn => {
-        x.set('a', 1, txn)
-        x.set('b', 2, txn)
-        x.set('c', 3, txn)
+    Y.transact(d1, () => {
+        x.set('a', 1)
+        x.set('b', 2)
+        x.set('c', 3)
     })
 
     let expected = {
@@ -86,25 +86,24 @@ export const testIterator = tc => {
         'b': 2,
         'c': 3
     }
-    d1.transact(txn => {
-        let entries = x.entries(txn);
-        for (let key in entries) {
-            let v = expected[key]
-            t.compare(entries[key], v)
-            delete expected[key]
-        }
-    })
+
+    let entries = x.entries();
+    for (let key in entries) {
+        let v = expected[key]
+        t.compare(entries[key], v)
+        delete expected[key]
+    }
 }
 
 /**
  * @param {t.TestCase} tc
  */
 export const testObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     /**
-     * @param {Y.YMap} tc
+     * @param {Y.Map} tc
      */
-    const x = d1.getMap('test')
+    const x = /** @type {Y.Map} */d1.getMap('test')
     let target = null
     let entries = null
     let origin = null
@@ -116,11 +115,11 @@ export const testObserver = tc => {
     x.observe(callback)
 
     // insert initial data to an empty YMap
-    d1.transact(txn => {
-        x.set('key1', 'value1', txn)
-        x.set('key2', 2, txn)
+    Y.transact(d1, () => {
+        x.set('key1', 'value1')
+        x.set('key2', 2)
     }, 'TEST_ORIGIN')
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(entries, {
         key1: {action: 'add', newValue: 'value1'},
         key2: {action: 'add', newValue: 2}
@@ -130,11 +129,11 @@ export const testObserver = tc => {
     entries = null
 
     // remove an entry and update another on
-    d1.transact(txn => {
-        x.delete('key1', txn)
-        x.set('key2', 'value2', txn)
+    Y.transact(d1, () => {
+        x.delete('key1')
+        x.set('key2', 'value2')
     })
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(entries, {
         key1: {action: 'delete', oldValue: 'value1'},
         key2: {action: 'update', oldValue: 2, newValue: 'value2'}
@@ -153,8 +152,8 @@ export const testObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserversUsingObservedeep = tc => {
-    const d1 = new Y.YDoc()
-    const map = d1.getMap('map')
+    const d1 = new Y.Doc()
+    const map = /** @type {Y.Map} */ d1.getMap('map')
 
     /**
      * @type {Array<Array<string|number>>}
@@ -167,8 +166,8 @@ export const testObserversUsingObservedeep = tc => {
         }
         calls++
     })
-    map.set('map', new Y.YMap())
-    map.get('map').set('array', new Y.YArray())
+    map.set('map', new Y.Map())
+    map.get('map').set('array', new Y.Array())
     map.get('map').get('array').insert(0, ['content'])
     t.assert(calls === 3)
     t.compare(paths, [[], ['map'], ['map', 'array']])

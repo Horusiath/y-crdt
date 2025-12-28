@@ -5,27 +5,25 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::xml::XmlEvent;
 use yrs::types::TYPE_REFS_XML_FRAGMENT;
-use yrs::{
-    DeepObservable, GetString, Observable, Transaction as YTransaction, XmlFragment, XmlFragmentRef,
-};
+use yrs::{DeepObservable, GetString, Observable, XmlFragment as _, XmlFragmentRef};
 
 /// Represents a list of `YXmlElement` and `YXmlText` types.
 /// A `YXmlFragment` is similar to a `YXmlElement`, but it does not have a
-/// nodeName and it does not have attributes. Though it can be bound to a DOM
+/// nodeName, and it does not have attributes. Though it can be bound to a DOM
 /// element - in this case the attributes and the nodeName are not shared
 #[wasm_bindgen]
-pub struct YXmlFragment(pub(crate) SharedCollection<Vec<JsValue>, XmlFragmentRef>);
+pub struct XmlFragment(pub(crate) SharedCollection<Vec<JsValue>, XmlFragmentRef>);
 
 #[wasm_bindgen]
-impl YXmlFragment {
+impl XmlFragment {
     #[wasm_bindgen(constructor)]
-    pub fn new(children: Vec<JsValue>) -> crate::Result<YXmlFragment> {
+    pub fn new(children: Vec<JsValue>) -> crate::Result<XmlFragment> {
         let mut nodes = Vec::with_capacity(children.len());
         for xml_node in children {
             Js::assert_xml_prelim(&xml_node)?;
             nodes.push(xml_node);
         }
-        Ok(YXmlFragment(SharedCollection::prelim(nodes)))
+        Ok(XmlFragment(SharedCollection::prelim(nodes)))
     }
 
     #[wasm_bindgen(getter, js_name = type)]

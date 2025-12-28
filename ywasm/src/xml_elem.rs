@@ -1,15 +1,13 @@
 use crate::collection::SharedCollection;
 use crate::js::{Callback, Js, OptionDisposed, Shared, ValueRef};
-use crate::transaction::Transaction;
 use crate::xml::XmlAttrs;
 use crate::xml_frag::YXmlEvent;
 use gloo_utils::format::JsValueSerdeExt;
-use std::collections::HashMap;
 use std::iter::FromIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::{Attrs, TYPE_REFS_XML_ELEMENT};
-use yrs::{Any, DeepObservable, GetString, Observable, Xml, XmlElementRef, XmlFragment};
+use yrs::{DeepObservable, GetString, Observable, Xml, XmlElementRef, XmlFragment};
 
 pub(crate) struct PrelimXmElement {
     pub name: String,
@@ -47,13 +45,21 @@ impl PrelimXmElement {
 ///   using interleave-resistant algorithm, where order of concurrent inserts at the same index
 ///   is established using peer's document id seniority.
 #[wasm_bindgen]
-pub struct YXmlElement(pub(crate) SharedCollection<PrelimXmElement, XmlElementRef>);
+pub struct XmlElement(pub(crate) SharedCollection<PrelimXmElement, XmlElementRef>);
 
 #[wasm_bindgen]
-impl YXmlElement {
+impl XmlElement {
     #[wasm_bindgen(constructor)]
-    pub fn new(name: String, attributes: JsValue, children: JsValue) -> crate::Result<YXmlElement> {
-        let attributes = XmlAttrs::parse_attrs_any(attributes)?;
+    pub fn new(
+        name: String,
+        attributes: Option<JsValue>,
+        children: Option<JsValue>,
+    ) -> crate::Result<XmlElement> {
+        let attributes = match attributes {
+            Some(attributes) => XmlAttrs::parse_attrs_any(attributes)?,
+            None => Attrs::default(),
+        };
+        let children = children.unwrap_or(JsValue::UNDEFINED);
         let children = if children.is_undefined() || children.is_null() {
             Vec::new()
         } else {
@@ -63,7 +69,7 @@ impl YXmlElement {
         for child in children.iter() {
             Js::assert_xml_prelim(child)?;
         }
-        Ok(YXmlElement(SharedCollection::prelim(PrelimXmElement {
+        Ok(XmlElement(SharedCollection::prelim(PrelimXmElement {
             name,
             attributes,
             children,

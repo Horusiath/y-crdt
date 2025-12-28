@@ -7,18 +7,18 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testInserts = tc => {
-    const d1 = new Y.YDoc()
-    var x = d1.getText('test')
+    const d1 = new Y.Doc()
+    let x = d1.getText('test')
 
     x.push("hello!")
     x.insert(5, " world")
 
     const expected = "hello world!"
 
-    var value = x.toString()
+    let value = x.toString()
     t.compareStrings(value, expected)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     x = d2.getText('test')
 
     exchangeUpdates([d1, d2])
@@ -31,8 +31,8 @@ export const testInserts = tc => {
  * @param {t.TestCase} tc
  */
 export const testDeletes = tc => {
-    const d1 = new Y.YDoc()
-    var x = d1.getText('test')
+    const d1 = new Y.Doc()
+    let x = d1.getText('test')
 
     x.push("hello world!")
     t.compare(x.length(), 12)
@@ -43,10 +43,10 @@ export const testDeletes = tc => {
 
     const expected = "hello Yrs!"
 
-    var value = x.toString()
+    let value = x.toString()
     t.compareStrings(value, expected)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     x = d2.getText('test')
 
     exchangeUpdates([d1, d2])
@@ -59,9 +59,9 @@ export const testDeletes = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     /**
-     * @param {Y.YText} tc
+     * @param {Y.Text} tc
      */
     const x = d1.getText('test')
     let target = null
@@ -72,30 +72,30 @@ export const testObserver = tc => {
     }
     x.observe(callback)
 
-    // insert initial data to an empty YText
+    // insert initial data to an empty Text
     x.insert(0, 'abcd')
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{insert: 'abcd'}])
     target = null
     delta = null
 
     // remove 2 chars from the middle
     x.delete(1, 2)
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{retain: 1}, {delete: 2}])
     target = null
     delta = null
 
     // insert new item in the middle
     x.insert(1, 'e', {bold: true})
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{retain: 1}, {insert: 'e', attributes: {bold: true}}])
     target = null
     delta = null
 
     // remove formatting
     x.format(1, 1, {bold: null})
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{retain: 1}, {retain: 2, attributes: {bold: null}}])
     target = null
     delta = null
@@ -111,7 +111,7 @@ export const testObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testToDeltaEmbedAttributes = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const text = d1.getText('test')
 
     let delta = null
@@ -121,9 +121,9 @@ export const testToDeltaEmbedAttributes = tc => {
         origin = e.origin
     })
 
-    d1.transact(txn => {
-        text.insert(0, 'ab', {bold: true}, txn)
-        text.insertEmbed(1, {image: 'imageSrc.png'}, {width: 100}, txn)
+    Y.transact(d1, () => {
+        text.insert(0, 'ab', {bold: true})
+        text.insertEmbed(1, {image: 'imageSrc.png'}, {width: 100})
     }, 'TEST_ORIGIN')
     t.compare(delta, [
         {insert: 'a', attributes: {bold: true}},
@@ -138,7 +138,7 @@ export const testToDeltaEmbedAttributes = tc => {
  * @param {t.TestCase} tc
  */
 export const testMultilineFormat = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const testText = ydoc.getText('test')
     testText.insert(0, 'Test\nMulti-line\nFormatting')
     testText.applyDelta([
@@ -162,7 +162,7 @@ export const testMultilineFormat = tc => {
  * @param {t.TestCase} tc
  */
 export const testNotMergeEmptyLinesFormat = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const testText = ydoc.getText('test')
     testText.applyDelta([
         {insert: 'Text'},
@@ -182,7 +182,7 @@ export const testNotMergeEmptyLinesFormat = tc => {
  * @param {t.TestCase} tc
  */
 export const testGetDeltaWithEmbeds = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const text = ydoc.getText('test')
     text.applyDelta([{
         insert: {linebreak: 's'}
@@ -196,26 +196,26 @@ export const testGetDeltaWithEmbeds = tc => {
  * @param {t.TestCase} tc
  */
 export const testTypesAsEmbed = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
+    const doc0 = new Y.Doc({clientID: 1})
     const text0 = doc0.getText('test')
-    const doc1 = new Y.YDoc({clientID: 2})
+    const doc1 = new Y.Doc({clientID: 2})
     const text1 = doc1.getText('test')
     text0.applyDelta([{
-        insert: new Y.YMap({'key': 'val'})
+        insert: new Y.Map({'key': 'val'})
     }])
     let delta = text0.toDelta()
-    let json = delta[0].insert.toJson()
+    let json = delta[0].insert.toJSON()
     t.compare(json, {key: 'val'})
     let firedEvent = false
     text1.observe((event, txn) => {
         const d = event.delta
         t.assert(d.length === 1)
-        t.compare(d.map(x => (x.insert).toJson(txn)), [{key: 'val'}])
+        t.compare(d.map(x => (x.insert).toJSON(txn)), [{key: 'val'}])
         firedEvent = true
     })
     exchangeUpdates([doc0, doc1])
     delta = text1.toDelta()
-    json = delta[0].insert.toJson()
+    json = delta[0].insert.toJSON()
     t.assert(delta.length === 1)
     t.compare(json, {key: 'val'})
     t.assert(firedEvent, 'fired the event observer containing a Type-Embed')
@@ -225,7 +225,7 @@ export const testTypesAsEmbed = tc => {
  * @param {t.TestCase} tc
  */
 export const testSnapshot = tc => {
-    const doc0 = new Y.YDoc({clientID: 1, gc: false})
+    const doc0 = new Y.Doc({clientID: 1, gc: false})
     const text0 = doc0.getText('test')
     text0.applyDelta([
         {insert: 'abcd'}
@@ -265,7 +265,7 @@ export const testSnapshot = tc => {
  * @param {t.TestCase} tc
  */
 export const testSnapshotDeleteAfter = tc => {
-    const doc0 = new Y.YDoc({clientID: 1, gc: false})
+    const doc0 = new Y.Doc({clientID: 1, gc: false})
     const text0 = doc0.getText('test')
     text0.applyDelta([
         {insert: 'abcd'}

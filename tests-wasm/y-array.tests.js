@@ -7,7 +7,7 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testInserts = tc => {
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     t.compare(d1.id, 1)
     var x = d1.getArray('test');
 
@@ -16,15 +16,15 @@ export const testInserts = tc => {
 
     const expected = [1, 2.5, 'hello', ['world'], true, {key: 'value'}]
 
-    var value = x.toJson()
+    let value = x.toJSON()
     t.compare(value, expected)
 
-    const d2 = new Y.YDoc({clientID: 2})
+    const d2 = new Y.Doc({clientID: 2})
     x = d2.getArray('test');
 
     exchangeUpdates([d1, d2])
 
-    value = x.toJson()
+    value = x.toJSON()
     t.compare(value, expected)
 }
 
@@ -32,25 +32,25 @@ export const testInserts = tc => {
  * @param {t.TestCase} tc
  */
 export const testInsertsNested = tc => {
-    const d1 = new Y.YDoc()
-    var x = d1.getArray('test');
+    const d1 = new Y.Doc()
+    let x = /** @type {Y.Array} */ d1.getArray('test');
 
-    const nested = new Y.YArray();
+    const nested = new Y.Array();
     nested.push(['world'])
     x.insert(0, [1, 2, nested, 3, 4])
     nested.insert(0, ['hello'])
 
     const expected = [1, 2, ['hello', 'world'], 3, 4]
 
-    var value = x.toJson()
+    let value = x.toJSON()
     t.compare(value, expected)
 
-    const d2 = new Y.YDoc()
-    x = d2.getArray('test');
+    const d2 = new Y.Doc()
+    x = /** @type {Y.Array} */ d2.getArray('test');
 
     exchangeUpdates([d1, d2])
 
-    value = x.toJson()
+    value = x.toJSON()
     t.compare(value, expected)
 }
 
@@ -58,24 +58,24 @@ export const testInsertsNested = tc => {
  * @param {t.TestCase} tc
  */
 export const testDelete = tc => {
-    const d1 = new Y.YDoc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 1})
     t.compare(d1.id, 1)
-    var x = d1.getArray('test')
+    let x = /** @type {Y.Array} */  d1.getArray('test')
 
     x.insert(0, [1, 2, ['hello', 'world'], true])
     x.delete(1, 2)
 
     const expected = [1, true]
 
-    var value = x.toJson()
+    let value = x.toJSON()
     t.compare(value, expected)
 
-    const d2 = new Y.YDoc({clientID: 2})
-    x = d2.getArray('test')
+    const d2 = new Y.Doc({clientID: 2})
+    x = /** @type {Y.Array} */ d2.getArray('test')
 
     exchangeUpdates([d1, d2])
 
-    value = x.toJson()
+    value = x.toJSON()
     t.compare(value, expected)
 }
 
@@ -83,8 +83,8 @@ export const testDelete = tc => {
  * @param {t.TestCase} tc
  */
 export const testGet = tc => {
-    const d1 = new Y.YDoc()
-    const x = d1.getArray('test')
+    const d1 = new Y.Doc()
+    const x = /** @type {Y.Array} */ d1.getArray('test')
 
     x.insert(0, [1, 2, true])
     x.insert(1, ['hello', 'world'])
@@ -111,30 +111,28 @@ export const testGet = tc => {
  * @param {t.TestCase} tc
  */
 export const testIterator = tc => {
-    const d1 = new Y.YDoc()
-    const x = d1.getArray('test')
+    const d1 = new Y.Doc()
+    const x = /** @type {Y.Array} */ d1.getArray('test')
 
     x.insert(0, [1, 2, 3])
     t.compare(x.length(), 3)
 
     let i = 1;
-    let txn = d1.beginTransaction()
-    for (let v of x.values(txn)) {
+    for (let v of x.values()) {
         t.compare(v, i)
         i++
     }
-    txn.free()
 }
 
 /**
  * @param {t.TestCase} tc
  */
 export const testObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     /**
-     * @param {Y.YArray} tc
+     * @param {Y.Array} tc
      */
-    const x = d1.getArray('test')
+    const x = /** @type {Y.Array} */ d1.getArray('test')
     let target = null
     let delta = null
     let origin = null
@@ -145,11 +143,11 @@ export const testObserver = tc => {
     }
     x.observe(callback)
 
-    // insert initial data to an empty YArray
-    d1.transact((txn) => {
-        x.insert(0, [1, 2, 3, 4], txn)
+    // insert initial data to an empty Array
+    Y.transact(d1, () => {
+        x.insert(0, [1, 2, 3, 4])
     }, 'TEST_ORIGIN')
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{insert: [1, 2, 3, 4]}])
     t.compare(origin, 'TEST_ORIGIN')
     target = null
@@ -157,7 +155,7 @@ export const testObserver = tc => {
 
     // remove 2 items from the middle
     x.delete(1, 2)
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{retain: 1}, {delete: 2}])
     t.compare(origin, undefined)
     target = null
@@ -165,7 +163,7 @@ export const testObserver = tc => {
 
     // insert new item in the middle
     x.insert(1, [5])
-    t.compare(target.toJson(), x.toJson())
+    t.compare(target.toJSON(), x.toJSON())
     t.compare(delta, [{retain: 1}, {insert: [5]}])
     target = null
     delta = null
@@ -181,8 +179,8 @@ export const testObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserveDeepEventOrder = tc => {
-    const d1 = new Y.YDoc()
-    const arr = d1.getArray('array')
+    const d1 = new Y.Doc()
+    const arr = /** @type {Y.Array} */ d1.getArray('array')
 
     /**
      * @type {Array<any>}
@@ -191,10 +189,10 @@ export const testObserveDeepEventOrder = tc => {
     arr.observeDeep(events => {
         paths = events.map(e => e.path())
     })
-    arr.insert(0, [new Y.YMap()])
-    d1.transact(txn => {
-        arr.get(0, txn).set('a', 'a', txn)
-        arr.insert(0, [0], txn)
+    arr.insert(0, [new Y.Map()])
+    Y.transact(d1, () => {
+        arr.get(0).set('a', 'a')
+        arr.insert(0, [0])
     })
     t.compare(paths, [[], [1]])
 }
@@ -203,8 +201,8 @@ export const testObserveDeepEventOrder = tc => {
  * @param {t.TestCase} tc
  */
 export const testMove = tc => {
-    const d1 = new Y.YDoc()
-    const arr = d1.getArray('array')
+    const d1 = new Y.Doc()
+    const arr = /** @type {Y.Array} */ d1.getArray('array')
 
     let e = null
     arr.observe(event => {
@@ -212,7 +210,7 @@ export const testMove = tc => {
     })
     arr.insert(0, [1, 2, 3])
     arr.move(1, 0)
-    t.compare(arr.toJson(), [2, 1, 3])
+    t.compare(arr.toJSON(), [2, 1, 3])
     arr.move(0, 2)
-    t.compare(arr.toJson(), [1, 2, 3])
+    t.compare(arr.toJSON(), [1, 2, 3])
 }

@@ -13,24 +13,23 @@ const run = (tc, filename) => {
             ? zlib.gunzipSync(fs.readFileSync(filename))
             : fs.readFileSync(filename, 'utf-8')
     )
-    const doc = new Y.YDoc()
+    const doc = new Y.Doc()
     const text = doc.getText('text')
     if (startContent && startContent !== '') {
         text.push(startContent)
     }
     const start = performance.now()
     for (const {patches} of txns) {
-        let txn = doc.beginTransaction()
-        for (const [pos, del, chunk] of patches) {
-            if (del !== 0) {
-                text.delete(pos, del, txn)
+        Y.transact(doc, () => {
+            for (const [pos, del, chunk] of patches) {
+                if (del !== 0) {
+                    text.delete(pos, del)
+                }
+                if (chunk && chunk !== '') {
+                    text.insert(pos, chunk, null)
+                }
             }
-            if (chunk && chunk !== '') {
-                text.insert(pos, chunk, null, txn)
-            }
-        }
-        txn.commit()
-        txn.free()
+        })
     }
     const end = performance.now()
     console.log('execution time: ', (end - start), 'milliseconds')

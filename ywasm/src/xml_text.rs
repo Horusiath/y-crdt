@@ -1,21 +1,15 @@
 use crate::collection::SharedCollection;
-use crate::js::{Callback, Js, OptionDisposed, ValueRef, YRange};
-use crate::text::YText;
-use crate::transaction::Transaction;
-use crate::weak::YWeakLink;
+use crate::js::{Callback, Js, OptionDisposed, YRange};
+use crate::text::Text;
+use crate::weak::WeakLink;
 use crate::xml::XmlAttrs;
-use crate::xml_elem::YXmlElement;
 use crate::Snapshot;
 use gloo_utils::format::JsValueSerdeExt;
-use std::collections::HashMap;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::xml::XmlTextEvent;
 use yrs::types::{Attrs, TYPE_REFS_XML_TEXT};
-use yrs::{
-    DeepObservable, GetString, Observable, Quotable, Text, Transaction as YTransaction, Xml,
-    XmlTextRef,
-};
+use yrs::{DeepObservable, GetString, Observable, Quotable, Text as _, Xml, XmlTextRef};
 
 pub(crate) struct PrelimXmlText {
     pub attributes: Attrs,
@@ -39,14 +33,17 @@ pub(crate) struct PrelimXmlText {
 /// after merging all updates together). In case of Yrs conflict resolution is solved by using
 /// unique document id to determine correct and consistent ordering.
 #[wasm_bindgen]
-pub struct YXmlText(pub(crate) SharedCollection<PrelimXmlText, XmlTextRef>);
+pub struct XmlText(pub(crate) SharedCollection<PrelimXmlText, XmlTextRef>);
 
 #[wasm_bindgen]
-impl YXmlText {
+impl XmlText {
     #[wasm_bindgen(constructor)]
-    pub fn new(text: Option<String>, attributes: JsValue) -> crate::Result<YXmlText> {
-        let attributes = XmlAttrs::parse_attrs_any(attributes)?;
-        Ok(YXmlText(SharedCollection::prelim(PrelimXmlText {
+    pub fn new(text: Option<String>, attributes: Option<JsValue>) -> crate::Result<XmlText> {
+        let attributes = match attributes {
+            Some(attributes) => XmlAttrs::parse_attrs_any(attributes)?,
+            None => Attrs::default(),
+        };
+        Ok(XmlText(SharedCollection::prelim(PrelimXmlText {
             text: text.unwrap_or_default(),
             attributes,
         })))
@@ -101,7 +98,13 @@ impl YXmlText {
     /// Optional object with defined `attributes` will be used to wrap provided text `chunk`
     /// with a formatting blocks.
     #[wasm_bindgen(js_name = insert)]
-    pub fn insert(&mut self, index: u32, chunk: &str, attributes: JsValue) -> crate::Result<()> {
+    pub fn insert(
+        &mut self,
+        index: u32,
+        chunk: &str,
+        attributes: Option<JsValue>,
+    ) -> crate::Result<()> {
+        let attributes = attributes.unwrap_or(JsValue::UNDEFINED);
         match &mut self.0 {
             SharedCollection::Prelim(c) => {
                 if attributes.is_undefined() || attributes.is_null() {
@@ -115,7 +118,7 @@ impl YXmlText {
                 if attributes.is_undefined() || attributes.is_null() {
                     c.insert(txn, index, chunk);
                     Ok(())
-                } else if let Some(attrs) = YText::parse_fmt(attributes) {
+                } else if let Some(attrs) = Text::parse_fmt(attributes) {
                     c.insert_with_attributes(txn, index, chunk, attrs);
                     Ok(())
                 } else {
@@ -129,7 +132,7 @@ impl YXmlText {
     /// attributes.
     #[wasm_bindgen(js_name = format)]
     pub fn format(&self, index: u32, length: u32, attributes: JsValue) -> crate::Result<()> {
-        let attrs = match YText::parse_fmt(attributes) {
+        let attrs = match Text::parse_fmt(attributes) {
             Some(attrs) => attrs,
             None => return Err(JsValue::from_str(crate::js::errors::INVALID_FMT)),
         };
@@ -151,7 +154,7 @@ impl YXmlText {
         upper: Option<u32>,
         lower_open: Option<bool>,
         upper_open: Option<bool>,
-    ) -> crate::Result<YWeakLink> {
+    ) -> crate::Result<WeakLink> {
         match &self.0 {
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
@@ -163,7 +166,7 @@ impl YXmlText {
                     let quote = c
                         .quote(txn, range)
                         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    Ok(YWeakLink::from_prelim(quote, doc))
+                    Ok(WeakLink::from_prelim(quote, doc))
                 })
             }
         }
@@ -173,8 +176,8 @@ impl YXmlText {
     #[wasm_bindgen(js_name = toDelta)]
     pub fn to_delta(
         &self,
-        snapshot: JsValue,
-        prev_snapshot: JsValue,
+        snapshot: Option<JsValue>,
+        prev_snapshot: Option<JsValue>,
         compute_ychange: Option<js_sys::Function>,
     ) -> crate::Result<js_sys::Array> {
         match &self.0 {
@@ -184,12 +187,18 @@ impl YXmlText {
             SharedCollection::Integrated(c) => {
                 let doc = c.doc.clone();
                 c.transact(|c, txn| {
-                    let hi: Option<Snapshot> = snapshot
-                        .into_serde()
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    let lo: Option<Snapshot> = prev_snapshot
-                        .into_serde()
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                    let hi: Option<Snapshot> = match snapshot {
+                        None => None,
+                        Some(v) => v
+                            .into_serde()
+                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                    };
+                    let lo: Option<Snapshot> = match prev_snapshot {
+                        None => None,
+                        Some(v) => v
+                            .into_serde()
+                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                    };
                     let array = js_sys::Array::new();
                     let delta = c.diff_range(txn, hi.as_deref(), lo.as_deref(), |change| {
                         crate::js::convert::ychange_to_js(change, &compute_ychange).unwrap()
@@ -214,8 +223,9 @@ impl YXmlText {
         &self,
         index: u32,
         embed: JsValue,
-        attributes: JsValue,
+        attributes: Option<JsValue>,
     ) -> crate::Result<()> {
+        let attributes = attributes.unwrap_or(JsValue::UNDEFINED);
         match &self.0 {
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
@@ -224,7 +234,7 @@ impl YXmlText {
                 if attributes.is_undefined() || attributes.is_null() {
                     c.insert_embed(txn, index, Js::new(embed));
                     Ok(())
-                } else if let Some(attrs) = YText::parse_fmt(attributes) {
+                } else if let Some(attrs) = Text::parse_fmt(attributes) {
                     c.insert_embed_with_attributes(txn, index, Js::new(embed), attrs);
                     Ok(())
                 } else {
@@ -239,7 +249,8 @@ impl YXmlText {
     /// Optional object with defined `attributes` will be used to wrap provided text `chunk`
     /// with a formatting blocks.
     #[wasm_bindgen(js_name = push)]
-    pub fn push(&mut self, chunk: &str, attributes: JsValue) -> crate::Result<()> {
+    pub fn push(&mut self, chunk: &str, attributes: Option<JsValue>) -> crate::Result<()> {
+        let attributes = attributes.unwrap_or(JsValue::UNDEFINED);
         match &mut self.0 {
             SharedCollection::Prelim(c) => {
                 if attributes.is_undefined() || attributes.is_null() {
@@ -253,7 +264,7 @@ impl YXmlText {
                 if attributes.is_undefined() || attributes.is_null() {
                     c.push(txn, chunk);
                     Ok(())
-                } else if let Some(attrs) = YText::parse_fmt(attributes) {
+                } else if let Some(attrs) = Text::parse_fmt(attributes) {
                     let len = c.len(txn);
                     c.insert_with_attributes(txn, len, chunk, attrs);
                     Ok(())
@@ -558,7 +569,7 @@ impl YXmlTextEvent {
         let target = self.inner.target();
         let doc = self.doc.clone();
         let js = self.target.get_or_insert_with(|| {
-            YXmlText(SharedCollection::integrated(target.clone(), doc)).into()
+            XmlText(SharedCollection::integrated(target.clone(), doc)).into()
         });
         js.clone()
     }

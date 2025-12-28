@@ -1,16 +1,14 @@
 use crate::collection::{Integrated, SharedCollection};
 use crate::js;
 use crate::js::{Callback, Js, OptionDisposed};
-use crate::text::YText;
-use crate::transaction::Transaction;
-use crate::weak::YWeakLink;
+use crate::weak::WeakLink;
 use gloo_utils::format::JsValueSerdeExt;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::map::MapEvent;
 use yrs::types::{ToJson, TYPE_REFS_MAP};
-use yrs::{DeepObservable, Map, MapRef, Observable, SharedRef};
+use yrs::{DeepObservable, Map as YMap, MapRef, Observable, SharedRef};
 
 /// Collection used to store key-value entries in an unordered manner. Keys are always represented
 /// as UTF-8 strings. Values can be any value type supported by Yrs: JSON-like primitives as well as
@@ -21,10 +19,10 @@ use yrs::{DeepObservable, Map, MapRef, Observable, SharedRef};
 /// by different peers are resolved into a single value using document id seniority to establish
 /// order.
 #[wasm_bindgen]
-pub struct YMap(pub(crate) SharedCollection<HashMap<String, JsValue>, MapRef>);
+pub struct Map(pub(crate) SharedCollection<HashMap<String, JsValue>, MapRef>);
 
 #[wasm_bindgen]
-impl YMap {
+impl Map {
     /// Creates a new preliminary instance of a `YMap` shared data type, with its state
     /// initialized to provided parameter.
     ///
@@ -46,7 +44,7 @@ impl YMap {
         } else {
             HashMap::new()
         };
-        YMap(SharedCollection::prelim(map))
+        Map(SharedCollection::prelim(map))
     }
 
     #[wasm_bindgen(getter, js_name = type)]
@@ -91,7 +89,7 @@ impl YMap {
     }
 
     /// Converts contents of this `YMap` instance into a JSON representation.
-    #[wasm_bindgen(js_name = toJson)]
+    #[wasm_bindgen(js_name = toJSON)]
     pub fn to_json(&self) -> crate::Result<JsValue> {
         match &self.0 {
             SharedCollection::Prelim(c) => {
@@ -169,7 +167,7 @@ impl YMap {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let link = target.link(tx, key);
                     match link {
-                        Some(link) => Ok(YWeakLink::from_prelim(link, c.doc.clone()).into()),
+                        Some(link) => Ok(WeakLink::from_prelim(link, c.doc.clone()).into()),
                         None => Err(JsValue::from_str(js::errors::KEY_NOT_FOUND)),
                     }
                 })
@@ -340,7 +338,7 @@ impl YMapEvent {
     pub fn target(&mut self) -> JsValue {
         let target = self.inner.target();
         let hook = target.hook();
-        let text_ref = YMap(SharedCollection::Integrated(Integrated {
+        let text_ref = Map(SharedCollection::Integrated(Integrated {
             hook,
             doc: self.doc.clone(),
         }));

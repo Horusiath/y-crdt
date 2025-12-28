@@ -2,19 +2,19 @@ import {exchangeUpdates} from './testHelper.js' // eslint-disable-line
 
 import * as Y from 'ywasm'
 import * as t from 'lib0/testing'
-import {YXmlElement} from "ywasm";
+import {XmlElement} from "ywasm";
 
 /**
  * @param {t.TestCase} tc
  */
 export const testInsert = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
-    d1.transact(txn => {
-        root.push(new Y.YXmlElement('p', {}, [
-            new Y.YXmlText('hello')
-        ]), txn)
-        root.push(new Y.YXmlText('world'), txn)
+    Y.transact(d1, txn => {
+        root.push(new Y.XmlElement('p', {}, [
+            new Y.XmlText('hello')
+        ]))
+        root.push(new Y.XmlText('world'))
     })
 
     const s = root.toString()
@@ -26,16 +26,16 @@ export const testInsert = tc => {
  * @param {t.TestCase} tc
  */
 export const testAttributes = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
-    const xml = new Y.YXmlElement('div', {}, [])
+    const xml = new Y.XmlElement('div', {}, [])
     root.push(xml)
-    let actual = d1.transact(txn => {
-        xml.setAttribute('key1', 'value1', txn)
-        xml.setAttribute('key2', 'value2', txn)
+    let actual = Y.transact(d1, () => {
+        xml.setAttribute('key1', 'value1')
+        xml.setAttribute('key2', 'value2')
 
         let obj = {}
-        let attrs = xml.attributes(txn);
+        let attrs = xml.attributes();
         for (let key in attrs) {
             // we test iterator here
             obj[key] = attrs[key]
@@ -48,11 +48,11 @@ export const testAttributes = tc => {
         key2: 'value2'
     })
 
-    actual = d1.transact(txn => {
-        xml.removeAttribute('key1', txn)
+    actual = Y.transact(d1, () => {
+        xml.removeAttribute('key1')
         return {
-            key1: xml.getAttribute('key1', txn),
-            key2: xml.getAttribute('key2', txn)
+            key1: xml.getAttribute('key1'),
+            key2: xml.getAttribute('key2')
         }
     })
 
@@ -63,17 +63,17 @@ export const testAttributes = tc => {
 }
 
 export const testAttributesAny = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
-    const xml = new Y.YXmlElement('div', {}, [])
+    const xml = new Y.XmlElement('div', {}, [])
     root.push(xml)
-    let actual = d1.transact(txn => {
-        xml.setAttribute('key1', true, txn)
-        xml.setAttribute('key2', 42, txn)
-        xml.setAttribute('key3', null, txn)
+    let actual = Y.transact(d1, txn => {
+        xml.setAttribute('key1', true)
+        xml.setAttribute('key2', 42)
+        xml.setAttribute('key3', null)
 
         let obj = {}
-        let attrs = xml.attributes(txn);
+        let attrs = xml.attributes();
         for (let key in attrs) {
             // we test iterator here
             obj[key] = attrs[key]
@@ -87,12 +87,12 @@ export const testAttributesAny = tc => {
         key3: null
     })
 
-    actual = d1.transact(txn => {
-        xml.removeAttribute('key1', txn)
+    actual = Y.transact(d1, () => {
+        xml.removeAttribute('key1')
         return {
-            key1: xml.getAttribute('key1', txn),
-            key2: xml.getAttribute('key2', txn),
-            key3: xml.getAttribute('key3', txn)
+            key1: xml.getAttribute('key1'),
+            key2: xml.getAttribute('key2'),
+            key3: xml.getAttribute('key3')
         }
     })
 
@@ -104,20 +104,20 @@ export const testAttributesAny = tc => {
 }
 
 export const testAttributesPrelim = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
 
     let xml
-    let actual = d1.transact(txn => {
-        xml  = new Y.YXmlElement('div', {}, [])
-        xml.setAttribute('key1', true, txn)
-        xml.setAttribute('key2', 42, txn)
-        xml.setAttribute('key3', null, txn)
+    let actual = Y.transact(d1, () => {
+        xml = new Y.XmlElement('div', {}, [])
+        xml.setAttribute('key1', true)
+        xml.setAttribute('key2', 42)
+        xml.setAttribute('key3', null)
 
-        root.push(xml, txn)
+        root.push(xml)
 
         let obj = {}
-        let attrs = xml.attributes(txn);
+        let attrs = xml.attributes();
         for (let key in attrs) {
             // we test iterator here
             obj[key] = attrs[key]
@@ -131,12 +131,12 @@ export const testAttributesPrelim = tc => {
         key3: null
     })
 
-    actual = d1.transact(txn => {
-        xml.removeAttribute('key1', txn)
+    actual = Y.transact(d1, () => {
+        xml.removeAttribute('key1')
         return {
-            key1: xml.getAttribute('key1', txn),
-            key2: xml.getAttribute('key2', txn),
-            key3: xml.getAttribute('key3', txn)
+            key1: xml.getAttribute('key1'),
+            key2: xml.getAttribute('key2'),
+            key3: xml.getAttribute('key3')
         }
     })
 
@@ -148,9 +148,9 @@ export const testAttributesPrelim = tc => {
 }
 
 export const testAttributesCtor = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
-    const xml = new Y.YXmlElement('div', { "key1": false}, [])
+    const xml = new Y.XmlElement('div', {"key1": false}, [])
     root.push(xml)
 
     let attrs = xml.attributes();
@@ -169,14 +169,14 @@ export const testAttributesCtor = tc => {
  * @param {t.TestCase} tc
  */
 export const testSiblings = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
-    const first = d1.transact(txn => {
-        const a = new Y.YXmlElement('p', {}, [
-            new Y.YXmlText('hello')
+    const first = Y.transact(d1, () => {
+        const a = new Y.XmlElement('p', {}, [
+            new Y.XmlText('hello')
         ])
-        root.push(a, txn)
-        root.push(new Y.YXmlText('world'), txn)
+        root.push(a)
+        root.push(new Y.XmlText('world'))
 
         return a
     })
@@ -197,19 +197,19 @@ export const testSiblings = tc => {
  * @param {t.TestCase} tc
  */
 export const testTreeWalker = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const root = d1.getXmlFragment('test')
-    d1.transact(txn => {
-        root.push(new Y.YXmlElement('p', {}, [
-            new Y.YXmlText('hello')
-        ]), txn)
-        root.push(new Y.YXmlText('world'), txn)
+    Y.transact(d1, () => {
+        root.push(new Y.XmlElement('p', {}, [
+            new Y.XmlText('hello')
+        ]))
+        root.push(new Y.XmlText('world'))
     })
 
     const actual = []
-    d1.transact(txn => {
-        for (let child of root.treeWalker(txn)) {
-            let str = child.toString(txn)
+    Y.transact(d1, () => {
+        for (let child of root.treeWalker()) {
+            let str = child.toString()
             actual.push(str)
         }
     })
@@ -226,9 +226,9 @@ export const testTreeWalker = tc => {
  * @param {t.TestCase} tc
  */
 export const testXmlTextObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const f = d1.getXmlFragment('test');
-    const x = new Y.YXmlText()
+    const x = new Y.XmlText()
     f.push(x)
     let target = null
     let attributes = null
@@ -243,9 +243,9 @@ export const testXmlTextObserver = tc => {
     x.observe(callback)
 
     // set initial attributes
-    d1.transact(txn => {
-        x.setAttribute('attr1', 'value1', txn)
-        x.setAttribute('attr2', 'value2', txn)
+    Y.transact(d1, () => {
+        x.setAttribute('attr1', 'value1')
+        x.setAttribute('attr2', 'value2')
     }, 'TEST_ORIGIN')
     t.compare(target.toString(), x.toString())
     t.compare(delta, [])
@@ -259,9 +259,9 @@ export const testXmlTextObserver = tc => {
     delta = null
 
     // update attributes
-    d1.transact(txn => {
-        x.setAttribute('attr1', 'value11', txn)
-        x.removeAttribute('attr2', txn)
+    Y.transact(d1, () => {
+        x.setAttribute('attr1', 'value11')
+        x.removeAttribute('attr2')
     }, 'TEST_ORIGIN2')
     t.compare(target.toString(), x.toString())
     t.compare(delta, [])
@@ -312,9 +312,9 @@ export const testXmlTextObserver = tc => {
  * @param {t.TestCase} tc
  */
 export const testXmlElementObserver = tc => {
-    const d1 = new Y.YDoc()
+    const d1 = new Y.Doc()
     const f = d1.getXmlFragment('test');
-    const x = new Y.YXmlElement('div')
+    const x = new Y.XmlElement('div')
     f.push(x)
     let target = null
     let attributes = null
@@ -327,9 +327,9 @@ export const testXmlElementObserver = tc => {
     x.observe(callback)
 
     // insert initial attributes
-    d1.transact(txn => {
-        x.setAttribute('attr1', 'value1', txn)
-        x.setAttribute('attr2', 'value2', txn)
+    Y.transact(d1, () => {
+        x.setAttribute('attr1', 'value1')
+        x.setAttribute('attr2', 'value2')
     })
     t.compare(target.toString(), x.toString())
     t.compare(nodes, [])
@@ -342,9 +342,9 @@ export const testXmlElementObserver = tc => {
     nodes = null
 
     // update attributes
-    d1.transact(txn => {
-        x.setAttribute('attr1', 'value11', txn)
-        x.removeAttribute('attr2', txn)
+    Y.transact(d1, () => {
+        x.setAttribute('attr1', 'value11')
+        x.removeAttribute('attr2')
     })
     t.compare(target.toString(), x.toString())
     t.compare(nodes, [])
@@ -357,9 +357,9 @@ export const testXmlElementObserver = tc => {
     nodes = null
 
     // add children
-    d1.transact(txn => {
-        x.push(new Y.YXmlElement('div'), txn)
-        x.push(new Y.YXmlElement('p'), txn)
+    Y.transact(d1, txn => {
+        x.push(new Y.XmlElement('div'))
+        x.push(new Y.XmlElement('p'))
     })
     t.compare(target.toString(), x.toString())
     t.compare(nodes[0].insert.length, 2) // [{ insert: [div, p] }]
@@ -378,7 +378,7 @@ export const testXmlElementObserver = tc => {
     nodes = null
 
     // insert child again
-    let txt = new Y.YXmlText()
+    let txt = new Y.XmlText()
     x.push(txt)
     t.compare(target.toString(), x.toString())
     t.compare(nodes[0], {retain: 1});
@@ -390,7 +390,7 @@ export const testXmlElementObserver = tc => {
 
     // free the observer and make sure that callback is no longer called
     t.assert(x.unobserve(callback), 'unobserve failed')
-    x.insert(0, new Y.YXmlElement('head'))
+    x.insert(0, new Y.XmlElement('head'))
     t.compare(target, null)
     t.compare(nodes, null)
     t.compare(attributes, null)

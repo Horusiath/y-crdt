@@ -7,20 +7,20 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testBasicMap = tc => {
-    const doc = new Y.YDoc({clientID: 1})
-    const map = doc.getMap('map')
+    const doc = new Y.Doc({clientID: 1})
+    const map = /** @type {Y.Map} */ doc.getMap('map')
 
-    const nested = new Y.YMap()
+    const nested = new Y.Map()
     nested.set('a1', 'hello')
     map.set('a', nested)
     const link = map.link('a')
     map.set('b', link)
 
-    const link2 = /** @type {Y.YWeakLink} */ (map.get('b'))
-    const expected = nested.toJson()
-    const actual = doc.transact((txn) => {
-        const map = link2.deref(txn)
-        return map.toJson(txn)
+    const link2 = /** @type {Y.WeakLink} */ (map.get('b'))
+    const expected = nested.toJSON()
+    const actual = Y.transact(doc, () => {
+        const map = link2.deref()
+        return map.toJSON()
     })
     t.compare(actual, expected)
 }
@@ -29,10 +29,10 @@ export const testBasicMap = tc => {
  * @param {t.TestCase} tc
  */
 export const testBasicArray = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
+    const doc0 = new Y.Doc({clientID: 1})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
     array0.insert(0, [1, 2, 3])
     const link = array0.quote(1, 1)
     array0.insert(3, [link])
@@ -54,22 +54,22 @@ export const testBasicArray = tc => {
  * @param {t.TestCase} tc
  */
 export const testArrayQuoteMultipleElements = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
-    const nested = new Y.YMap({'key': 'value'})
+    const doc0 = new Y.Doc({clientID: 1})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
+    const nested = new Y.Map({'key': 'value'})
     array0.insert(0, [1, 2, nested, 3])
     array0.insert(0, [array0.quote(1, 3)])
 
     const link0 = array0.get(0)
     let u = link0.unquote()
     t.compare(u[0], 2)
-    t.compare(u[1].toJson(), {'key': 'value'})
+    t.compare(u[1].toJSON(), {'key': 'value'})
     t.compare(u[2], 3)
     t.compare(array0.get(1), 1)
     t.compare(array0.get(2), 2)
-    t.compare(array0.get(3).toJson(), {'key': 'value'})
+    t.compare(array0.get(3).toJSON(), {'key': 'value'})
     t.compare(array0.get(4), 3)
 
     exchangeUpdates([doc0, doc1])
@@ -77,11 +77,11 @@ export const testArrayQuoteMultipleElements = tc => {
     const link1 = array1.get(0)
     u = link1.unquote()
     t.compare(u[0], 2)
-    t.compare(u[1].toJson(), {'key': 'value'})
+    t.compare(u[1].toJSON(), {'key': 'value'})
     t.compare(u[2], 3)
     t.compare(array1.get(1), 1)
     t.compare(array1.get(2), 2)
-    t.compare(array1.get(3).toJson(), {'key': 'value'})
+    t.compare(array1.get(3).toJSON(), {'key': 'value'})
     t.compare(array1.get(4), 3)
 
     array1.insert(3, ['A', 'B'])
@@ -89,7 +89,7 @@ export const testArrayQuoteMultipleElements = tc => {
     t.compare(u[0], 2)
     t.compare(u[1], 'A')
     t.compare(u[2], 'B')
-    t.compare(u[3].toJson(), {'key': 'value'})
+    t.compare(u[3].toJSON(), {'key': 'value'})
     t.compare(u[4], 3)
 
     exchangeUpdates([doc0, doc1])
@@ -98,7 +98,7 @@ export const testArrayQuoteMultipleElements = tc => {
     t.compare(u[0], 2)
     t.compare(u[1], 'A')
     t.compare(u[2], 'B')
-    t.compare(u[3].toJson(), {'key': 'value'})
+    t.compare(u[3].toJSON(), {'key': 'value'})
     t.compare(u[4], 3)
 }
 
@@ -106,10 +106,10 @@ export const testArrayQuoteMultipleElements = tc => {
  * @param {t.TestCase} tc
  */
 export const testSelfQuotation = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
+    const doc0 = new Y.Doc({clientID: 1})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
     array0.insert(0, [1, 2, 3, 4])
     const link0 = array0.quote(0, 3, false, true)
     array0.insert(1, [link0]) // link is inserted into its own range
@@ -142,26 +142,26 @@ export const testSelfQuotation = tc => {
  * @param {t.TestCase} tc
  */
 export const testUpdate = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const map1 = doc1.getMap('map')
-    map0.set('a', new Y.YMap([['a1', 'hello']]))
-    const link0 = /** @type {Y.YWeakLink} */ (map0.link('a'))
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const doc1 = new Y.Doc({clientID: 2})
+    const map1 = /** @type {Y.Map} */ doc1.getMap('map')
+    map0.set('a', new Y.Map([['a1', 'hello']]))
+    const link0 = /** @type {Y.WeakLink} */ (map0.link('a'))
     map0.set('b', link0)
 
     exchangeUpdates([doc0, doc1])
-    const link1 = /** @type {Y.YWeakLink} */ (map1.get('b'))
-    let l1 = /** @type {Y.YMap} */ (link1.deref())
-    let l0 = /** @type {Y.YMap} */ (link0.deref())
+    const link1 = /** @type {Y.WeakLink} */ (map1.get('b'))
+    let l1 = /** @type {Y.Map} */ (link1.deref())
+    let l0 = /** @type {Y.Map} */ (link0.deref())
     t.compare(l1.get('a1'), l0.get('a1'))
 
     map1.get('a').set('a2', 'world')
 
     exchangeUpdates([doc0, doc1])
 
-    l1 = /** @type {Y.YMap} */ (link1.deref())
-    l0 = /** @type {Y.YMap} */ (link0.deref())
+    l1 = /** @type {Y.Map} */ (link1.deref())
+    l0 = /** @type {Y.Map} */ (link0.deref())
     t.compare(l1.get('a2'), l0.get('a2'))
 }
 
@@ -169,19 +169,19 @@ export const testUpdate = tc => {
  * @param {t.TestCase} tc
  */
 export const testDeleteWeakLink = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const map1 = doc1.getMap('map')
-    map0.set('a', new Y.YMap([['a1', 'hello']]))
-    const link0 = /** @type {Y.YWeakLink} */ (map0.link('a'))
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const doc1 = new Y.Doc({clientID: 2})
+    const map1 = /** @type {Y.Map} */ doc1.getMap('map')
+    map0.set('a', new Y.Map([['a1', 'hello']]))
+    const link0 = /** @type {Y.WeakLink} */ (map0.link('a'))
     map0.set('b', link0)
 
     exchangeUpdates([doc0, doc1])
 
-    const link1 = /** @type {Y.YWeakLink} */ map1.get('b')
-    const l1 = /** @type {Y.YMap} */ (link1.deref())
-    const l0 = /** @type {Y.YMap} */ (link0.deref())
+    const link1 = /** @type {Y.WeakLink} */ map1.get('b')
+    const l1 = /** @type {Y.Map} */ (link1.deref())
+    const l0 = /** @type {Y.Map} */ (link0.deref())
     t.compare(l1.get('a1'), l0.get('a1'))
 
     map1.delete('b') // delete links
@@ -198,18 +198,18 @@ export const testDeleteWeakLink = tc => {
  * @param {t.TestCase} tc
  */
 export const testDeleteSource = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const map1 = doc1.getMap('map')
-    map0.set('a', new Y.YMap([['a1', 'hello']]))
-    const link0 = /** @type {Y.YWeakLink} */ (map0.link('a'))
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const doc1 = new Y.Doc({clientID: 2})
+    const map1 = /** @type {Y.Map} */ doc1.getMap('map')
+    map0.set('a', new Y.Map([['a1', 'hello']]))
+    const link0 = /** @type {Y.WeakLink} */ (map0.link('a'))
     map0.set('b', link0)
 
     exchangeUpdates([doc0, doc1])
-    const link1 = /** @type {Y.YWeakLink} */ (map1.get('b'))
-    let l1 = /** @type {Y.YMap} */ (link1.deref())
-    let l0 = /** @type {Y.YMap} */ (link0.deref())
+    const link1 = /** @type {Y.WeakLink} */ (map1.get('b'))
+    let l1 = /** @type {Y.Map} */ (link1.deref())
+    let l0 = /** @type {Y.Map} */ (link0.deref())
     t.compare(l1.get('a1'), l0.get('a1'))
 
     map1.delete('a') // delete source of the link
@@ -225,12 +225,12 @@ export const testDeleteSource = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserveMapUpdate = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const map1 = doc1.getMap('map')
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const doc1 = new Y.Doc({clientID: 2})
+    const map1 = /** @type {Y.Map} */ doc1.getMap('map')
     map0.set('a', 'value')
-    const link0 = /** @type {Y.YWeakLink} */ (map0.link('a'))
+    const link0 = /** @type {Y.WeakLink} */ (map0.link('a'))
     map0.set('b', link0)
     /**
      * @type {any}
@@ -240,7 +240,7 @@ export const testObserveMapUpdate = tc => {
 
     exchangeUpdates([doc0, doc1])
 
-    let link1 = /** @type {Y.YWeakLink} */ (map1.get('b'))
+    let link1 = /** @type {Y.WeakLink} */ (map1.get('b'))
     t.compare(link1.deref(), 'value')
     /**
      * @type {any}
@@ -259,12 +259,12 @@ export const testObserveMapUpdate = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserveMapDelete = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const map1 = doc1.getMap('map')
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const doc1 = new Y.Doc({clientID: 2})
+    const map1 = /** @type {Y.Map} */ doc1.getMap('map')
     map0.set('a', 'value')
-    const link0 = /** @type {Y.YWeakLink} */ (map0.link('a'))
+    const link0 = /** @type {Y.WeakLink} */ (map0.link('a'))
     map0.set('b', link0)
     /**
      * @type {any}
@@ -274,7 +274,7 @@ export const testObserveMapDelete = tc => {
 
     exchangeUpdates([doc0, doc1])
 
-    let link1 = /** @type {Y.YWeakLink} */ (map1.get('b'))
+    let link1 = /** @type {Y.WeakLink} */ (map1.get('b'))
     t.compare(link1.deref(), 'value')
     /**
      * @type {any}
@@ -292,12 +292,12 @@ export const testObserveMapDelete = tc => {
  * @param {t.TestCase} tc
  */
 export const testObserveArray = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
+    const doc0 = new Y.Doc({clientID: 1})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
     array0.insert(0, ['A', 'B', 'C'])
-    const link0 = /** @type {Y.YWeakLink} */ (array0.quote(1, 2))
+    const link0 = /** @type {Y.WeakLink} */ (array0.quote(1, 2))
     array0.insert(0, [link0])
     /**
      * @type {any}
@@ -307,7 +307,7 @@ export const testObserveArray = tc => {
 
     exchangeUpdates([doc0, doc1])
 
-    let link1 = /** @type {Y.YWeakLink} */ (array1.get(0))
+    let link1 = /** @type {Y.WeakLink} */ (array1.get(0))
     t.compare(link1.unquote(), ['B', 'C'])
     /**
      * @type {any}
@@ -337,7 +337,7 @@ export const testObserveArray = tc => {
  */
 export const testDeepObserveTransitive = tc => {
     // test observers in a face of linked chains of values
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
 
     /*
        Structure:
@@ -348,13 +348,13 @@ export const testDeepObserveTransitive = tc => {
            - link-link: <--+
      */
 
-    const map1 = doc.getMap('map1')
-    const map2 = doc.getMap('map2')
+    const map1 = /** @type {Y.Map} */ doc.getMap('map1')
+    const map2 = /** @type {Y.Map} */ doc.getMap('map2')
 
     map2.set('key', 'value1')
-    const link1 = /** @type {Y.YWeakLink} */ (map2.link('key'))
+    const link1 = /** @type {Y.WeakLink} */ (map2.link('key'))
     map1.set('link-key', link1)
-    const link2 =  /** @type {Y.YWeakLink} */ (map1.link('link-key'))
+    const link2 =  /** @type {Y.WeakLink} */ (map1.link('link-key'))
     map2.set('link-link', link2)
 
     /**
@@ -365,7 +365,7 @@ export const testDeepObserveTransitive = tc => {
         events = []
         for (let e of evts) {
             switch (e.constructor) {
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     events.push(e.target)
                     break;
                 default:
@@ -382,7 +382,7 @@ export const testDeepObserveTransitive = tc => {
  */
 export const testDeepObserveTransitive2 = tc => {
     // test observers in a face of multi-layer linked chains of values
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
 
     /*
        Structure:
@@ -395,16 +395,16 @@ export const testDeepObserveTransitive2 = tc => {
            - link-link-link:<-+
      */
 
-    const map1 = doc.getMap('map1')
-    const map2 = doc.getMap('map2')
-    const map3 = doc.getMap('map3')
+    const map1 = /** @type {Y.Map} */ doc.getMap('map1')
+    const map2 = /** @type {Y.Map} */ doc.getMap('map2')
+    const map3 = /** @type {Y.Map} */ doc.getMap('map3')
 
     map2.set('key', 'value1')
-    const link1 = /** @type {Y.YWeakLink} */ (map2.link('key'))
+    const link1 = /** @type {Y.WeakLink} */ (map2.link('key'))
     map1.set('link-key', link1)
-    const link2 =  /** @type {Y.YWeakLink} */ (map1.link('link-key'))
+    const link2 =  /** @type {Y.WeakLink} */ (map1.link('link-key'))
     map2.set('link-link', link2)
-    const link3 =  /** @type {Y.YWeakLink} */ (map2.link('link-link'))
+    const link3 =  /** @type {Y.WeakLink} */ (map2.link('link-link'))
     map3.set('link-link-link', link3)
 
     /**
@@ -415,7 +415,7 @@ export const testDeepObserveTransitive2 = tc => {
         events = []
         for (let e of evts) {
             switch (e.constructor) {
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     events.push(e.target)
                     break;
                 default:
@@ -433,7 +433,7 @@ export const testDeepObserveTransitive2 = tc => {
  */
 export const testDeepObserveMap = tc => {
     // test observers in a face of linked chains of values
-    const doc = new Y.YDoc()
+    const doc = new Y.Doc()
     /*
        Structure:
          - map (observed):
@@ -442,8 +442,8 @@ export const testDeepObserveMap = tc => {
             0: nested:-+
               - key: value
      */
-    const map = doc.getMap('map')
-    const array = doc.getArray('array')
+    const map = /** @type {Y.Map} */ doc.getMap('map')
+    const array = /** @type {Y.Array} */ doc.getArray('array')
 
     /**
      * @type {Array<any>}
@@ -456,7 +456,7 @@ export const testDeepObserveMap = tc => {
                 case Y.YMapEvent:
                     events.push({target: e.target, keys: e.keys})
                     break;
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     events.push({target: e.target})
                     break;
                 default:
@@ -465,7 +465,7 @@ export const testDeepObserveMap = tc => {
         }
     })
 
-    const nested = new Y.YMap()
+    const nested = new Y.Map()
     array.insert(0, [nested])
     const link = array.quote(0, 0)
     map.set('link', link)
@@ -474,14 +474,14 @@ export const testDeepObserveMap = tc => {
     events = []
     nested.set('key', 'value')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), nested.toJson())
+    t.compare(events[0].target.toJSON(), nested.toJSON())
     t.compare(events[0].keys, {'key': {action: 'add', newValue: 'value'}})
 
     // delete entry in linked map
     events = []
     nested.delete('key')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), nested.toJson())
+    t.compare(events[0].target.toJSON(), nested.toJSON())
     t.compare(events[0].keys, {'key': {action: 'delete', oldValue: 'value'}})
 
     // delete linked map
@@ -495,7 +495,7 @@ export const testDeepObserveMap = tc => {
  * @param {t.TestCase} tc
  */
 export const testDeepObserveArray = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     /*
        Structure:
          - map:
@@ -504,10 +504,10 @@ export const testDeepObserveArray = tc => {
          - array (observed): |
            0: <--------------+
      */
-    const map = doc.getMap('map')
-    const array = doc.getArray('array')
+    const map = /** @type {Y.Map} */ doc.getMap('map')
+    const array = /** @type {Y.Array} */ doc.getArray('array')
 
-    const nested = new Y.YMap()
+    const nested = new Y.Map()
     map.set('nested', nested)
     const link = map.link('nested')
     array.insert(0, [link])
@@ -523,7 +523,7 @@ export const testDeepObserveArray = tc => {
                 case Y.YMapEvent:
                     events.push({target: e.target, keys: e.keys})
                     break;
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     events.push({target: e.target})
                     break;
                 default:
@@ -536,18 +536,18 @@ export const testDeepObserveArray = tc => {
     events = []
     nested.set('key', 'value')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), nested.toJson())
+    t.compare(events[0].target.toJSON(), nested.toJSON())
     t.compare(events[0].keys, {'key': {action: 'add', newValue: 'value'}})
 
     nested.set('key', 'value2')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), nested.toJson())
+    t.compare(events[0].target.toJSON(), nested.toJSON())
     t.compare(events[0].keys, {'key': {action: 'update', newValue: 'value2', oldValue: 'value'}})
 
     // delete entry in linked map
     nested.delete('key')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), nested.toJson())
+    t.compare(events[0].target.toJSON(), nested.toJSON())
     t.compare(events[0].keys, {'key': {action: 'delete', oldValue: 'value2'}})
 
     // delete linked map
@@ -560,12 +560,12 @@ export const testDeepObserveArray = tc => {
  * @param {t.TestCase} tc
  */
 export const testDeepObserveNewElementWithinQuotedRange = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
-    const m1 = new Y.YMap()
-    const m3 = new Y.YMap()
+    const doc0 = new Y.Doc({clientID: 1})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
+    const m1 = new Y.Map()
+    const m3 = new Y.Map()
     array0.insert(0, [1, m1, m3, 2])
     const link0 = array0.quote(1, 2)
     array0.insert(0, [link0])
@@ -583,7 +583,7 @@ export const testDeepObserveNewElementWithinQuotedRange = tc => {
                 case Y.YMapEvent:
                     e0.push({target: e.target, keys: e.keys})
                     break;
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     e0.push({target: e.target})
                     break;
                 default:
@@ -592,7 +592,7 @@ export const testDeepObserveNewElementWithinQuotedRange = tc => {
         }
     })
 
-    const link1 = /** @type {Y.YWeakLink} */ (array1.get(0))
+    const link1 = /** @type {Y.WeakLink} */ (array1.get(0))
     /**
      * @type {Array<any>}
      */
@@ -604,7 +604,7 @@ export const testDeepObserveNewElementWithinQuotedRange = tc => {
                 case Y.YMapEvent:
                     e1.push({target: e.target, keys: e.keys})
                     break;
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     e1.push({target: e.target})
                     break;
                 default:
@@ -613,21 +613,21 @@ export const testDeepObserveNewElementWithinQuotedRange = tc => {
         }
     })
 
-    const m20 = new Y.YMap()
+    const m20 = new Y.Map()
     array0.insert(3, [m20])
 
     exchangeUpdates([doc0, doc1])
 
     m20.set('key', 'value')
     t.compare(e0.length, 1)
-    t.compare(e0[0].target.toJson(), m20.toJson())
+    t.compare(e0[0].target.toJSON(), m20.toJSON())
     t.compare(e0[0].keys, {'key': {action: 'add', newValue: 'value'}})
 
     exchangeUpdates([doc0, doc1])
 
     const m21 = array1.get(3)
     t.compare(e1.length, 1)
-    t.compare(e1[0].target.toJson(), m21.toJson())
+    t.compare(e1[0].target.toJSON(), m21.toJSON())
     t.compare(e1[0].keys, {'key': {action: 'add', newValue: 'value'}})
 }
 
@@ -635,9 +635,9 @@ export const testDeepObserveNewElementWithinQuotedRange = tc => {
  * @param {t.TestCase} tc
  */
 export const testMapDeepObserve = tc => { //FIXME
-    const doc = new Y.YDoc({clientID: 1})
-    const outer = doc.getMap('outer')
-    const inner = new Y.YMap()
+    const doc = new Y.Doc({clientID: 1})
+    const outer = /** @type {Y.Map} */ doc.getMap('outer')
+    const inner = new Y.Map()
     outer.set('inner', inner)
 
     /**
@@ -651,7 +651,7 @@ export const testMapDeepObserve = tc => { //FIXME
                 case Y.YMapEvent:
                     events.push({target: e.target, keys: e.keys})
                     break;
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     events.push({target: e.target})
                     break;
                 default:
@@ -663,19 +663,19 @@ export const testMapDeepObserve = tc => { //FIXME
 
     inner.set('key', 'value1')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), inner.toJson())
+    t.compare(events[0].target.toJSON(), inner.toJSON())
     t.compare(events[0].keys, {'key': {action: 'add', newValue: 'value1'}})
 
     events = []
     inner.set('key', 'value2')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), inner.toJson())
+    t.compare(events[0].target.toJSON(), inner.toJSON())
     t.compare(events[0].keys, {'key': {action: 'update', newValue: 'value2', oldValue: 'value1'}})
 
     events = []
     inner.delete('key')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), inner.toJson())
+    t.compare(events[0].target.toJSON(), inner.toJSON())
     t.compare(events[0].keys, {'key': {action: 'delete', oldValue: 'value2'}})
 }
 
@@ -684,7 +684,7 @@ export const testMapDeepObserve = tc => { //FIXME
  */
 export const testDeepObserveRecursive = tc => {
     // test observers in a face of cycled chains of values
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     /*
        Structure:
         array (observed):
@@ -697,11 +697,11 @@ export const testDeepObserveRecursive = tc => {
           m2------+  |
            - k0:<----+
      */
-    const root = doc.getArray('array')
+    const root = /** @type {Y.Array} */ doc.getArray('array')
 
-    const m0 = new Y.YMap()
-    const m1 = new Y.YMap()
-    const m2 = new Y.YMap()
+    const m0 = new Y.Map()
+    const m1 = new Y.Map()
+    const m2 = new Y.Map()
 
     root.insert(0, [m0])
     root.insert(1, [m1])
@@ -727,7 +727,7 @@ export const testDeepObserveRecursive = tc => {
                 case Y.YMapEvent:
                     events.push({target: e.target, keys: e.keys})
                     break;
-                case Y.YWeakLinkEvent:
+                case Y.WeakLinkEvent:
                     events.push({target: e.target})
                     break;
                 default:
@@ -738,18 +738,18 @@ export const testDeepObserveRecursive = tc => {
 
     m1.set('test-key1', 'value1')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), m1.toJson())
+    t.compare(events[0].target.toJSON(), m1.toJSON())
     t.compare(events[0].keys, {'test-key1': {action: 'add', newValue: 'value1'}})
 
     events = []
     m2.set('test-key2', 'value2')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), m2.toJson())
+    t.compare(events[0].target.toJSON(), m2.toJSON())
     t.compare(events[0].keys, {'test-key2': {action: 'add', newValue: 'value2'}})
 
     m1.delete('test-key1')
     t.compare(events.length, 1)
-    t.compare(events[0].target.toJson(), m1.toJson())
+    t.compare(events[0].target.toJSON(), m1.toJSON())
     t.compare(events[0].keys, {'test-key1': {action: 'delete', oldValue: 'value1'}})
 }
 
@@ -757,11 +757,11 @@ export const testDeepObserveRecursive = tc => {
  * @param {t.TestCase} tc
  */
 export const testRemoteMapUpdate = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const map1 = doc1.getMap('map')
-    const doc2 = new Y.YDoc({clientID: 3})
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const doc1 = new Y.Doc({clientID: 2})
+    const map1 = /** @type {Y.Map} */ doc1.getMap('map')
+    const doc2 = new Y.Doc({clientID: 3})
     const map2 = doc2.getMap('map')
 
     map0.set('key', 1)
@@ -793,11 +793,11 @@ export const testRemoteMapUpdate = tc => {
  * @param {t.TestCase} tc
  */
 export const testTextBasic = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const array0 = doc0.getArray('array')
+    const doc0 = new Y.Doc({clientID: 1})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
     const text0 = doc0.getText('text')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
     const text1 = doc1.getText('text')
 
     text0.insert(0, 'abcd')             // 'abcd'
@@ -813,7 +813,7 @@ export const testTextBasic = tc => {
     exchangeUpdates([doc0, doc1])
 
     const delta = text1.toDelta()
-    const {insert} = delta[1] // YWeakLink
+    const {insert} = delta[1] // WeakLink
     t.compare(insert.toString(), 'be')
 }
 
@@ -821,11 +821,11 @@ export const testTextBasic = tc => {
  * @param {t.TestCase} tc
  */
 export const testQuoteFormattedText = tc => {
-    const doc = new Y.YDoc({clientID: 1})
-    const array = doc.getArray('array')
+    const doc = new Y.Doc({clientID: 1})
+    const array = /** @type {Y.Array} */ doc.getArray('array')
     const fragment = doc.getXmlFragment('fragment')
-    const text = new Y.YXmlText('')
-    const text2 = new Y.YXmlText('')
+    const text = new Y.XmlText('')
+    const text2 = new Y.XmlText('')
     fragment.push(text)
     fragment.push(text2)
 
@@ -859,10 +859,10 @@ export const testQuoteFormattedText = tc => {
  * @param {t.TestCase} tc
  */
 export const testTextLowerBoundary = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
+    const doc0 = new Y.Doc({clientID: 1})
     const text0 = doc0.getText('text')
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
     const text1 = doc1.getText('text')
 
     text0.insert(0, 'abcdef')
@@ -887,10 +887,10 @@ export const testTextLowerBoundary = tc => {
  * @param {t.TestCase} tc
  */
 export const testTextUpperBoundary = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
+    const doc0 = new Y.Doc({clientID: 1})
     const text0 = doc0.getText('text')
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
     const text1 = doc1.getText('text')
 
     text0.insert(0, 'abcdef')
@@ -915,11 +915,11 @@ export const testTextUpperBoundary = tc => {
  * @param {t.TestCase} tc
  */
 export const testArrayLowerBoundary = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
 
     array0.insert(0, ['a', 'b', 'c', 'd', 'e', 'f'])
 
@@ -944,11 +944,11 @@ export const testArrayLowerBoundary = tc => {
  * @param {t.TestCase} tc
  */
 export const testArrayUpperBoundary = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
-    const map0 = doc0.getMap('map')
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
-    const array1 = doc1.getArray('array')
+    const doc0 = new Y.Doc({clientID: 1})
+    const map0 = /** @type {Y.Map} */ doc0.getMap('map')
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
+    const array1 = /** @type {Y.Array} */ doc1.getArray('array')
 
     array0.insert(0, ['a', 'b', 'c', 'd', 'e', 'f'])
 
@@ -974,10 +974,10 @@ export const testArrayUpperBoundary = tc => {
  * @param {t.TestCase} tc
  */
 export const testTextUnbounded = tc => {
-    const doc0 = new Y.YDoc({clientID: 1})
+    const doc0 = new Y.Doc({clientID: 1})
     const text0 = doc0.getText('text')
-    const array0 = doc0.getArray('array')
-    const doc1 = new Y.YDoc({clientID: 2})
+    const array0 = /** @type {Y.Array} */ doc0.getArray('array')
+    const doc1 = new Y.Doc({clientID: 2})
     const text1 = doc1.getText('text')
 
     text0.insert(0, 'def')

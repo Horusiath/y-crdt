@@ -2,7 +2,6 @@ use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
 use serde::Serialize;
 use std::ops::Deref;
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, TryFromJsValue};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
@@ -10,7 +9,6 @@ use yrs::sync::{Awareness as YAwareness, AwarenessUpdate, Timestamp};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 
-use crate::doc::Doc;
 use crate::js::{Callback, Js};
 
 #[wasm_bindgen]

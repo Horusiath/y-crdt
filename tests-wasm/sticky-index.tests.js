@@ -2,8 +2,8 @@ import * as Y from 'ywasm'
 import * as t from 'lib0/testing'
 
 /**
- * @param {Y.YDoc} ydoc
- * @param {Y.YText} ytext
+ * @param {Y.Doc} ydoc
+ * @param {Y.Text} ytext
  */
 const checkStickyIndex = (ydoc, ytext) => {
     // test if all positions are encoded and restored correctly
@@ -24,7 +24,7 @@ const checkStickyIndex = (ydoc, ytext) => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexCase1 = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     ytext.insert(0, '1')
     ytext.insert(0, 'abc')
@@ -38,7 +38,7 @@ export const testStickyIndexCase1 = tc => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexCase2 = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     ytext.insert(0, 'abc')
     checkStickyIndex(ydoc, ytext)
@@ -48,7 +48,7 @@ export const testStickyIndexCase2 = tc => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexCase3 = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     ytext.insert(0, 'abc')
     ytext.insert(0, '1')
@@ -60,7 +60,7 @@ export const testStickyIndexCase3 = tc => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexCase4 = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     ytext.insert(0, '1')
     checkStickyIndex(ydoc, ytext)
@@ -70,7 +70,7 @@ export const testStickyIndexCase4 = tc => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexCase5 = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     ytext.insert(0, '2')
     ytext.insert(0, '1')
@@ -81,7 +81,7 @@ export const testStickyIndexCase5 = tc => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexCase6 = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     checkStickyIndex(ydoc, ytext)
 }
@@ -90,7 +90,7 @@ export const testStickyIndexCase6 = tc => {
  * @param {t.TestCase} tc
  */
 export const testStickyIndexAssociationDifference = tc => {
-    const ydoc = new Y.YDoc()
+    const ydoc = new Y.Doc()
     const ytext = ydoc.getText('test')
     ytext.insert(0, '2')
     ytext.insert(0, '1')

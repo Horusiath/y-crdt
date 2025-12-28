@@ -1,19 +1,16 @@
 use crate::collection::{Integrated, SharedCollection};
 use crate::js::{Callback, Js, OptionDisposed, ValueRef, YRange};
-use crate::text::YText;
-use crate::transaction::Transaction;
-use crate::weak::YWeakLink;
+use crate::weak::WeakLink;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
 use std::iter::FromIterator;
-use std::ops::Deref;
-use wasm_bindgen::convert::{IntoWasmAbi, RefFromWasmAbi};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::array::ArrayEvent;
 use yrs::types::{ToJson, TYPE_REFS_ARRAY};
 use yrs::{
-    Array, ArrayRef, DeepObservable, Observable, Quotable, SharedRef, Transaction as YTransaction,
+    Array as YArray, ArrayRef, DeepObservable, Observable, Quotable, SharedRef,
+    Transaction as YTransaction,
 };
 
 /// A collection used to store data in an indexed sequence structure. This type is internally
@@ -36,10 +33,10 @@ use yrs::{
 /// unique document id to determine correct and consistent ordering.
 #[wasm_bindgen]
 #[repr(transparent)]
-pub struct YArray(pub(crate) SharedCollection<Vec<JsValue>, ArrayRef>);
+pub struct Array(pub(crate) SharedCollection<Vec<JsValue>, ArrayRef>);
 
 #[wasm_bindgen]
-impl YArray {
+impl Array {
     /// Creates a new preliminary instance of a `YArray` shared data type, with its state
     /// initialized to provided parameter.
     ///
@@ -48,7 +45,7 @@ impl YArray {
     /// document store and cannot be nested again: attempt to do so will result in an exception.
     #[wasm_bindgen(constructor)]
     pub fn new(items: Option<Vec<JsValue>>) -> Self {
-        YArray(SharedCollection::prelim(items.unwrap_or_default()))
+        Array(SharedCollection::prelim(items.unwrap_or_default()))
     }
 
     #[wasm_bindgen(getter, js_name = type)]
@@ -95,7 +92,7 @@ impl YArray {
     }
 
     /// Converts an underlying contents of this `YArray` instance into their JSON representation.
-    #[wasm_bindgen(js_name = toJson)]
+    #[wasm_bindgen(js_name = toJSON)]
     pub fn to_json(&self) -> Result<JsValue> {
         match &self.0 {
             SharedCollection::Prelim(c) => {
@@ -205,7 +202,7 @@ impl YArray {
         upper: Option<u32>,
         lower_open: Option<bool>,
         upper_open: Option<bool>,
-    ) -> Result<YWeakLink> {
+    ) -> Result<WeakLink> {
         match &self.0 {
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
@@ -217,7 +214,7 @@ impl YArray {
                     let quote = target
                         .quote(tx, range)
                         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    Ok(YWeakLink::from_prelim(quote, c.doc.clone()))
+                    Ok(WeakLink::from_prelim(quote, c.doc.clone()))
                 })
             }
         }
@@ -343,7 +340,7 @@ impl YArray {
     }
 }
 
-pub(crate) trait ArrayExt: Array + SharedRef {
+pub(crate) trait ArrayExt: YArray + SharedRef {
     fn insert_at<I>(&self, txn: &mut YTransaction<Js>, index: u32, src: I) -> Result<()>
     where
         I: IntoIterator<Item = JsValue>,
@@ -414,7 +411,7 @@ impl YArrayEvent {
     pub fn target(&mut self) -> JsValue {
         let target = self.inner.target();
         let hook = target.hook();
-        let text_ref = YArray(SharedCollection::Integrated(Integrated {
+        let text_ref = Array(SharedCollection::Integrated(Integrated {
             hook,
             doc: self.doc.clone(),
         }));

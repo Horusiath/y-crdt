@@ -7,11 +7,11 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testUndoText = tc => {
-    const d0 = new Y.YDoc({clientID: 1})
-    const d1 = new Y.YDoc({clientID: 2})
+    const d0 = new Y.Doc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 2})
     const text0 = d0.getText("test")
     const text1 = d1.getText("test")
-    const undoManager = new Y.YUndoManager(d0, text0)
+    const undoManager = new Y.UndoManager(d0, text0)
 
     // items that are added & deleted in the same transaction won't be undo
     text0.insert(0, 'test')
@@ -57,11 +57,11 @@ export const testUndoText = tc => {
  * @param {t.TestCase} tc
  */
 export const testDoubleUndo = tc => {
-    const doc = new Y.YDoc({clientID: 1})
+    const doc = new Y.Doc({clientID: 1})
     const text = doc.getText("test")
     text.insert(0, '1221')
 
-    const manager = new Y.YUndoManager(doc, text)
+    const manager = new Y.UndoManager(doc, text)
 
     text.insert(2, '3')
     text.insert(3, '3')
@@ -78,26 +78,26 @@ export const testDoubleUndo = tc => {
  * @param {t.TestCase} tc
  */
 export const testUndoMap = tc => {
-    const d0 = new Y.YDoc({clientID: 1})
-    const d1 = new Y.YDoc({clientID: 2})
-    const map0 = d0.getMap("test")
-    const map1 = d1.getMap("test")
+    const d0 = new Y.Doc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 2})
+    const map0 = /** @type {Y.Map} */ d0.getMap("test")
+    const map1 = /** @type {Y.Map} */ d1.getMap("test")
     map0.set('a', 0)
-    const undoManager = new Y.YUndoManager(d0, map0)
+    const undoManager = new Y.UndoManager(d0, map0)
     map0.set('a', 1)
     undoManager.undo()
     t.assert(map0.get('a') === 0)
     undoManager.redo()
     t.assert(map0.get('a') === 1)
     // testing sub-types and if it can restore a whole type
-    const subType = new Y.YMap()
+    const subType = new Y.Map()
     map0.set('a', subType)
     subType.set('x', 42)
-    t.compare(map0.toJson(), /** @type {any} */ ({a: {x: 42}}))
+    t.compare(map0.toJSON(), /** @type {any} */ ({a: {x: 42}}))
     undoManager.undo()
     t.assert(map0.get('a') === 1)
     undoManager.redo()
-    t.compare(map0.toJson(), /** @type {any} */ ({a: {x: 42}}))
+    t.compare(map0.toJSON(), /** @type {any} */ ({a: {x: 42}}))
     exchangeUpdates([d0, d1])
     // if content is overwritten by another user, undo operations should be skipped
     map1.set('a', 44)
@@ -121,65 +121,65 @@ export const testUndoMap = tc => {
  * @param {t.TestCase} tc
  */
 export const testUndoArray = tc => {
-    const d0 = new Y.YDoc({clientID: 1})
-    const d1 = new Y.YDoc({clientID: 2})
-    const array0 = d0.getArray("test")
-    const array1 = d1.getArray("test")
-    const undoManager = new Y.YUndoManager(d0, array0)
+    const d0 = new Y.Doc({clientID: 1})
+    const d1 = new Y.Doc({clientID: 2})
+    const array0 = /** @type {Y.Array} */ d0.getArray("test")
+    const array1 = /** @type {Y.Array} */ d1.getArray("test")
+    const undoManager = new Y.UndoManager(d0, array0)
     array0.insert(0, [1, 2, 3])
     array1.insert(0, [4, 5, 6])
     exchangeUpdates([d0, d1])
-    t.compare(array0.toJson(), [1, 2, 3, 4, 5, 6])
+    t.compare(array0.toJSON(), [1, 2, 3, 4, 5, 6])
     undoManager.undo()
-    t.compare(array0.toJson(), [4, 5, 6])
+    t.compare(array0.toJSON(), [4, 5, 6])
     undoManager.redo()
-    t.compare(array0.toJson(), [1, 2, 3, 4, 5, 6])
+    t.compare(array0.toJSON(), [1, 2, 3, 4, 5, 6])
     exchangeUpdates([d0, d1])
     array1.delete(0, 1) // user1 deletes [1]
     exchangeUpdates([d0, d1])
     undoManager.undo()
-    t.compare(array0.toJson(), [4, 5, 6])
+    t.compare(array0.toJSON(), [4, 5, 6])
     undoManager.redo()
-    t.compare(array0.toJson(), [2, 3, 4, 5, 6])
+    t.compare(array0.toJSON(), [2, 3, 4, 5, 6])
     array0.delete(0, 5)
     // test nested structure
-    const ymap = new Y.YMap()
+    const ymap = new Y.Map()
     array0.insert(0, [ymap])
-    t.compare(array0.toJson(), [{}])
+    t.compare(array0.toJSON(), [{}])
     undoManager.stopCapturing()
     ymap.set('a', 1)
-    t.compare(array0.toJson(), [{a: 1}])
+    t.compare(array0.toJSON(), [{a: 1}])
     undoManager.undo()
-    t.compare(array0.toJson(), [{}])
+    t.compare(array0.toJSON(), [{}])
     undoManager.undo()
-    t.compare(array0.toJson(), [2, 3, 4, 5, 6])
+    t.compare(array0.toJSON(), [2, 3, 4, 5, 6])
     undoManager.redo()
-    t.compare(array0.toJson(), [{}])
+    t.compare(array0.toJSON(), [{}])
     undoManager.redo()
-    t.compare(array0.toJson(), [{a: 1}])
+    t.compare(array0.toJSON(), [{a: 1}])
     exchangeUpdates([d0, d1])
     array1.get(0).set('b', 2)
     exchangeUpdates([d0, d1])
-    t.compare(array0.toJson(), [{a: 1, b: 2}])
+    t.compare(array0.toJSON(), [{a: 1, b: 2}])
     undoManager.undo()
-    t.compare(array0.toJson(), [{b: 2}])
+    t.compare(array0.toJSON(), [{b: 2}])
     undoManager.undo()
-    t.compare(array0.toJson(), [2, 3, 4, 5, 6])
+    t.compare(array0.toJSON(), [2, 3, 4, 5, 6])
     undoManager.redo()
-    t.compare(array0.toJson(), [{b: 2}])
+    t.compare(array0.toJSON(), [{b: 2}])
     undoManager.redo()
-    t.compare(array0.toJson(), [{a: 1, b: 2}])
+    t.compare(array0.toJSON(), [{a: 1, b: 2}])
 }
 
 /**
  * @param {t.TestCase} tc
  */
 export const testUndoXml = tc => {
-    const d0 = new Y.YDoc({clientID: 1})
+    const d0 = new Y.Doc({clientID: 1})
     const xml0 = d0.getXmlFragment("undefined")
-    const undoManager = new Y.YUndoManager(d0, xml0)
-    const textchild = new Y.YXmlText('content')
-    xml0.push(new Y.YXmlElement('p', {}, [
+    const undoManager = new Y.UndoManager(d0, xml0)
+    const textchild = new Y.XmlText('content')
+    xml0.push(new Y.XmlElement('p', {}, [
         textchild
     ]))
     t.assert(xml0.toString() === '<p>content</p>')
@@ -201,9 +201,9 @@ export const testUndoXml = tc => {
  * @param {t.TestCase} tc
  */
 export const testUndoEvents = tc => {
-    const d0 = new Y.YDoc({clientID: 1})
+    const d0 = new Y.Doc({clientID: 1})
     const text0 = d0.getText("text")
-    const undoManager = new Y.YUndoManager(d0, text0)
+    const undoManager = new Y.UndoManager(d0, text0)
     let counter = 0
     let receivedMetadata = -1
     undoManager.on('stack-item-added', event => {

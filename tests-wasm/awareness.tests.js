@@ -5,8 +5,8 @@ import * as t from 'lib0/testing'
  * @param {t.TestCase} tc
  */
 export const testAwareness = tc => {
-    const doc1 = new Y.YDoc({clientID: 0})
-    const doc2 = new Y.YDoc({clientID: 1})
+    const doc1 = new Y.Doc({clientID: 0})
+    const doc2 = new Y.Doc({clientID: 1})
     const aw1 = new Y.Awareness(doc1)
     const aw2 = new Y.Awareness(doc2)
     aw1.on('update', /** @param {any} p */({added, updated, removed}) => {

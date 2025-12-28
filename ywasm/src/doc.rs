@@ -1,25 +1,21 @@
-use crate::array::YArray;
+use crate::array::Array;
 use crate::collection::SharedCollection;
 use crate::js::{Callback, Js};
-use crate::map::YMap;
-use crate::text::YText;
-use crate::xml_frag::YXmlFragment;
+use crate::map::Map;
+use crate::text::Text;
+use crate::xml_frag::XmlFragment;
 use crate::Result;
 use serde::Deserialize;
-use std::cell::RefCell;
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
 use std::sync::Arc;
-use wasm_bindgen::__rt::{IntoJsResult, RcRefMut, WasmRefCell};
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, RefMutFromWasmAbi};
-use wasm_bindgen::describe::{WasmDescribe, RUST_STRUCT};
+use wasm_bindgen::convert::{IntoWasmAbi, RefMutFromWasmAbi};
 use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsValue;
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{DocId, JsonPath, JsonPathEval, MutProvider, OffsetKind, Options, SubDocRef};
+use yrs::{DocId, JsonPath, JsonPathEval, MutProvider, OffsetKind, Options};
 
 /// A ywasm document type. Documents are most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
@@ -119,14 +115,17 @@ impl Doc {
 #[wasm_bindgen]
 impl Doc {
     /// Creates a new ywasm document. If `id` parameter was passed it will be used as this document
-    /// globally unique identifier (it's up to caller to ensure that requirement). Otherwise it will
+    /// globally unique identifier (it's up to caller to ensure that requirement). Otherwise, it will
     /// be assigned a randomly generated number.
     #[wasm_bindgen(constructor)]
-    pub fn new(options: &JsValue) -> Result<JsValue> {
+    pub fn new(options: Option<JsValue>) -> Result<JsValue> {
         use gloo_utils::format::JsValueSerdeExt;
-        let js_options = options
-            .into_serde::<Option<DocOptions>>()
-            .map_err(|_| JsValue::from_str("invalid document options"))?;
+        let js_options = match options {
+            None => None,
+            Some(options) => options
+                .into_serde::<Option<DocOptions>>()
+                .map_err(|_| JsValue::from_str("invalid document options"))?,
+        };
         let mut options = Options::default();
         options.offset_kind = OffsetKind::Utf16;
         if let Some(o) = js_options {
@@ -199,11 +198,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YText` instance.
     #[wasm_bindgen(js_name = getText)]
-    pub fn get_text(&mut self, name: &str) -> YText {
+    pub fn get_text(&mut self, name: &str) -> Text {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_text(name);
-            YText(SharedCollection::integrated(shared_ref, doc.clone()))
+            Text(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -215,11 +214,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YArray` instance.
     #[wasm_bindgen(js_name = getArray)]
-    pub fn get_array(&mut self, name: &str) -> YArray {
+    pub fn get_array(&mut self, name: &str) -> Array {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_array(name);
-            YArray(SharedCollection::integrated(shared_ref, doc.clone()))
+            Array(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -231,11 +230,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YMap` instance.
     #[wasm_bindgen(js_name = getMap)]
-    pub fn get_map(&mut self, name: &str) -> YMap {
+    pub fn get_map(&mut self, name: &str) -> Map {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_map(name);
-            YMap(SharedCollection::integrated(shared_ref, doc.clone()))
+            Map(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -247,11 +246,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YXmlFragment` instance.
     #[wasm_bindgen(js_name = getXmlFragment)]
-    pub fn get_xml_fragment(&self, name: &str) -> YXmlFragment {
+    pub fn get_xml_fragment(&self, name: &str) -> XmlFragment {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_xml_fragment(name);
-            YXmlFragment(SharedCollection::integrated(shared_ref, doc.clone()))
+            XmlFragment(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
