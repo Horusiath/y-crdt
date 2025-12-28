@@ -136,7 +136,15 @@ impl Awareness {
 
 #[wasm_bindgen(js_name = removeAwarenessStates)]
 pub fn remove_states(awareness: &Awareness, clients: Vec<u64>) -> crate::Result<()> {
-    let awareness: &mut YAwareness = unsafe { std::mem::transmute(&awareness.inner) }; // it's safe: "trust me bro"
+    let awareness: &mut YAwareness = unsafe {
+        // we might need to access Awareness in its own observer callback, which means
+        // that technically it's already mut borrowed - but callback only needs mutable access
+        // to event handlers, while rest of the awareness is needed in callback actions that we
+        // don't want to panic with
+        (&awareness.inner as *const YAwareness as *mut YAwareness)
+            .as_mut()
+            .unwrap()
+    };
     for client_id in clients {
         awareness.remove_state(client_id);
     }
@@ -180,7 +188,15 @@ pub fn apply_update(
     let update = AwarenessUpdate::decode_v1(&update.to_vec())
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    let awareness: &mut YAwareness = unsafe { std::mem::transmute(&awareness.inner) }; // it's safe: "trust me bro"
+    let awareness: &mut YAwareness = unsafe {
+        // we might need to access Awareness in its own observer callback, which means
+        // that technically it's already mut borrowed - but callback only needs mutable access
+        // to event handlers, while rest of the awareness is needed in callback actions that we
+        // don't want to panic with
+        (&awareness.inner as *const YAwareness as *mut YAwareness)
+            .as_mut()
+            .unwrap()
+    };
     awareness
         .apply_update(update)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;

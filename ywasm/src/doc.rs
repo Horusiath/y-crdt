@@ -19,7 +19,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{DocId, JsonPath, JsonPathEval, OffsetKind, Options, SubDocRef};
+use yrs::{DocId, JsonPath, JsonPathEval, MutProvider, OffsetKind, Options, SubDocRef};
 
 /// A ywasm document type. Documents are most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
@@ -267,13 +267,15 @@ impl Doc {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
                 callback.call1(&JsValue::UNDEFINED, &update).unwrap();
             }),
-            "subdocs" => self.doc.observe_subdocs_with(abi, move |e| {
-                let event: JsValue = YSubdocsEvent::new(e, &self.this).into();
-                callback.call1(&JsValue::UNDEFINED, &event).unwrap();
-            }),
-            "destroy" => self.doc.observe_destroy_with(abi, move |e| {
-                let event: JsValue = Doc::from(e.clone()).into();
-                callback.call1(&JsValue::UNDEFINED, &event).unwrap();
+            "subdocs" => {
+                let doc = self.this.clone();
+                self.doc.observe_subdocs_with(abi, move |e| {
+                    let event: JsValue = YSubdocsEvent::new(e, &doc).into();
+                    callback.call1(&JsValue::UNDEFINED, &event).unwrap();
+                })
+            }
+            "destroy" => self.doc.observe_destroy_with(abi, move |_| {
+                callback.call0(&JsValue::UNDEFINED).unwrap();
             }),
             "afterTransaction" => self.doc.observe_after_transaction_with(abi, move |txn| {
                 callback.call0(&JsValue::UNDEFINED).unwrap();
@@ -310,10 +312,12 @@ impl Doc {
     /// Notify the parent document that you request to load data into this subdocument
     /// (if it is a subdocument).
     #[wasm_bindgen(js_name = load)]
-    pub fn load(&self) -> Result<()> {
-        match &self.parent_doc {
-            Some(parent_doc) => Self::transact(parent_doc, JsValue::UNDEFINED, |parent_txn| {
-                child_doc.load(parent_txn.deref_mut().subdoc_scope());
+    pub fn load(&mut self) -> Result<()> {
+        match self.parent_doc.clone() {
+            Some(parent_doc) => Self::transact(&parent_doc, JsValue::UNDEFINED, |parent_txn| {
+                let parent_scope = parent_txn.subdoc_scope();
+                let mut child_doc = self.doc.get_mut();
+                child_doc.load(parent_scope);
                 Ok(())
             }),
             None => Err(JsValue::from_str("not a subdocument").into()),
@@ -322,10 +326,12 @@ impl Doc {
 
     /// Emit `onDestroy` event and unregister all event handlers.
     #[wasm_bindgen(js_name = destroy)]
-    pub fn destroy(&self) -> Result<()> {
-        match &self.parent_doc {
-            Some(parent_doc) => Self::transact(parent_doc, JsValue::UNDEFINED, |parent_txn| {
-                self.load(parent_txn.deref_mut().subdoc_scope());
+    pub fn destroy(&mut self) -> Result<()> {
+        match self.parent_doc.clone() {
+            Some(parent_doc) => Self::transact(&parent_doc, JsValue::UNDEFINED, |parent_txn| {
+                let parent_scope = parent_txn.subdoc_scope();
+                let mut child_doc = self.doc.get_mut();
+                child_doc.destroy(parent_scope);
                 Ok(())
             }),
             None => Err(JsValue::from_str("not a subdocument").into()),

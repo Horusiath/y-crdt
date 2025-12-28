@@ -553,20 +553,38 @@
 //!
 //! ```rust
 //! use yrs::sync::{Awareness, Message, Protocol, Error};
+//! use yrs::{Doc, MutProvider, RefProvider, Ref, Mut};
 //!
 //! struct MyProtocol {
+//!     doc: Doc,
 //!     awareness: Awareness,
 //! }
 //!
+//! impl RefProvider<Doc> for MyProtocol {
+//!     fn get_ref(&self) -> Ref<'_, Doc> {
+//!         self.doc.get_ref()
+//!     }
+//! }
+//!
+//! impl MutProvider<Doc> for MyProtocol {
+//!     fn get_mut(&mut self) -> Mut<'_, Doc> {
+//!         self.doc.get_mut()
+//!     }
+//! }
+//!
+//! impl RefProvider<Awareness> for MyProtocol {
+//!     fn get_ref(&self) -> Ref<'_, Awareness>  {
+//!         self.awareness.get_ref()
+//!     }
+//! }
+//!
+//! impl MutProvider<Awareness> for MyProtocol {
+//!     fn get_mut(&mut self) -> Mut<'_, Awareness>  {
+//!         self.awareness.get_mut()
+//!     }
+//! }
+//!
 //! impl Protocol for MyProtocol {
-//!     fn awareness(&self) -> &Awareness {
-//!         &self.awareness
-//!     }
-//!
-//!     fn awareness_mut(&mut self) -> &mut Awareness {
-//!         &mut self.awareness
-//!     }
-//!
 //!     fn missing_handle(&mut self, tag: u8, data: Vec<u8>) -> Result<Option<Message>, Error> {
 //!         // you can not only override existing message handlers but also define your own
 //!         Ok(Some(Message::Custom(tag, data))) // echo

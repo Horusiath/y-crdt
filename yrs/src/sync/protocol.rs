@@ -81,7 +81,7 @@ impl MutProvider<Awareness> for DefaultProtocol {
     }
 }
 
-impl<P> Protocol for P where P: MutProvider<Doc> + MutProvider<Awareness> + 'static {}
+impl Protocol for DefaultProtocol {}
 
 /// Trait implementing a y-sync protocol. The default implementation can be found in
 /// [DefaultProtocol], but its implementation steps can be potentially changed by the user if
