@@ -378,14 +378,14 @@ impl ArrayExt for ArrayRef {}
 #[wasm_bindgen]
 pub struct YArrayEvent {
     inner: &'static ArrayEvent,
-    doc: Js,
+    doc: crate::Doc,
     target: Option<JsValue>,
     delta: Option<JsValue>,
 }
 
 #[wasm_bindgen]
 impl YArrayEvent {
-    pub(crate) fn new<'doc>(event: &ArrayEvent, doc: &Js) -> Self {
+    pub(crate) fn new<'doc>(event: &ArrayEvent, doc: &crate::Doc) -> Self {
         let inner: &'static ArrayEvent = unsafe { std::mem::transmute(event) };
         YArrayEvent {
             inner,
@@ -416,9 +416,7 @@ impl YArrayEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        let doc = self.doc.clone().into_doc();
-        let tx = doc.current_transaction().unwrap();
-        tx.origin()
+        self.doc.current_origin()
     }
 
     /// Returns a list of text changes made over corresponding `YArray` collection within

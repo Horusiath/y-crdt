@@ -14,7 +14,7 @@ use crate::js::{Callback, Js};
 #[wasm_bindgen]
 pub struct Awareness {
     inner: YAwareness,
-    doc: Js,
+    doc: crate::Doc,
 }
 
 #[wasm_bindgen]
@@ -23,15 +23,16 @@ impl Awareness {
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
     ) -> crate::Result<Awareness> {
-        let doc = Js::new(doc);
-        let ydoc = doc.clone().into_doc();
-        let inner = YAwareness::with_clock(ydoc.client_id(), JsClock);
+        let js_doc = Js::new(doc);
+        let doc: crate::Doc = js_doc.into_doc().clone();
+        let client_id = doc.state.borrow().doc.client_id();
+        let inner = YAwareness::with_clock(client_id, JsClock);
         Ok(Awareness { inner, doc })
     }
 
     #[wasm_bindgen(getter, js_name = doc)]
     pub fn doc(&self) -> JsValue {
-        self.doc.deref().clone()
+        JsValue::from(self.doc.clone())
     }
 
     #[wasm_bindgen(getter, js_name = meta)]

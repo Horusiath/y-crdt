@@ -25,7 +25,6 @@ use yrs::{
 #[wasm_bindgen]
 pub struct Transaction {
     inner: YTransaction<Js>,
-    doc: Js,
 }
 
 impl Transaction {
@@ -35,8 +34,12 @@ impl Transaction {
         } else {
             Some(Js::from(origin).into())
         };
-        let inner = YTransaction::new(doc.clone(), origin);
-        Transaction { inner, doc }
+        let inner = YTransaction::new(doc, origin);
+        Transaction { inner }
+    }
+
+    fn doc(&self) -> crate::Doc {
+        self.inner.doc().clone().into_doc().clone()
     }
 }
 
@@ -139,31 +142,31 @@ impl Transaction {
             None => JsValue::UNDEFINED,
             Some(b) if b.is_deleted() => JsValue::UNDEFINED,
             Some(b) => {
-                let js = self.doc.clone();
+                let doc = self.doc();
                 match b.type_ref() {
                     TypeRef::Array => {
-                        Array(SharedCollection::integrated(ArrayRef::from(b), js)).into()
+                        Array(SharedCollection::integrated(ArrayRef::from(b), doc)).into()
                     }
-                    TypeRef::Map => Map(SharedCollection::integrated(MapRef::from(b), js)).into(),
+                    TypeRef::Map => Map(SharedCollection::integrated(MapRef::from(b), doc)).into(),
                     TypeRef::Text => {
-                        Text(SharedCollection::integrated(TextRef::from(b), js)).into()
+                        Text(SharedCollection::integrated(TextRef::from(b), doc)).into()
                     }
                     TypeRef::XmlElement(_) => {
-                        XmlElement(SharedCollection::integrated(XmlElementRef::from(b), js)).into()
+                        XmlElement(SharedCollection::integrated(XmlElementRef::from(b), doc)).into()
                     }
                     TypeRef::XmlFragment => {
-                        XmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), js))
+                        XmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), doc))
                             .into()
                     }
                     TypeRef::XmlText => {
-                        XmlText(SharedCollection::integrated(XmlTextRef::from(b), js)).into()
+                        XmlText(SharedCollection::integrated(XmlTextRef::from(b), doc)).into()
                     }
                     TypeRef::WeakLink(_) => {
-                        WeakLink(SharedCollection::integrated(WeakRef::from(b), js)).into()
+                        WeakLink(SharedCollection::integrated(WeakRef::from(b), doc)).into()
                     }
                     TypeRef::SubDoc => match b.as_subdoc() {
                         None => JsValue::UNDEFINED,
-                        Some(doc) => crate::Doc::from_subdoc(&doc, self.doc.clone()).into(),
+                        Some(subdoc) => crate::Doc::from_subdoc(&subdoc, doc).into(),
                     },
                     TypeRef::XmlHook | TypeRef::Undefined => JsValue::UNDEFINED,
                 }
@@ -399,9 +402,10 @@ impl Transaction {
     pub fn select_all(&self, json_path: &str) -> Result<js_sys::Array> {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let result = js_sys::Array::new();
+        let doc = self.doc();
         let mut iter = self.inner.json_path(&query);
         while let Some(value) = iter.next() {
-            let value: JsValue = Js::from_value(&value, self.doc.clone()).into();
+            let value: JsValue = Js::from_value(&value, doc.clone()).into();
             result.push(&value);
         }
         Ok(result)
@@ -428,7 +432,7 @@ impl Transaction {
         let mut iter = self.inner.json_path(&query);
         match iter.next() {
             None => Ok(JsValue::UNDEFINED),
-            Some(value) => Ok(Js::from_value(&value, self.doc.clone()).into()),
+            Some(value) => Ok(Js::from_value(&value, self.doc()).into()),
         }
     }
 }

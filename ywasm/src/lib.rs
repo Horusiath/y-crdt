@@ -81,11 +81,8 @@ pub fn set_panic_hook() {
 /// applyUpdate(localDoc, remoteDelta)
 /// ```
 #[wasm_bindgen(js_name = encodeStateVector)]
-pub fn encode_state_vector(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-) -> Result<js_sys::Uint8Array> {
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+pub fn encode_state_vector(doc: &crate::Doc) -> Result<js_sys::Uint8Array> {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         let bytes = tx.state_vector().encode_v1();
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
     })
@@ -192,11 +189,10 @@ pub fn merge_updates_v2(updates: js_sys::Array) -> Result<js_sys::Uint8Array> {
 /// ```
 #[wasm_bindgen(js_name = encodeStateAsUpdate)]
 pub fn encode_state_as_update(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
+    doc: &crate::Doc,
     vector: Option<js_sys::Uint8Array>,
 ) -> Result<js_sys::Uint8Array> {
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         let sv = crate::js::convert::state_vector_from_js(vector)?.unwrap_or_default();
         let bytes = tx.encode_state_as_update_v1(&sv);
         Ok(bytes.as_slice().into())
@@ -225,11 +221,10 @@ pub fn encode_state_as_update(
 /// ```
 #[wasm_bindgen(js_name = encodeStateAsUpdateV2)]
 pub fn encode_state_as_update_v2(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
+    doc: &crate::Doc,
     vector: Option<js_sys::Uint8Array>,
 ) -> Result<js_sys::Uint8Array> {
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         let sv = crate::js::convert::state_vector_from_js(vector)?.unwrap_or_default();
         let bytes = tx.encode_state_as_update_v2(&sv);
         Ok(bytes.as_slice().into())
@@ -256,13 +251,12 @@ pub fn encode_state_as_update_v2(
 /// ```
 #[wasm_bindgen(js_name = applyUpdate)]
 pub fn apply_update(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
+    doc: &crate::Doc,
     update: js_sys::Uint8Array,
     origin: Option<JsValue>,
 ) -> Result<()> {
-    let doc = Js::new(doc);
     let origin = origin.unwrap_or(JsValue::UNDEFINED);
-    crate::Doc::transact(&doc, origin, |tx| {
+    doc.transact(origin, |tx| {
         let diff: Vec<u8> = update.to_vec();
         match Update::decode_v1(&diff) {
             Ok(update) => tx
@@ -293,13 +287,12 @@ pub fn apply_update(
 /// ```
 #[wasm_bindgen(js_name = applyUpdateV2)]
 pub fn apply_update_v2(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
+    doc: &crate::Doc,
     update: js_sys::Uint8Array,
     origin: Option<JsValue>,
 ) -> Result<()> {
-    let doc = Js::new(doc);
     let origin = origin.unwrap_or(JsValue::UNDEFINED);
-    crate::Doc::transact(&doc, origin, |tx| {
+    doc.transact(origin, |tx| {
         let diff: Vec<u8> = update.to_vec();
         match Update::decode_v2(&diff) {
             Ok(update) => tx
@@ -363,11 +356,8 @@ impl Serialize for Snapshot {
 }
 
 #[wasm_bindgen(js_name = snapshot)]
-pub fn snapshot(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-) -> crate::Result<JsValue> {
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+pub fn snapshot(doc: &crate::Doc) -> crate::Result<JsValue> {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         let snapshot = tx.snapshot();
         JsValue::from_serde(&Snapshot(snapshot)).map_err(|e| JsValue::from_str(&e.to_string()))
     })
@@ -406,26 +396,17 @@ pub fn decode_snapshot_v1(snapshot: &[u8]) -> Result<JsValue> {
 }
 
 #[wasm_bindgen(js_name = transact)]
-pub fn transact(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: &JsValue,
-    func: Function,
-    origin: Option<JsValue>,
-) -> Result<JsValue> {
-    let doc = Js::new(doc.clone());
+pub fn transact(doc: &crate::Doc, func: Function, origin: Option<JsValue>) -> Result<JsValue> {
     let origin = origin.unwrap_or(JsValue::UNDEFINED);
-    crate::Doc::transact(&doc, origin, |tx| func.call0(&JsValue::UNDEFINED))
+    doc.transact(origin, |tx| func.call0(&JsValue::UNDEFINED))
 }
 
 #[wasm_bindgen(js_name = encodeStateFromSnapshotV1)]
-pub fn encode_state_from_snapshot_v1(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-    snapshot: JsValue,
-) -> Result<Vec<u8>> {
+pub fn encode_state_from_snapshot_v1(doc: &crate::Doc, snapshot: JsValue) -> Result<Vec<u8>> {
     let snapshot: Snapshot = snapshot
         .into_serde()
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         let mut encoder = yrs::updates::encoder::EncoderV1::new();
         match tx.encode_state_from_snapshot(&*snapshot, &mut encoder) {
             Ok(_) => Ok(encoder.to_vec()),
@@ -435,15 +416,11 @@ pub fn encode_state_from_snapshot_v1(
 }
 
 #[wasm_bindgen(js_name = encodeStateFromSnapshotV2)]
-pub fn encode_state_from_snapshot_v2(
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-    snapshot: JsValue,
-) -> Result<Vec<u8>> {
+pub fn encode_state_from_snapshot_v2(doc: &crate::Doc, snapshot: JsValue) -> Result<Vec<u8>> {
     let snapshot: Snapshot = snapshot
         .into_serde()
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         let mut encoder = yrs::updates::encoder::EncoderV2::new();
         match tx.encode_state_from_snapshot(&*snapshot, &mut encoder) {
             Ok(_) => Ok(encoder.to_vec()),
@@ -485,10 +462,7 @@ pub fn create_sticky_index_from_type(ytype: JsValue, index: u32, assoc: i32) -> 
 /// Converts a sticky index (see: `createStickyIndexFromType`) into an object
 /// containing human-readable index.
 #[wasm_bindgen(js_name=createAbsolutePositionFromRelativePosition)]
-pub fn create_offset_from_sticky_index(
-    rpos: &JsValue,
-    #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-) -> Result<JsValue> {
+pub fn create_offset_from_sticky_index(rpos: &JsValue, doc: &crate::Doc) -> Result<JsValue> {
     #[derive(Serialize)]
     struct AbsolutePos {
         index: u32,
@@ -497,8 +471,7 @@ pub fn create_offset_from_sticky_index(
 
     let pos: StickyIndex =
         JsValue::into_serde(rpos).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let doc = Js::new(doc);
-    crate::Doc::transact(&doc, JsValue::UNDEFINED, |tx| {
+    doc.transact(JsValue::UNDEFINED, |tx| {
         if let Some(abs) = pos.get_offset(tx) {
             let abs = AbsolutePos {
                 index: abs.index,

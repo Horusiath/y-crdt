@@ -249,7 +249,7 @@ impl XmlFragment {
 #[wasm_bindgen]
 pub struct YXmlEvent {
     inner: &'static XmlEvent,
-    doc: Js,
+    doc: crate::Doc,
     target: Option<JsValue>,
     keys: Option<JsValue>,
     delta: Option<JsValue>,
@@ -257,7 +257,7 @@ pub struct YXmlEvent {
 
 #[wasm_bindgen]
 impl YXmlEvent {
-    pub(crate) fn new<'doc>(event: &XmlEvent, doc: &Js) -> Self {
+    pub(crate) fn new<'doc>(event: &XmlEvent, doc: &crate::Doc) -> Self {
         let inner: &'static XmlEvent = unsafe { std::mem::transmute(event) };
         YXmlEvent {
             inner,
@@ -288,9 +288,7 @@ impl YXmlEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        let doc = self.doc.clone().into_doc();
-        let tx = doc.current_transaction().unwrap();
-        tx.origin()
+        self.doc.current_origin()
     }
 
     /// Returns a list of attribute changes made over corresponding `YXmlText` collection within

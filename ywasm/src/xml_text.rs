@@ -537,7 +537,7 @@ impl XmlText {
 #[wasm_bindgen]
 pub struct YXmlTextEvent {
     inner: &'static XmlTextEvent,
-    doc: Js,
+    doc: crate::Doc,
     target: Option<JsValue>,
     delta: Option<JsValue>,
     keys: Option<JsValue>,
@@ -545,7 +545,7 @@ pub struct YXmlTextEvent {
 
 #[wasm_bindgen]
 impl YXmlTextEvent {
-    pub(crate) fn new<'doc>(event: &XmlTextEvent, doc: &Js) -> Self {
+    pub(crate) fn new<'doc>(event: &XmlTextEvent, doc: &crate::Doc) -> Self {
         let inner: &'static XmlTextEvent = unsafe { std::mem::transmute(event) };
         YXmlTextEvent {
             inner,
@@ -576,9 +576,7 @@ impl YXmlTextEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        let doc = self.doc.clone().into_doc();
-        let tx = doc.current_transaction().unwrap();
-        tx.origin()
+        self.doc.current_origin()
     }
 
     /// Returns a list of text changes made over corresponding `YText` collection within

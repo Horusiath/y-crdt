@@ -15,18 +15,18 @@ use crate::Result;
 #[wasm_bindgen]
 pub struct UndoManager {
     manager: yrs::undo::UndoManager<JsValue>,
-    doc: Js,
+    doc: crate::Doc,
 }
 
 impl UndoManager {
-    fn get_scope(doc: &Js, js: &JsValue) -> Result<BranchPtr> {
+    fn get_scope(doc: &crate::Doc, js: &JsValue) -> Result<BranchPtr> {
         let shared = Shared::from_ref(js)?;
         let branch_id = if let Some(id) = shared.branch_id() {
             id
         } else {
             return Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP));
         };
-        crate::Doc::transact(doc, JsValue::UNDEFINED, move |txn| {
+        doc.transact(JsValue::UNDEFINED, move |txn| {
             let doc = txn.doc().get_ref();
             match branch_id.get_branch(&*doc) {
                 Some(branch) if !branch.is_deleted() => Ok(branch),
@@ -39,13 +39,8 @@ impl UndoManager {
 #[wasm_bindgen]
 impl UndoManager {
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-        scope: JsValue,
-        options: JsValue,
-    ) -> Result<UndoManager> {
-        let doc = Js::new(doc);
-        let scope = Self::get_scope(&doc, &scope)?;
+    pub fn new(doc: &crate::Doc, scope: JsValue, options: JsValue) -> Result<UndoManager> {
+        let scope = Self::get_scope(doc, &scope)?;
         let mut o = yrs::undo::Options {
             capture_timeout_millis: 500,
             tracked_origins: HashSet::new(),
@@ -72,10 +67,13 @@ impl UndoManager {
         }
 
         let manager = {
-            let mut doc = doc.clone().into_doc_mut();
-            yrs::undo::UndoManager::with_scope_and_options(&mut *doc, &scope, o)
+            let mut doc = doc.state.borrow_mut();
+            yrs::undo::UndoManager::with_scope_and_options(&mut doc.doc, &scope, o)
         };
-        Ok(Self { manager, doc })
+        Ok(Self {
+            manager,
+            doc: doc.clone(),
+        })
     }
 
     #[wasm_bindgen(js_name = addToScope)]
@@ -99,8 +97,8 @@ impl UndoManager {
 
     #[wasm_bindgen(js_name = clear)]
     pub fn clear(&mut self) {
-        let doc = self.doc.clone().into_doc();
-        self.manager.clear(&*doc);
+        let state = self.doc.state.borrow();
+        self.manager.clear(&state.doc);
     }
 
     #[wasm_bindgen(js_name = stopCapturing)]
@@ -110,14 +108,14 @@ impl UndoManager {
 
     #[wasm_bindgen(js_name = undo)]
     pub fn undo(&mut self) -> bool {
-        let mut doc = self.doc.clone().into_doc_mut();
-        self.manager.undo(&mut *doc)
+        let mut state = self.doc.state.borrow_mut();
+        self.manager.undo(&mut state.doc)
     }
 
     #[wasm_bindgen(js_name = redo)]
     pub fn redo(&mut self) -> bool {
-        let mut doc = self.doc.clone().into_doc_mut();
-        self.manager.redo(&mut *doc)
+        let mut state = self.doc.state.borrow_mut();
+        self.manager.redo(&mut state.doc)
     }
 
     #[wasm_bindgen(getter, js_name = canUndo)]

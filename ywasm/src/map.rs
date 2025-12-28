@@ -300,14 +300,14 @@ impl Map {
 #[wasm_bindgen]
 pub struct YMapEvent {
     inner: &'static MapEvent,
-    doc: Js,
+    doc: crate::Doc,
     target: Option<JsValue>,
     keys: Option<JsValue>,
 }
 
 #[wasm_bindgen]
 impl YMapEvent {
-    pub(crate) fn new<'doc>(event: &MapEvent, doc: &Js) -> Self {
+    pub(crate) fn new<'doc>(event: &MapEvent, doc: &crate::Doc) -> Self {
         let inner: &'static MapEvent = unsafe { std::mem::transmute(event) };
         YMapEvent {
             inner,
@@ -319,9 +319,7 @@ impl YMapEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        let doc = self.doc.clone().into_doc();
-        let tx = doc.current_transaction().unwrap();
-        tx.origin()
+        self.doc.current_origin()
     }
 
     /// Returns an array of keys and indexes creating a path from root type down to current instance
