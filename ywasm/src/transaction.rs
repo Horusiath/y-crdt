@@ -22,8 +22,8 @@ use yrs::types::TypeRef;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    ArrayRef, BranchID, JsonPath, JsonPathEval, MapRef, Origin, TextRef, Update, WeakRef,
-    XmlElementRef, XmlFragmentRef, XmlTextRef,
+    ArrayRef, BranchID, JsonPath, JsonPathEval, MapRef, Origin, RefProvider, TextRef, Update,
+    WeakRef, XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 
 #[wasm_bindgen]
@@ -84,7 +84,8 @@ impl Transaction {
     #[inline]
     pub fn pending_structs(&self) -> Result<JsValue> {
         let tx = self.deref();
-        if let Some(update) = tx.doc().pending_update() {
+        let doc: yrs::Ref<'_, yrs::Doc> = tx.doc().get_ref();
+        if let Some(update) = doc.pending_update() {
             let missing = crate::js::convert::state_vector_to_js(&update.missing);
             let update = js_sys::Uint8Array::from(update.update.encode_v1().as_slice());
             let obj: JsValue = js_sys::Object::new().into();
@@ -102,7 +103,7 @@ impl Transaction {
     #[inline]
     pub fn pending_ds(&self) -> Option<js_sys::Map> {
         let tx = self.deref();
-        let doc = tx.doc();
+        let doc: yrs::Ref<'_, yrs::Doc> = tx.doc().get_ref();
         let ds = doc.pending_ds()?;
         Some(crate::js::convert::delete_set_to_js(&ds))
     }
@@ -137,7 +138,7 @@ impl Transaction {
     pub fn get(&self, id: JsValue) -> crate::Result<JsValue> {
         let branch_id: BranchID =
             JsValue::into_serde(&id).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let doc = self.deref().doc();
+        let doc = self.deref().doc().get_ref();
         let doc = &*doc;
         let txn = self.deref();
         Ok(match branch_id.get_branch(doc) {

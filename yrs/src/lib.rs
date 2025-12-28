@@ -678,6 +678,7 @@ pub use crate::moving::IndexedSequence;
 pub use crate::moving::Offset;
 pub use crate::moving::StickyIndex;
 pub use crate::observer::{Observer, Subscription};
+pub use crate::out::FromOut;
 pub use crate::out::Out;
 pub use crate::state_vector::Snapshot;
 pub use crate::state_vector::StateVector;

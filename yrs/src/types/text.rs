@@ -304,7 +304,7 @@ pub trait Text: AsRef<Branch> + Sized {
             let ptr = txn
                 .create_item(&pos, content.into(), None)
                 .expect("cannot insert empty value");
-            V::Return::from_item(ptr, &*txn.doc()).unwrap()
+            V::Return::from_item(ptr, &*txn.doc().get_ref()).unwrap()
         } else {
             panic!("The type or the position doesn't exist!");
         }
@@ -332,7 +332,7 @@ pub trait Text: AsRef<Branch> + Sized {
         if let Some(mut pos) = find_position(this, txn, index) {
             let item = insert(this, txn, &mut pos, embed.into(), attributes)
                 .expect("cannot insert empty value");
-            V::Return::from_item(item, &*txn.doc()).unwrap()
+            V::Return::from_item(item, &*txn.doc().get_ref()).unwrap()
         } else {
             panic!("The type or the position doesn't exist!");
         }
@@ -748,7 +748,7 @@ fn find_position<D: MutProvider<Doc>>(
     };
 
     let mut format_ptrs = HashMap::new();
-    let mut doc = txn.doc_mut();
+    let mut doc = txn.doc_mut().get_mut();
     let doc = &mut *doc;
     let encoding = doc.offset_kind();
     let mut remaining = index;
@@ -809,7 +809,7 @@ fn find_position<D: MutProvider<Doc>>(
 }
 
 fn remove<D: MutProvider<Doc>>(txn: &mut Transaction<D>, pos: &mut ItemPosition, len: u32) {
-    let encoding = txn.doc().offset_kind();
+    let encoding = txn.doc().get_ref().offset_kind();
     let mut remaining = len;
     let start = pos.right.clone();
     let start_attrs = pos.current_attrs.clone();
@@ -887,7 +887,7 @@ fn insert_format<D: MutProvider<Doc>>(
 ) {
     minimize_attr_changes(pos, &attrs);
     let mut negated_attrs = insert_attributes(this, txn, pos, attrs.clone()); //TODO: remove `attrs.clone()`
-    let encoding = txn.doc().offset_kind();
+    let encoding = txn.doc().get_ref().offset_kind();
     // iterate until first non-format or null is found
     // delete all formats with attributes[format.key] != null
     // also check the attributes after the first non-format as we do not want to insert redundant
@@ -1548,8 +1548,8 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        any, Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Observable, StateVector,
-        Text, Update, ID,
+        any, Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Observable, RefProvider,
+        StateVector, Text, Update, ID,
     };
     use arc_swap::ArcSwapOption;
     use fastrand::Rng;
@@ -2731,7 +2731,7 @@ mod test {
             [Delta::insert(MapPrelim::from([("key", "val")]))],
         );
         let delta = txt1.diff(&txn1, YChange::identity);
-        let d: MapRef = delta[0].insert.clone().cast(&txn1.doc()).unwrap();
+        let d: MapRef = delta[0].insert.clone().cast(&txn1.doc().get_ref()).unwrap();
         assert_eq!(
             d.get::<Out, _>(&txn1, "key").unwrap(),
             Out::Any("val".into())
@@ -2743,7 +2743,9 @@ mod test {
             txt1.observe(move |txn, e| {
                 let delta = e.delta().to_vec();
                 let d: MapRef = match &delta[0] {
-                    Delta::Inserted(insert, _) => insert.clone().cast(&*txn.doc()).unwrap(),
+                    Delta::Inserted(insert, _) => {
+                        insert.clone().cast(&*txn.doc().get_ref()).unwrap()
+                    }
                     _ => unreachable!("unexpected delta"),
                 };
                 assert_eq!(d.get::<Out, _>(txn, "key").unwrap(), Out::Any("val".into()));
@@ -2764,7 +2766,7 @@ mod test {
         let txn = d2.transact();
         let delta = txt2.diff(&txn, YChange::identity);
         assert_eq!(delta.len(), 1);
-        let d: MapRef = delta[0].insert.clone().cast(&txn.doc()).unwrap();
+        let d: MapRef = delta[0].insert.clone().cast(&txn.doc().get_ref()).unwrap();
         assert_eq!(
             d.get::<Out, _>(&txn, "key").unwrap(),
             Out::Any("val".into())

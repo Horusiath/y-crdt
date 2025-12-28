@@ -688,7 +688,7 @@ pub struct SubdocRefs<'tx, D: RefProvider<Doc>> {
 
 impl<'tx, D: RefProvider<Doc>> SubdocRefs<'tx, D> {
     pub(crate) fn new(txn: &'tx Transaction<D>) -> Self {
-        let doc: crate::cell::Ref<'tx, Doc> = txn.doc();
+        let doc: crate::cell::Ref<'tx, Doc> = txn.doc().get_ref();
         let iter = doc.subdocs.iter();
         // since iter lifetime is bound to doc reference (which is owned by current struct),
         // it's safe to transmute its lifetime this way
@@ -707,7 +707,7 @@ impl<'tx, D: RefProvider<Doc>> Iterator for SubdocRefs<'tx, D> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (_, id) = self.inner.next()?;
-        let parent_doc = self.txn.doc();
+        let parent_doc = self.txn.doc().get_ref();
         let block = parent_doc.blocks.get_block(id)?.as_item()?;
         let item: &'tx Item = unsafe { std::mem::transmute(block.deref()) };
         if let ItemContent::Doc(subdoc) = &item.content {

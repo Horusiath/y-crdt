@@ -513,7 +513,7 @@ impl StickyIndex {
         let mut branch = None;
         let mut index = 0;
 
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         match &self.scope {
             IndexScope::Relative(right_id) => {
                 if doc.blocks.get_clock(&right_id.client) <= right_id.clock {
@@ -959,7 +959,12 @@ pub trait IndexedSequence: AsRef<Branch> {
         index: u32,
         assoc: Assoc,
     ) -> Option<StickyIndex> {
-        StickyIndex::at(&*txn.doc(), BranchPtr::from(self.as_ref()), index, assoc)
+        StickyIndex::at(
+            &*txn.doc().get_ref(),
+            BranchPtr::from(self.as_ref()),
+            index,
+            assoc,
+        )
     }
 }
 

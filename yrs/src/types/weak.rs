@@ -190,7 +190,7 @@ impl GetString for WeakRef<TextRef> {
     /// assert_eq!(link.get_string(&txn), "hello ".to_string());
     /// ```
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         self.source().to_string(&*doc)
     }
 }
@@ -224,7 +224,7 @@ impl GetString for WeakRef<XmlTextRef> {
     /// assert_eq!(link.get_string(&txn), "<b>old</b>, <i>itali</i>".to_string());
     /// ```
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         self.source().to_xml_string(&*doc)
     }
 }
@@ -249,7 +249,7 @@ where
         V: FromOut,
     {
         let value = self.try_deref_value(txn)?;
-        V::from_out(value, &*txn.doc()).ok()
+        V::from_out(value, &*txn.doc().get_ref()).ok()
     }
 
     /// Tries to dereference a value for linked [Map] entry. If element didn't exist, `None` will
@@ -277,7 +277,7 @@ where
     /// ```
     pub fn try_deref_value<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
         let source = self.try_source()?;
-        let item = source.quote_start.get_item(&*txn.doc());
+        let item = source.quote_start.get_item(&*txn.doc().get_ref());
         let last = item.to_iter().last()?;
         if last.is_deleted() {
             None
@@ -388,14 +388,14 @@ where
 
 impl GetString for WeakPrelim<TextRef> {
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         self.source.to_string(&*doc)
     }
 }
 
 impl GetString for WeakPrelim<XmlTextRef> {
     fn get_string<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> String {
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         self.source.to_xml_string(&*doc)
     }
 }
@@ -526,7 +526,7 @@ impl LinkSource {
         &self,
         txn: &'tx Transaction<D>,
     ) -> Unquote<'tx> {
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         let mut current = self.quote_start.get_item(&doc);
         if let Some(ptr) = &mut current {
             if Self::try_right_most(ptr) {
@@ -717,7 +717,7 @@ pub trait Quotable: AsRef<Branch> + Sized {
             Bound::Excluded(&i) => Some((i, Assoc::Before)),
             Bound::Unbounded => None,
         };
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         let doc = &*doc;
         let encoding = doc.offset_kind();
         let mut start_index = 0;
@@ -890,7 +890,7 @@ mod test {
     use crate::Assoc::{After, Before};
     use crate::{
         Array, ArrayRef, DeepObservable, Doc, GetString, Map, MapPrelim, MapRef, Observable,
-        Quotable, Text, TextRef, XmlTextRef,
+        Quotable, RefProvider, Text, TextRef, XmlTextRef,
     };
 
     #[test]
@@ -1844,7 +1844,7 @@ mod test {
 
         let txn = d2.transact();
         let diff = txt2.diff(&txn, YChange::identity);
-        let l2: WeakRef<TextRef> = diff[1].insert.clone().cast(&txn.doc()).unwrap();
+        let l2: WeakRef<TextRef> = diff[1].insert.clone().cast(&txn.doc().get_ref()).unwrap();
         assert_eq!(l2.get_string(&txn), "be".to_string());
     }
 
@@ -1878,7 +1878,7 @@ mod test {
 
         let txn = d2.transact();
         let diff = txt2.diff(&txn, YChange::identity);
-        let l2: WeakRef<TextRef> = diff[1].insert.clone().cast(&txn.doc()).unwrap();
+        let l2: WeakRef<TextRef> = diff[1].insert.clone().cast(&txn.doc().get_ref()).unwrap();
         assert_eq!(l2.get_string(&txn), "be".to_string());
     }
 
@@ -1924,7 +1924,7 @@ mod test {
             .into_iter()
             .map(|d| {
                 d.insert
-                    .cast::<WeakRef<XmlTextRef>>(&txn.doc())
+                    .cast::<WeakRef<XmlTextRef>>(&txn.doc().get_ref())
                     .unwrap()
                     .get_string(&txn)
             })
@@ -1953,7 +1953,7 @@ mod test {
 
         let values: Vec<u32> = array
             .iter(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(values, vec![1, 2, 3, 4, 5, 6, 7]);
 
@@ -1963,7 +1963,7 @@ mod test {
             let q = quotes.push_back(&mut txn, q);
             let values: Vec<u32> = q
                 .unquote(&txn)
-                .map(|v| v.cast(&txn.doc()).unwrap())
+                .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
                 .collect();
             assert_eq!(values, expected)
         };
@@ -1988,7 +1988,7 @@ mod test {
 
         let values: Vec<u32> = array
             .iter(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(values, vec![1, 2, 3, 4, 5, 6, 7]);
 
@@ -1998,7 +1998,7 @@ mod test {
             let q = quotes.push_back(&mut txn, q);
             let values: Vec<u32> = q
                 .unquote(&txn)
-                .map(|v| v.cast(&txn.doc()).unwrap())
+                .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
                 .collect();
             assert_eq!(values, expected)
         };
@@ -2035,37 +2035,37 @@ mod test {
         array.move_range_to(&mut txn, 3, Before, 5, After, 1);
         let values: Vec<u32> = array
             .iter(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(values, vec![1, 4, 5, 6, 2, 3, 7]);
 
         let actual: Vec<u32> = q1
             .unquote(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(actual, vec![1, 4, 5, 6, 2, 3]);
 
         let actual: Vec<u32> = q2
             .unquote(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(actual, vec![2, 3]);
 
         let actual: Vec<u32> = q3
             .unquote(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(actual, vec![3]);
 
         let actual: Vec<u32> = q4
             .unquote(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(actual, vec![4, 5, 6]);
 
         let actual: Vec<u32> = q5
             .unquote(&txn)
-            .map(|v| v.cast(&txn.doc()).unwrap())
+            .map(|v| v.cast(&txn.doc().get_ref()).unwrap())
             .collect();
         assert_eq!(actual, vec![5, 6, 2, 3, 7]);
     }

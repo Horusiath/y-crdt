@@ -18,12 +18,13 @@ use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, RefMutFrom
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::{Branch, BranchPtr};
-use yrs::doc::{DocLike, SubDocHook};
+use yrs::doc::SubDocHook;
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
     TypeRef, TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
     TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_FRAGMENT, TYPE_REFS_XML_TEXT,
 };
+use yrs::FromOut;
 use yrs::{
     Any, ArrayRef, BranchID, Doc, Map, MapRef, Mut, MutProvider, Origin, Out, Ref, RefProvider,
     Text, TextRef, Transaction, WeakRef, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
@@ -54,6 +55,13 @@ impl Js {
     #[inline]
     pub fn new(js: JsValue) -> Self {
         Js(js)
+    }
+
+    pub fn prelim(&self) -> bool {
+        match js_sys::Reflect::get(&self.0, &JsValue::from_str("prelim")) {
+            Ok(js) => js.as_bool().unwrap_or(false),
+            Err(_) => false,
+        }
     }
 
     pub fn into_doc(self) -> RcRef<crate::Doc> {
@@ -352,7 +360,7 @@ pub enum Shared {
     XmlText(RcRefMut<YXmlText>),
     XmlElement(RcRefMut<YXmlElement>),
     XmlFragment(RcRefMut<YXmlFragment>),
-    Doc(crate::Doc),
+    Doc(Js),
 }
 
 impl Shared {
@@ -370,7 +378,7 @@ impl Shared {
                 convert::mut_from_js::<YXmlFragment>(js)?,
             )),
             TYPE_REFS_WEAK => Ok(Shared::Weak(convert::mut_from_js::<YWeakLink>(js)?)),
-            TYPE_REFS_DOC => Ok(Shared::Doc(convert::mut_from_js::<crate::Doc>(js)?)),
+            TYPE_REFS_DOC => Ok(Shared::Doc(Js::new(js.clone()))),
             _ => Err(js.clone()),
         }
     }
@@ -447,27 +455,29 @@ impl Prelim for Shared {
     }
 
     fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
-        let doc = txn.doc().clone();
+        let txn: &mut Transaction<Js> = unsafe { std::mem::transmute(txn) }; // only Js type is valid here
+        let js = txn.doc();
+        let doc = crate::Js::into_doc(js.clone());
         match self {
             Shared::Text(mut cell) => {
-                let text = TextRef::from_item(inner_ref, txn).unwrap();
+                let text = TextRef::from_item(inner_ref, &*doc).unwrap();
                 if let YText(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YText(SharedCollection::Integrated(Integrated::new(
                         text.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 ) {
                     text.insert(txn, 0, &raw);
                 }
             }
             Shared::Map(mut cell) => {
-                let map = MapRef::from(inner_ref);
+                let map = MapRef::from_item(inner_ref, &*doc).unwrap();
                 if let YMap(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YMap(SharedCollection::Integrated(Integrated::new(
                         map.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 ) {
                     for (key, js_val) in raw {
@@ -476,24 +486,24 @@ impl Prelim for Shared {
                 }
             }
             Shared::Array(mut cell) => {
-                let array = ArrayRef::from_item(inner_ref, txn).unwrap();
+                let array = ArrayRef::from_item(inner_ref, &*doc).unwrap();
                 if let YArray(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YArray(SharedCollection::Integrated(Integrated::new(
                         array.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 ) {
                     array.insert_at(txn, 0, raw).unwrap();
                 }
             }
             Shared::XmlText(mut cell) => {
-                let xml_text = XmlTextRef::from(inner_ref);
+                let xml_text = XmlTextRef::from_item(inner_ref, &*doc).unwrap();
                 if let YXmlText(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YXmlText(SharedCollection::Integrated(Integrated::new(
                         xml_text.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 ) {
                     xml_text.insert(txn, 0, &raw.text);
@@ -503,12 +513,12 @@ impl Prelim for Shared {
                 }
             }
             Shared::XmlElement(mut cell) => {
-                let xml_element = XmlElementRef::from(inner_ref);
+                let xml_element = XmlElementRef::from_item(inner_ref, &*doc).unwrap();
                 if let YXmlElement(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YXmlElement(SharedCollection::Integrated(Integrated::new(
                         xml_element.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 ) {
                     for child in raw.children {
@@ -520,12 +530,12 @@ impl Prelim for Shared {
                 }
             }
             Shared::XmlFragment(mut cell) => {
-                let xml_fragment = XmlFragmentRef::from(inner_ref);
+                let xml_fragment = XmlFragmentRef::from_item(inner_ref, &*doc).unwrap();
                 if let YXmlFragment(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
                     YXmlFragment(SharedCollection::Integrated(Integrated::new(
                         xml_fragment.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 ) {
                     for child in raw {
@@ -534,12 +544,12 @@ impl Prelim for Shared {
                 }
             }
             Shared::Weak(mut cell) => {
-                let weak_link: WeakRef<BranchPtr> = WeakRef::from(inner_ref);
+                let weak_link: WeakRef<BranchPtr> = WeakRef::from_item(inner_ref, &*doc).unwrap();
                 let _ = std::mem::replace(
                     &mut *cell,
                     YWeakLink(SharedCollection::Integrated(Integrated::new(
                         weak_link.clone(),
-                        doc,
+                        js.clone(),
                     ))),
                 );
             }

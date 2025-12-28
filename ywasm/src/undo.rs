@@ -8,7 +8,7 @@ use wasm_bindgen::JsValue;
 
 use yrs::branch::BranchPtr;
 use yrs::undo::EventKind;
-use yrs::Doc as YDoc;
+use yrs::{Doc as YDoc, RefProvider};
 
 use crate::doc::Doc;
 use crate::js::{Callback, Js, Shared};
@@ -30,7 +30,7 @@ impl YUndoManager {
             return Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP));
         };
         crate::Doc::transact(doc, JsValue::UNDEFINED, move |txn| {
-            let doc = txn.doc();
+            let doc = txn.doc().get_ref();
             match branch_id.get_branch(&*doc) {
                 Some(branch) if !branch.is_deleted() => Ok(branch),
                 _ => Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),

@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder};
-use yrs::{Assoc, StickyIndex, Update};
+use yrs::{Assoc, RefProvider, StickyIndex, Update};
 
 mod array;
 mod awareness;
@@ -42,6 +42,9 @@ pub use crate::undo::YUndoEvent as UndoEvent;
 pub use crate::undo::YUndoManager as UndoManager;
 pub use crate::weak::YWeakLink as WeakLink;
 pub use crate::weak::YWeakLinkEvent as WeakLinkEvent;
+pub use crate::xml_elem::YXmlElement as XmlElem;
+pub use crate::xml_frag::YXmlFragment as XmlFragment;
+pub use crate::xml_text::YXmlText as XmlText;
 
 /// When called will call console log errors whenever internal panic is called from within
 /// WebAssembly module.
@@ -452,7 +455,7 @@ pub fn create_sticky_index_from_type(ytype: JsValue, index: u32, assoc: i32) -> 
         };
         let (branch_id, doc) = shared.try_integrated()?;
         let index = crate::Doc::transact(doc, JsValue::UNDEFINED, |tx| {
-            let doc = tx.doc();
+            let doc = tx.doc().get_ref();
             let doc = &*doc;
             let ptr = match branch_id.get_branch(doc) {
                 None => return Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),

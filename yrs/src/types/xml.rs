@@ -1006,7 +1006,7 @@ pub trait Xml: AsRef<Branch> {
         let ptr = txn
             .create_item(&pos, value, Some(key))
             .expect("Cannot insert empty value");
-        if let Some(integrated) = V::Return::from_item(ptr, &*txn.doc()) {
+        if let Some(integrated) = V::Return::from_item(ptr, &*txn.doc().get_ref()) {
             integrated
         } else {
             panic!("Defect: unexpected integrated type")
@@ -1076,7 +1076,7 @@ pub trait XmlFragment: AsRef<Branch> {
         V: XmlPrelim,
     {
         let ptr = self.as_ref().insert_at(txn, index, xml_node).unwrap(); // XML node is never empty
-        V::Return::from_item(ptr, &*txn.doc()).unwrap()
+        V::Return::from_item(ptr, &*txn.doc().get_ref()).unwrap()
     }
 
     /// Inserts given `value` at the end of the current array.
@@ -1107,7 +1107,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// or `index` is outside the bounds of an array.
     fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(&*txn.doc(), index) {
+        if walker.try_forward(&*txn.doc().get_ref(), index) {
             walker.delete(txn, len)
         } else {
             panic!("Index {} is outside of the range of an array", index);
@@ -1209,8 +1209,8 @@ impl<'a, D: RefProvider<Doc>> Iterator for XmlNodes<'a, D> {
     type Item = XmlOut;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let value = self.iter.read_value(&*self.txn.doc())?;
-        XmlOut::from_out(value, &*self.txn.doc()).ok()
+        let value = self.iter.read_value(&*self.txn.doc().get_ref())?;
+        XmlOut::from_out(value, &*self.txn.doc().get_ref()).ok()
     }
 }
 

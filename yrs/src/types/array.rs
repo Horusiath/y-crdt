@@ -93,7 +93,7 @@ impl ToJson for ArrayRef {
         let mut walker = BlockIter::new(self.0);
         let len = self.0.len();
         let mut buf = vec![Out::default(); len as usize];
-        let read = walker.slice(&*txn.doc(), &mut buf);
+        let read = walker.slice(&*txn.doc().get_ref(), &mut buf);
         if read == len {
             let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
             Any::Array(res)
@@ -196,11 +196,11 @@ pub trait Array: AsRef<Branch> + Sized {
         V: Prelim,
     {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(&*txn.doc(), index) {
+        if walker.try_forward(&*txn.doc().get_ref(), index) {
             let ptr = walker
                 .insert_contents(txn, value)
                 .expect("cannot insert empty value");
-            V::Return::from_item(ptr, &*txn.doc()).unwrap()
+            V::Return::from_item(ptr, &*txn.doc().get_ref()).unwrap()
         } else {
             panic!("Index {} is outside of the range of an array", index);
         }
@@ -260,7 +260,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// or `index` is outside of the bounds of an array.
     fn remove_range<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(&*txn.doc(), index) {
+        if walker.try_forward(&*txn.doc().get_ref(), index) {
             walker.delete(txn, len)
         } else {
             panic!("Index {} is outside of the range of an array", index);
@@ -271,7 +271,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// of the range of a current array.
     fn get<D: RefProvider<Doc>, R: FromOut>(&self, txn: &Transaction<D>, index: u32) -> Option<R> {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         if walker.try_forward(&*doc, index) {
             let out = walker.read_value(&*doc)?;
             R::from_out(out, &*doc).ok()
@@ -356,7 +356,7 @@ pub trait Array: AsRef<Branch> + Sized {
             return;
         }
         let this = BranchPtr::from(self.as_ref());
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         let left = StickyIndex::at(&*doc, this, source, Assoc::After)
             .expect("`source` index parameter is beyond the range of an y-array");
         let mut right = left.clone();
@@ -410,7 +410,7 @@ pub trait Array: AsRef<Branch> + Sized {
             return;
         }
         let this = BranchPtr::from(self.as_ref());
-        let doc = txn.doc();
+        let doc = txn.doc().get_ref();
         let left = StickyIndex::at(&*doc, this, start, assoc_start)
             .expect("`start` index parameter is beyond the range of an y-array");
         let right = StickyIndex::at(&*doc, this, end + 1, assoc_end)
@@ -463,7 +463,7 @@ impl<'a, D: RefProvider<Doc>> Iterator for ArrayIter<'a, D> {
             None
         } else {
             let mut buf = [Out::default(); 1];
-            let doc = self.txn.doc();
+            let doc = self.txn.doc().get_ref();
             if self.inner.slice(&*doc, &mut buf) != 0 {
                 Some(std::mem::replace(&mut buf[0], Out::default()))
             } else {

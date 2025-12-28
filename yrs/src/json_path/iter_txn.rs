@@ -90,6 +90,7 @@ fn any_iter<'a, D: RefProvider<Doc>>(
         None => {
             let root_refs = txn
                 .doc()
+                .get_ref()
                 .root_refs()
                 .map(|(_, out)| out)
                 .collect::<Vec<_>>();

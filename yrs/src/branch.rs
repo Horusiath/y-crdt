@@ -704,7 +704,7 @@ impl<S: RootRef> Root<S> {
     /// Returns a reference to a shared root-level collection current [Root] represents, or creates
     /// it if it wasn't instantiated before.
     pub fn get_or_create<D: MutProvider<Doc>>(&self, txn: &mut Transaction<D>) -> S {
-        let mut doc = txn.doc_mut();
+        let mut doc = txn.doc_mut().get_mut();
         let branch = doc.get_or_create_type(self.name.clone(), S::type_ref());
         S::from(branch)
     }
@@ -775,7 +775,7 @@ impl<S: SharedRef> Nested<S> {
     /// If the referenced collection has been deleted or was not yet present in current transaction
     /// scope i.e. due to missing update, a `None` will be returned.  
     pub fn get<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
-        let store = txn.doc();
+        let store = txn.doc().get_ref();
         let block = store.blocks.get_block(&self.id)?;
         if let BlockCell::Block(block) = block {
             if let ItemContent::Type(branch) = &block.content {
@@ -861,7 +861,7 @@ impl<S: SharedRef> Hook<S> {
     /// assert_eq!(root_hook.get(&txn), Some(root));
     /// ```
     pub fn get<D: RefProvider<Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
-        let branch = self.id.get_branch(&*txn.doc())?;
+        let branch = self.id.get_branch(&*txn.doc().get_ref())?;
         match branch.item {
             Some(ptr) if ptr.is_deleted() => None,
             _ => Some(S::from(branch)),

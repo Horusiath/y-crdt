@@ -606,8 +606,8 @@ where
     }
 
     #[inline]
-    pub fn doc(&self) -> crate::cell::Ref<'_, Doc> {
-        self.doc.get_ref()
+    pub fn doc(&self) -> &D {
+        &self.doc
     }
 
     /// Checks if transaction requires commiting because it was used to introduce changes
@@ -631,13 +631,13 @@ where
 {
     /// Returns state vector describing current state of the updates.
     pub fn state_vector(&self) -> StateVector {
-        self.doc().state_vector().clone()
+        self.doc().get_ref().state_vector().clone()
     }
 
     /// Returns a snapshot which describes a current state of updates and removals made within
     /// the corresponding document.
     pub fn snapshot(&self) -> Snapshot {
-        let store = self.doc();
+        let store = self.doc().get_ref();
         let blocks = &store.blocks;
         let sv = blocks.state_vector().clone();
         let ds = DeleteSet::from(blocks);
@@ -651,7 +651,9 @@ where
         snapshot: &Snapshot,
         encoder: &mut E,
     ) -> Result<(), Error> {
-        self.doc().encode_state_from_snapshot(snapshot, encoder)
+        self.doc()
+            .get_ref()
+            .encode_state_from_snapshot(snapshot, encoder)
     }
 
     /// Encodes the difference between remote peer state given its `state_vector` and the state
@@ -666,7 +668,7 @@ where
     /// - [Transaction::encode_update] encodes only inserts and deletes made within the scope
     /// of the current transaction.
     pub fn encode_diff<E: Encoder>(&self, state_vector: &StateVector, encoder: &mut E) {
-        self.doc().encode_diff(state_vector, encoder)
+        self.doc().get_ref().encode_diff(state_vector, encoder)
     }
 
     /// Encodes the difference between remote peer state given its `state_vector` and the state
@@ -716,7 +718,7 @@ where
     /// - [Transaction::encode_update] encodes only inserts and deletes made within the scope
     /// of the current transaction.
     pub fn encode_state_as_update<E: Encoder>(&self, sv: &StateVector, encoder: &mut E) {
-        let store = self.doc();
+        let store = self.doc().get_ref();
         store.write_blocks_from(sv, encoder);
         let ds = DeleteSet::from(&store.blocks);
         ds.encode(encoder);
@@ -738,7 +740,7 @@ where
         let mut encoder = EncoderV1::new();
         self.encode_state_as_update(sv, &mut encoder);
         // check for pending data
-        let doc = self.doc();
+        let doc = self.doc().get_ref();
         merge_pending_v1(encoder.to_vec(), &*doc)
     }
 
@@ -759,7 +761,7 @@ where
         self.encode_state_as_update(sv, &mut encoder);
 
         // check for pending data
-        let doc = self.doc();
+        let doc = self.doc().get_ref();
         merge_pending_v2(encoder.to_vec(), &*doc)
     }
 
@@ -779,7 +781,7 @@ where
     /// interpreted as a list of text chunks).
     #[inline]
     pub fn get_text<N: Into<Arc<str>>>(&self, name: N) -> Option<TextRef> {
-        TextRef::root(name).get(&*self.doc())
+        TextRef::root(name).get(&*self.doc().get_ref())
     }
 
     /// Returns an [ArrayRef] data structure stored under a given `name`. Array structures are used for
@@ -793,7 +795,7 @@ where
     /// interpreted as a list of inserted values).
     #[inline]
     pub fn get_array<N: Into<Arc<str>>>(&self, name: N) -> Option<ArrayRef> {
-        ArrayRef::root(name).get(&*self.doc())
+        ArrayRef::root(name).get(&*self.doc().get_ref())
     }
 
     /// Returns a [MapRef] data structure stored under a given `name`. Maps are used to store key-value
@@ -808,7 +810,7 @@ where
     /// interpreted as native map).
     #[inline]
     pub fn get_map<N: Into<Arc<str>>>(&self, name: N) -> Option<MapRef> {
-        MapRef::root(name).get(&*self.doc())
+        MapRef::root(name).get(&*self.doc().get_ref())
     }
 
     /// Returns a [XmlFragmentRef] data structure stored under a given `name`. XML elements represent
@@ -824,11 +826,11 @@ where
     /// XML nodes).
     #[inline]
     pub fn get_xml_fragment<N: Into<Arc<str>>>(&self, name: N) -> Option<XmlFragmentRef> {
-        XmlFragmentRef::root(name).get(&*self.doc())
+        XmlFragmentRef::root(name).get(&*self.doc().get_ref())
     }
 
     pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
-        let doc = self.doc();
+        let doc = self.doc().get_ref();
         let value = doc.types.get(name.as_ref())?;
         let ptr = BranchPtr::from(&*value);
         match &ptr.type_ref {
@@ -849,7 +851,7 @@ where
     /// Returns `true` if current document has any pending updates that are not yet
     /// integrated into the document.
     pub fn has_missing_updates(&self) -> bool {
-        let store = self.doc();
+        let store = self.doc().get_ref();
         store.pending.is_some() || store.pending_ds.is_some()
     }
 
@@ -935,7 +937,7 @@ where
     /// * Even if an update contains known information, the unknown information
     ///   is extracted and integrated into the document structure.
     pub fn encode_update<E: Encoder>(&self, encoder: &mut E) {
-        let doc = self.doc();
+        let doc = self.doc().get_ref();
         doc.write_blocks_from(&self.before_state(), encoder);
         match &self.state {
             None => DeleteSet::default().encode(encoder),
@@ -949,14 +951,14 @@ where
     D: MutProvider<Doc>,
 {
     #[inline]
-    pub fn doc_mut(&mut self) -> Mut<'_, Doc> {
-        self.doc.get_mut()
+    pub fn doc_mut(&mut self) -> &mut D {
+        &mut self.doc
     }
 
     #[inline(never)]
     fn init_state(&mut self) {
         self.state = {
-            let doc = self.doc();
+            let doc = self.doc().get_ref();
             Some(TransactionState::new(
                 doc.blocks.state_vector().clone(),
                 None,
@@ -1055,7 +1057,7 @@ where
     /// Returns `None` if current document didn't have any pending updates.
     pub fn prune_pending(&mut self) -> Option<Update> {
         let mut merge = Vec::with_capacity(2);
-        let mut doc = self.doc_mut();
+        let mut doc = self.doc_mut().get_mut();
         let doc = &mut *doc;
         if let Some(pending) = doc.pending.take() {
             merge.push(pending.update);
@@ -1154,7 +1156,7 @@ where
         parent_sub: Option<Arc<str>>,
     ) -> Option<ItemPtr> {
         let (left, right, origin, id) = {
-            let store = self.doc_mut();
+            let store = self.doc_mut().get_mut();
             let left = pos.left;
             let right = pos.right;
             let origin = if let Some(item) = pos.left.as_deref() {
