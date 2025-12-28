@@ -54,7 +54,6 @@ impl WeakLink {
     }
 
     #[wasm_bindgen(getter, js_name = type)]
-    #[inline]
     pub fn get_type(&self) -> u8 {
         TYPE_REFS_WEAK
     }
@@ -62,7 +61,6 @@ impl WeakLink {
     /// Gets unique logical identifier of this type, shared across peers collaborating on the same
     /// document.
     #[wasm_bindgen(getter, js_name = id)]
-    #[inline]
     pub fn id(&self) -> crate::Result<JsValue> {
         self.0.id()
     }

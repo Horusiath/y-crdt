@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use wasm_bindgen::convert::{IntoWasmAbi, RefMutFromWasmAbi};
+use wasm_bindgen::convert::{IntoWasmAbi, RefFromWasmAbi, RefMutFromWasmAbi, TryFromJsValue};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::doc::{DocLike, SubDocHook};
@@ -146,7 +146,6 @@ impl Doc {
     }
 
     #[wasm_bindgen(getter, js_name = type)]
-    #[inline]
     pub fn get_type(&self) -> u8 {
         TYPE_REFS_DOC
     }
@@ -154,7 +153,6 @@ impl Doc {
     /// Checks if a document is a preliminary type. It returns false, if current document
     /// is already a sub-document of another document.
     #[wasm_bindgen(getter)]
-    #[inline]
     pub fn prelim(&self) -> bool {
         self.parent_doc.is_none()
     }
@@ -198,7 +196,7 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YText` instance.
     #[wasm_bindgen(js_name = getText)]
-    pub fn get_text(&mut self, name: &str) -> Text {
+    pub fn get_text(&self, name: &str) -> Text {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_text(name);
@@ -214,7 +212,7 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YArray` instance.
     #[wasm_bindgen(js_name = getArray)]
-    pub fn get_array(&mut self, name: &str) -> Array {
+    pub fn get_array(&self, name: &str) -> Array {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_array(name);
@@ -230,7 +228,7 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YMap` instance.
     #[wasm_bindgen(js_name = getMap)]
-    pub fn get_map(&mut self, name: &str) -> Map {
+    pub fn get_map(&self, name: &str) -> Map {
         let doc = &self.this;
         Self::transact(doc, JsValue::UNDEFINED, |tx| {
             let shared_ref = tx.get_or_insert_map(name);
@@ -257,7 +255,7 @@ impl Doc {
     #[wasm_bindgen(js_name = on)]
     pub fn on(&mut self, event: &str, callback: js_sys::Function) -> Result<()> {
         let abi = callback.subscription_key();
-        let result = match event {
+        match event {
             "update" => self.doc.observe_update_v1_with(abi, move |txn, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
                 callback.call1(&JsValue::UNDEFINED, &update).unwrap();

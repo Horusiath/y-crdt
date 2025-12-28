@@ -77,7 +77,6 @@ impl Transaction {
     }
 
     #[wasm_bindgen(getter, js_name = pendingStructs)]
-    #[inline]
     pub fn pending_structs(&self) -> Result<JsValue> {
         let tx = self.deref();
         let doc: yrs::Ref<'_, yrs::Doc> = tx.doc().get_ref();
@@ -96,7 +95,6 @@ impl Transaction {
     /// Returns a unapplied delete set, that was received in one of the previous remote updates.
     /// This DeleteSet is waiting for a missing updates to arrive in order to be applied.
     #[wasm_bindgen(getter, js_name = pendingDeleteSet)]
-    #[inline]
     pub fn pending_ds(&self) -> Option<js_sys::Map> {
         let tx = self.deref();
         let doc: yrs::Ref<'_, yrs::Doc> = tx.doc().get_ref();

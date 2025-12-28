@@ -27,7 +27,6 @@ impl XmlFragment {
     }
 
     #[wasm_bindgen(getter, js_name = type)]
-    #[inline]
     pub fn get_type(&self) -> u8 {
         TYPE_REFS_XML_FRAGMENT
     }
@@ -35,7 +34,6 @@ impl XmlFragment {
     /// Gets unique logical identifier of this type, shared across peers collaborating on the same
     /// document.
     #[wasm_bindgen(getter, js_name = id)]
-    #[inline]
     pub fn id(&self) -> crate::Result<JsValue> {
         self.0.id()
     }
@@ -46,7 +44,6 @@ impl XmlFragment {
     /// Once a preliminary instance has been inserted this way, it becomes integrated into ywasm
     /// document store and cannot be nested again: attempt to do so will result in an exception.
     #[wasm_bindgen(getter)]
-    #[inline]
     pub fn prelim(&self) -> bool {
         self.0.is_prelim()
     }
@@ -55,7 +52,6 @@ impl XmlFragment {
     /// This method only works on already integrated shared types and will return false is current
     /// type is preliminary (has not been integrated into document).
     #[wasm_bindgen(js_name = alive)]
-    #[inline]
     pub fn alive(&self) -> bool {
         self.0.is_alive()
     }

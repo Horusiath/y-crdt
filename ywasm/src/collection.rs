@@ -1,10 +1,8 @@
 use crate::js::Js;
-use crate::transaction::Transaction;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
-use std::ops::Deref;
 use wasm_bindgen::JsValue;
-use yrs::{BranchID, Doc as YDoc, Hook, SharedRef, Transaction as YTransaction};
+use yrs::{BranchID, Hook, SharedRef, Transaction as YTransaction};
 
 pub enum SharedCollection<P, S> {
     Integrated(Integrated<S>),
