@@ -179,7 +179,7 @@ impl XmlFragment {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_with(abi, move |_, e| {
@@ -217,7 +217,7 @@ impl XmlFragment {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_deep_with(abi, move |_, e| {

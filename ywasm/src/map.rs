@@ -144,15 +144,13 @@ impl Map {
                 let value = c.get(key);
                 Ok(value.cloned().unwrap_or(JsValue::UNDEFINED))
             }
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    match target.get(tx, key) {
-                        None => Ok(JsValue::UNDEFINED),
-                        Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                match target.get(tx, key) {
+                    None => Ok(JsValue::UNDEFINED),
+                    Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
+                }
+            }),
         }
     }
 
@@ -160,16 +158,14 @@ impl Map {
     pub fn link(&self, key: &str) -> crate::Result<JsValue> {
         match &self.0 {
             SharedCollection::Prelim(_) => Err(JsValue::from_str(js::errors::INVALID_PRELIM_OP)),
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let link = target.link(tx, key);
-                    match link {
-                        Some(link) => Ok(WeakLink::from_prelim(link, c.doc.clone()).into()),
-                        None => Err(JsValue::from_str(js::errors::KEY_NOT_FOUND)),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let link = target.link(tx, key);
+                match link {
+                    Some(link) => Ok(WeakLink::from_prelim(link, c.doc.clone()).into()),
+                    None => Err(JsValue::from_str(js::errors::KEY_NOT_FOUND)),
+                }
+            }),
         }
     }
 
@@ -206,17 +202,15 @@ impl Map {
                 }
                 Ok(map.into())
             }
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let map = js_sys::Object::new();
-                    for (k, v) in target.iter(tx) {
-                        let value = Js::from_value(&v, c.doc.clone());
-                        js_sys::Reflect::set(&map, &k.into(), &value.into())?;
-                    }
-                    Ok(map.into())
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let map = js_sys::Object::new();
+                for (k, v) in target.iter(tx) {
+                    let value = Js::from_value(&v, c.doc.clone());
+                    js_sys::Reflect::set(&map, &k.into(), &value.into())?;
+                }
+                Ok(map.into())
+            }),
         }
     }
 
@@ -230,7 +224,7 @@ impl Map {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_with(abi, move |_, e| {
@@ -268,7 +262,7 @@ impl Map {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_deep_with(abi, move |_, e| {

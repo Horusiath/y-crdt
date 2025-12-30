@@ -78,24 +78,22 @@ impl WeakLink {
         use yrs::MapRef;
 
         match &self.0 {
-            SharedCollection::Prelim(c) => c.doc.transact(JsValue::UNDEFINED, |tx| {
+            SharedCollection::Prelim(c) => c.doc.transact(None, |tx| {
                 let weak_ref: WeakPrelim<MapRef> = WeakPrelim::from(c.prelim.clone());
                 match weak_ref.try_deref_raw(tx) {
                     None => Ok(JsValue::UNDEFINED),
                     Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
                 }
             }),
-            SharedCollection::Integrated(c) => {
-                c.doc.transact(JsValue::UNDEFINED, |tx| {
-                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
-                    let weak_ref: WeakRef<MapRef> = WeakRef::from(weak_ref.clone());
-                    let value = weak_ref.try_deref_value(tx);
-                    match value {
-                        None => Ok(JsValue::UNDEFINED),
-                        Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                let weak_ref: WeakRef<MapRef> = WeakRef::from(weak_ref.clone());
+                let value = weak_ref.try_deref_value(tx);
+                match value {
+                    None => Ok(JsValue::UNDEFINED),
+                    Some(value) => Ok(Js::from_value(&value, c.doc.clone()).into()),
+                }
+            }),
         }
     }
 
@@ -105,23 +103,21 @@ impl WeakLink {
         use yrs::ArrayRef;
 
         match &self.0 {
-            SharedCollection::Prelim(c) => c.doc.transact(JsValue::UNDEFINED, |tx| {
+            SharedCollection::Prelim(c) => c.doc.transact(None, |tx| {
                 let weak_ref: WeakPrelim<ArrayRef> = WeakPrelim::from(c.prelim.clone());
                 let values = weak_ref
                     .unquote(tx)
                     .map(|value| Js::from_value(&value, c.doc.clone()));
                 Ok(js_sys::Array::from_iter(values))
             }),
-            SharedCollection::Integrated(c) => {
-                c.doc.transact(JsValue::UNDEFINED, |tx| {
-                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
-                    let weak_ref: WeakRef<ArrayRef> = WeakRef::from(weak_ref.clone());
-                    let iter = weak_ref
-                        .unquote(tx)
-                        .map(|value| Js::from_value(&value, c.doc.clone()));
-                    Ok(js_sys::Array::from_iter(iter))
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                let weak_ref: WeakRef<ArrayRef> = WeakRef::from(weak_ref.clone());
+                let iter = weak_ref
+                    .unquote(tx)
+                    .map(|value| Js::from_value(&value, c.doc.clone()));
+                Ok(js_sys::Array::from_iter(iter))
+            }),
         }
     }
 
@@ -130,18 +126,16 @@ impl WeakLink {
         use yrs::XmlTextRef;
 
         match &self.0 {
-            SharedCollection::Prelim(c) => c.doc.transact(JsValue::UNDEFINED, |tx| {
+            SharedCollection::Prelim(c) => c.doc.transact(None, |tx| {
                 let weak_ref: WeakPrelim<XmlTextRef> = WeakPrelim::from(c.prelim.clone());
                 Ok(weak_ref.get_string(tx))
             }),
-            SharedCollection::Integrated(c) => {
-                c.doc.transact(JsValue::UNDEFINED, |tx| {
-                    let weak_ref = c.hook.get(tx).ok_or_disposed()?;
-                    let weak_ref: WeakRef<XmlTextRef> = WeakRef::from(weak_ref.clone());
-                    let string = weak_ref.get_string(tx);
-                    Ok(string)
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let weak_ref = c.hook.get(tx).ok_or_disposed()?;
+                let weak_ref: WeakRef<XmlTextRef> = WeakRef::from(weak_ref.clone());
+                let string = weak_ref.get_string(tx);
+                Ok(string)
+            }),
         }
     }
 
@@ -155,7 +149,7 @@ impl WeakLink {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                c.doc.transact(JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let weak_ref = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     weak_ref.observe_with(abi, move |_, e| {
@@ -193,7 +187,7 @@ impl WeakLink {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                c.doc.transact(JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let weak_ref = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     weak_ref.observe_deep_with(abi, move |_, e| {

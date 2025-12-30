@@ -28,11 +28,11 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub(crate) fn new(doc: crate::Doc, origin: JsValue) -> Self {
-        let origin: Option<Origin> = if origin.is_undefined() {
-            None
-        } else {
-            Some(Js::from(origin).into())
+    pub(crate) fn new(doc: crate::Doc, origin: Option<JsValue>) -> Self {
+        let origin = match origin {
+            None => None,
+            Some(origin) if origin.is_undefined() => None,
+            Some(origin) => Some(Js::from(origin).into()),
         };
         let inner = YTransaction::new(doc, origin);
         Transaction { inner }

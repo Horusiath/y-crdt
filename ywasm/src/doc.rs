@@ -110,7 +110,7 @@ impl Doc {
         }
     }
 
-    pub(crate) fn transact<F, T>(&self, origin: JsValue, f: F) -> T
+    pub(crate) fn transact<F, T>(&self, origin: Option<JsValue>, f: F) -> T
     where
         F: FnOnce(&mut YTransaction<crate::Doc>) -> T,
     {
@@ -204,7 +204,7 @@ impl Doc {
     #[wasm_bindgen(js_name = getText)]
     pub fn get_text(&self, name: &str) -> Text {
         let doc = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_text(name);
             Text(SharedCollection::integrated(shared_ref, doc.clone()))
         })
@@ -220,7 +220,7 @@ impl Doc {
     #[wasm_bindgen(js_name = getArray)]
     pub fn get_array(&self, name: &str) -> Array {
         let doc = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_array(name);
             Array(SharedCollection::integrated(shared_ref, doc.clone()))
         })
@@ -236,7 +236,7 @@ impl Doc {
     #[wasm_bindgen(js_name = getMap)]
     pub fn get_map(&self, name: &str) -> Map {
         let doc = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_map(name);
             Map(SharedCollection::integrated(shared_ref, doc.clone()))
         })
@@ -252,7 +252,7 @@ impl Doc {
     #[wasm_bindgen(js_name = getXmlFragment)]
     pub fn get_xml_fragment(&self, name: &str) -> XmlFragment {
         let doc = self.clone();
-        self.transact(JsValue::UNDEFINED, |tx| {
+        self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_xml_fragment(name);
             XmlFragment(SharedCollection::integrated(shared_ref, doc.clone()))
         })
@@ -320,7 +320,7 @@ impl Doc {
     pub fn load(&self) -> Result<()> {
         let parent_doc = self.state().parent_doc.clone();
         match parent_doc {
-            Some(parent_doc) => parent_doc.transact(JsValue::UNDEFINED, |parent_txn| {
+            Some(parent_doc) => parent_doc.transact(None, |parent_txn| {
                 let parent_scope = parent_txn.subdoc_scope();
                 let state = self.state_mut();
                 state.doc.load(parent_scope);
@@ -335,7 +335,7 @@ impl Doc {
     pub fn destroy(&self) -> Result<()> {
         let parent_doc = self.state().parent_doc.clone();
         match parent_doc {
-            Some(parent_doc) => parent_doc.transact(JsValue::UNDEFINED, |parent_txn| {
+            Some(parent_doc) => parent_doc.transact(None, |parent_txn| {
                 let parent_scope = parent_txn.subdoc_scope();
                 let state = self.state_mut();
                 state.doc.destroy(parent_scope);
@@ -349,7 +349,7 @@ impl Doc {
     #[wasm_bindgen(js_name = getSubdocs)]
     pub fn subdocs(&self) -> Result<js_sys::Array> {
         let res = js_sys::Array::new();
-        self.transact(JsValue::UNDEFINED, |txn| {
+        self.transact(None, |txn| {
             for subdoc in txn.subdoc_refs() {
                 todo!()
             }
@@ -413,8 +413,7 @@ impl Doc {
     pub fn select_all(&self, json_path: &str) -> Result<js_sys::Array> {
         let jpath = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let doc = self.clone();
-        let result: Vec<_> =
-            self.transact(JsValue::UNDEFINED, |txn| txn.json_path(&jpath).collect());
+        let result: Vec<_> = self.transact(None, |txn| txn.json_path(&jpath).collect());
         let array = js_sys::Array::new();
         for res in result {
             array.push(&Js::from_value(&res, doc.clone()).into());
@@ -441,7 +440,7 @@ impl Doc {
     pub fn select_one(&self, json_path: &str) -> Result<JsValue> {
         let jpath = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let doc = self.clone();
-        let result = self.transact(JsValue::UNDEFINED, |txn| txn.json_path(&jpath).next());
+        let result = self.transact(None, |txn| txn.json_path(&jpath).next());
         match result {
             Some(value) => Ok(Js::from_value(&value, doc).into()),
             None => Ok(JsValue::UNDEFINED),

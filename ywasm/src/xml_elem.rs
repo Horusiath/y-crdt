@@ -289,15 +289,13 @@ impl XmlElement {
                 None => Ok(JsValue::UNDEFINED),
                 Some(value) => Ok(Js::from_any(value).into()),
             },
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    match target.get_attribute(tx, name) {
-                        None => Ok(JsValue::UNDEFINED),
-                        Some(out) => Ok(Js::from_value(&out, c.doc.clone()).into()),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                match target.get_attribute(tx, name) {
+                    None => Ok(JsValue::UNDEFINED),
+                    Some(out) => Ok(Js::from_value(&out, c.doc.clone()).into()),
+                }
+            }),
         }
     }
 
@@ -324,20 +322,18 @@ impl XmlElement {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(JsValue::from_serde(&c.attributes)
                 .map_err(|_| JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))?),
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let map = js_sys::Object::new();
-                    for (name, value) in target.attributes(tx) {
-                        js_sys::Reflect::set(
-                            &map,
-                            &JsValue::from_str(name),
-                            &Js::from_value(&value, c.doc.clone()).into(),
-                        )?;
-                    }
-                    Ok(map.into())
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let map = js_sys::Object::new();
+                for (name, value) in target.attributes(tx) {
+                    js_sys::Reflect::set(
+                        &map,
+                        &JsValue::from_str(name),
+                        &Js::from_value(&value, c.doc.clone()).into(),
+                    )?;
+                }
+                Ok(map.into())
+            }),
         }
     }
 
@@ -349,17 +345,15 @@ impl XmlElement {
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let walker = target.successors(tx).map(|n| {
-                        let js: JsValue = Js::from_xml(n, c.doc.clone()).into();
-                        js
-                    });
-                    let array = js_sys::Array::from_iter(walker);
-                    Ok(array.into())
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let walker = target.successors(tx).map(|n| {
+                    let js: JsValue = Js::from_xml(n, c.doc.clone()).into();
+                    js
+                });
+                let array = js_sys::Array::from_iter(walker);
+                Ok(array.into())
+            }),
         }
     }
 
@@ -373,7 +367,7 @@ impl XmlElement {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_with(abi, move |_, e| {
@@ -411,7 +405,7 @@ impl XmlElement {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_deep_with(abi, move |_, e| {

@@ -179,15 +179,13 @@ impl Array {
                 Some(item) => Ok(item.clone()),
                 None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
             },
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    match target.get(tx, index) {
-                        Some(item) => Ok(Js::from_value(&item, c.doc.clone()).into()),
-                        None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
-                    }
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                match target.get(tx, index) {
+                    Some(item) => Ok(Js::from_value(&item, c.doc.clone()).into()),
+                    None => Err(JsValue::from_str(crate::js::errors::OUT_OF_BOUNDS)),
+                }
+            }),
         }
     }
 
@@ -203,16 +201,14 @@ impl Array {
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let range = YRange::new(lower, upper, lower_open, upper_open);
-                    let quote = target
-                        .quote(tx, range)
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    Ok(WeakLink::from_prelim(quote, c.doc.clone()))
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let range = YRange::new(lower, upper, lower_open, upper_open);
+                let quote = target
+                    .quote(tx, range)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                Ok(WeakLink::from_prelim(quote, c.doc.clone()))
+            }),
         }
     }
 
@@ -241,16 +237,14 @@ impl Array {
     pub fn values(&self) -> Result<JsValue> {
         match &self.0 {
             SharedCollection::Prelim(c) => Ok(js_sys::Array::from_iter(c).into()),
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let a = js_sys::Array::new();
-                    for item in target.iter(tx) {
-                        a.push(&Js::from_value(&item, c.doc.clone()));
-                    }
-                    Ok(a.into())
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let a = js_sys::Array::new();
+                for item in target.iter(tx) {
+                    a.push(&Js::from_value(&item, c.doc.clone()));
+                }
+                Ok(a.into())
+            }),
         }
     }
 
@@ -264,7 +258,7 @@ impl Array {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_with(abi, move |_, e| {
@@ -286,7 +280,7 @@ impl Array {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     Ok(target.unobserve(abi))
                 })
@@ -305,7 +299,7 @@ impl Array {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_deep_with(abi, move |_, e| {
@@ -327,7 +321,7 @@ impl Array {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     Ok(target.unobserve_deep(abi))
                 })

@@ -289,32 +289,30 @@ impl Text {
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
-            SharedCollection::Integrated(c) => {
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
-                    let target = c.hook.get(tx).ok_or_disposed()?;
-                    let hi: Option<Snapshot> = match snapshot {
-                        None => None,
-                        Some(v) => v
-                            .into_serde()
-                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
-                    };
-                    let lo: Option<Snapshot> = match prev_snapshot {
-                        None => None,
-                        Some(v) => v
-                            .into_serde()
-                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
-                    };
-                    let array = js_sys::Array::new();
-                    let delta = target.diff_range(tx, hi.as_deref(), lo.as_deref(), |change| {
-                        crate::js::convert::ychange_to_js(change, &compute_ychange).unwrap()
-                    });
-                    for d in delta {
-                        let d = crate::js::convert::diff_into_js(d, &c.doc)?;
-                        array.push(&d);
-                    }
-                    Ok(array)
-                })
-            }
+            SharedCollection::Integrated(c) => c.doc.transact(None, |tx| {
+                let target = c.hook.get(tx).ok_or_disposed()?;
+                let hi: Option<Snapshot> = match snapshot {
+                    None => None,
+                    Some(v) => v
+                        .into_serde()
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                };
+                let lo: Option<Snapshot> = match prev_snapshot {
+                    None => None,
+                    Some(v) => v
+                        .into_serde()
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                };
+                let array = js_sys::Array::new();
+                let delta = target.diff_range(tx, hi.as_deref(), lo.as_deref(), |change| {
+                    crate::js::convert::ychange_to_js(change, &compute_ychange).unwrap()
+                });
+                for d in delta {
+                    let d = crate::js::convert::diff_into_js(d, &c.doc)?;
+                    array.push(&d);
+                }
+                Ok(array)
+            }),
         }
     }
 
@@ -346,7 +344,7 @@ impl Text {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_with(abi, move |_, e| {
@@ -384,7 +382,7 @@ impl Text {
             }
             SharedCollection::Integrated(c) => {
                 let abi = callback.subscription_key();
-                crate::Doc::transact(&c.doc, JsValue::UNDEFINED, |tx| {
+                c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_deep_with(abi, move |_, e| {

@@ -84,7 +84,7 @@ impl<S: SharedRef + 'static> Integrated<S> {
     where
         F: FnOnce(&S, &mut YTransaction<crate::Doc>) -> Result<T>,
     {
-        self.doc.transact(JsValue::UNDEFINED, |tx| {
+        self.doc.transact(None, |tx| {
             let shared_ref = self
                 .hook
                 .get(tx)

@@ -26,7 +26,7 @@ impl UndoManager {
         } else {
             return Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP));
         };
-        doc.transact(JsValue::UNDEFINED, move |txn| {
+        doc.transact(None, move |txn| {
             let doc = txn.doc().get_ref();
             match branch_id.get_branch(&*doc) {
                 Some(branch) if !branch.is_deleted() => Ok(branch),
