@@ -203,46 +203,6 @@ impl Js {
     }
 }
 
-struct DocRef(crate::Doc);
-impl Deref for DocRef {
-    type Target = yrs::Doc;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*(&self.0.state.borrow().doc as *const yrs::Doc) }
-    }
-}
-
-struct DocMut(crate::Doc);
-impl Deref for DocMut {
-    type Target = yrs::Doc;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*(&self.0.state.borrow().doc as *const yrs::Doc) }
-    }
-}
-impl DerefMut for DocMut {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *(&mut self.0.state.borrow_mut().doc as *mut yrs::Doc) }
-    }
-}
-
-impl RefProvider<yrs::Doc> for Js {
-    fn get_ref(&self) -> Ref<'_, Doc> {
-        let abi = unsafe { crate::Doc::ref_from_abi(self.0.clone().into_abi()) };
-        Ref::Interior(Box::new(DocRef(abi.clone())))
-    }
-}
-
-impl MutProvider<yrs::Doc> for Js {
-    fn get_mut(&mut self) -> Mut<'_, Doc> {
-        let abi = unsafe { crate::Doc::ref_mut_from_abi(self.0.clone().into_abi()) };
-        Mut::Interior(Box::new(DocMut(abi.clone())))
-    }
-}
-
 impl Deref for Js {
     type Target = JsValue;
 
@@ -315,7 +275,7 @@ impl Prelim for Js {
                 match &shared {
                     Shared::Weak(_) => { /* WeakRefs can always be integrated */ }
                     Shared::Doc(doc) if doc.prelim() => {
-                        let subdoc = SubDocHook::new(yrs::Cell::new(Box::new(self)));
+                        let subdoc = SubDocHook::new(yrs::Cell::new(Box::new(doc.clone())));
                         return (ItemContent::Doc(subdoc), None);
                     }
                     other if !other.prelim() => {
@@ -360,7 +320,7 @@ pub enum Shared {
     XmlText(RcRefMut<XmlText>),
     XmlElement(RcRefMut<XmlElement>),
     XmlFragment(RcRefMut<XmlFragment>),
-    Doc(Js),
+    Doc(crate::Doc),
 }
 
 impl Shared {
@@ -378,7 +338,7 @@ impl Shared {
                 js,
             )?)),
             TYPE_REFS_WEAK => Ok(Shared::Weak(convert::mut_from_js::<WeakLink>(js)?)),
-            TYPE_REFS_DOC => Ok(Shared::Doc(Js::new(js.clone()))),
+            TYPE_REFS_DOC => Ok(Shared::Doc(convert::mut_from_js::<crate::Doc>(js)?.clone())),
             _ => Err(js.clone()),
         }
     }
@@ -455,11 +415,9 @@ impl Prelim for Shared {
     }
 
     fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
-        let txn: &mut Transaction<Js> = unsafe { std::mem::transmute(txn) }; // only Js type is valid here
-        let js = txn.doc();
-        let doc_ref = crate::Js::into_doc(js.clone());
-        let doc: crate::Doc = doc_ref.clone();
-        let yrs_doc = &doc.state.borrow().doc;
+        let txn: &mut Transaction<crate::Doc> = unsafe { std::mem::transmute(txn) }; // only Js type is valid here
+        let doc = txn.doc().clone();
+        let yrs_doc = &doc.state().doc;
         match self {
             Shared::Text(mut cell) => {
                 let text = TextRef::from_item(inner_ref, yrs_doc).unwrap();

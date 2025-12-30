@@ -337,7 +337,7 @@ impl Array {
 }
 
 pub(crate) trait ArrayExt: YArray + SharedRef {
-    fn insert_at<I>(&self, txn: &mut YTransaction<Js>, index: u32, src: I) -> Result<()>
+    fn insert_at<I>(&self, txn: &mut YTransaction<crate::Doc>, index: u32, src: I) -> Result<()>
     where
         I: IntoIterator<Item = JsValue>,
     {

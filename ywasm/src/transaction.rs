@@ -24,11 +24,11 @@ use yrs::{
 
 #[wasm_bindgen]
 pub struct Transaction {
-    inner: YTransaction<Js>,
+    inner: YTransaction<crate::Doc>,
 }
 
 impl Transaction {
-    pub(crate) fn new(doc: Js, origin: JsValue) -> Self {
+    pub(crate) fn new(doc: crate::Doc, origin: JsValue) -> Self {
         let origin: Option<Origin> = if origin.is_undefined() {
             None
         } else {
@@ -39,12 +39,12 @@ impl Transaction {
     }
 
     fn doc(&self) -> crate::Doc {
-        self.inner.doc().clone().into_doc().clone()
+        self.inner.doc().clone()
     }
 }
 
 impl Deref for Transaction {
-    type Target = YTransaction<Js>;
+    type Target = YTransaction<crate::Doc>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {

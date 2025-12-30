@@ -67,7 +67,7 @@ impl UndoManager {
         }
 
         let manager = {
-            let mut doc = doc.state.borrow_mut();
+            let doc = doc.state_mut();
             yrs::undo::UndoManager::with_scope_and_options(&mut doc.doc, &scope, o)
         };
         Ok(Self {
@@ -97,7 +97,7 @@ impl UndoManager {
 
     #[wasm_bindgen(js_name = clear)]
     pub fn clear(&mut self) {
-        let state = self.doc.state.borrow();
+        let state = self.doc.state();
         self.manager.clear(&state.doc);
     }
 
@@ -108,13 +108,13 @@ impl UndoManager {
 
     #[wasm_bindgen(js_name = undo)]
     pub fn undo(&mut self) -> bool {
-        let mut state = self.doc.state.borrow_mut();
+        let state = self.doc.state_mut();
         self.manager.undo(&mut state.doc)
     }
 
     #[wasm_bindgen(js_name = redo)]
     pub fn redo(&mut self) -> bool {
-        let mut state = self.doc.state.borrow_mut();
+        let state = self.doc.state_mut();
         self.manager.redo(&mut state.doc)
     }
 

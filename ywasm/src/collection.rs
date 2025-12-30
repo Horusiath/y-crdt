@@ -82,7 +82,7 @@ impl<S: SharedRef + 'static> Integrated<S> {
 
     pub fn transact<F, T>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&S, &mut YTransaction<Js>) -> Result<T>,
+        F: FnOnce(&S, &mut YTransaction<crate::Doc>) -> Result<T>,
     {
         self.doc.transact(JsValue::UNDEFINED, |tx| {
             let shared_ref = self

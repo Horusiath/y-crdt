@@ -6,18 +6,18 @@ use crate::text::Text;
 use crate::xml_frag::XmlFragment;
 use crate::Result;
 use serde::Deserialize;
+use std::cell::UnsafeCell;
 use std::iter::FromIterator;
 use std::rc::Rc;
 use std::sync::Arc;
-use wasm_bindgen::__rt::WasmRefCell;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{DocId, JsonPath, JsonPathEval, MutProvider, OffsetKind, Options};
+use yrs::{DocId, JsonPath, JsonPathEval, Mut, MutProvider, OffsetKind, Options, Ref, RefProvider};
 
-/// Internal state of a ywasm document, wrapped in Rc<WasmRefCell> for sharing.
+/// Internal state of a ywasm document, wrapped in Rc<UnsafeCell> for sharing.
 pub struct DocState {
     pub(crate) doc: yrs::Doc,
     pub(crate) current_transaction: Option<crate::Transaction>,
@@ -51,13 +51,13 @@ pub struct DocState {
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct Doc {
-    pub(crate) state: Rc<WasmRefCell<DocState>>,
+    pub(crate) state: Rc<UnsafeCell<DocState>>,
 }
 
 impl From<yrs::Doc> for Doc {
     fn from(doc: yrs::Doc) -> Self {
         Doc {
-            state: Rc::new(WasmRefCell::new(DocState {
+            state: Rc::new(UnsafeCell::new(DocState {
                 doc,
                 current_transaction: None,
                 parent_doc: None,
@@ -66,9 +66,32 @@ impl From<yrs::Doc> for Doc {
     }
 }
 
+impl RefProvider<yrs::Doc> for crate::Doc {
+    fn get_ref(&self) -> Ref<'_, yrs::Doc> {
+        Ref::Direct(unsafe { &(*self.state.get()).doc })
+    }
+}
+
+impl MutProvider<yrs::Doc> for crate::Doc {
+    fn get_mut(&mut self) -> Mut<'_, yrs::Doc> {
+        Mut::Direct(unsafe { &mut (*self.state.get()).doc })
+    }
+}
+
 impl Doc {
+    #[inline]
+    pub(crate) fn state(&self) -> &DocState {
+        unsafe { &*self.state.get() }
+    }
+
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) fn state_mut(&self) -> &mut DocState {
+        unsafe { &mut *self.state.get() }
+    }
+
     pub(crate) fn current_origin(&self) -> JsValue {
-        let state = self.state.borrow();
+        let state = self.state();
         match &state.current_transaction {
             Some(tx) => tx.origin(),
             None => JsValue::UNDEFINED,
@@ -81,7 +104,7 @@ impl Doc {
         let doc_ref: &dyn std::any::Any = doc_ref;
         let doc_ref: &Js = doc_ref.downcast_ref().unwrap();
         let doc = doc_ref.clone().into_doc();
-        doc.state.borrow_mut().parent_doc = Some(parent);
+        doc.state_mut().parent_doc = Some(parent);
         Doc {
             state: doc.state.clone(),
         }
@@ -89,13 +112,12 @@ impl Doc {
 
     pub(crate) fn transact<F, T>(&self, origin: JsValue, f: F) -> T
     where
-        F: FnOnce(&mut YTransaction<Js>) -> T,
+        F: FnOnce(&mut YTransaction<crate::Doc>) -> T,
     {
-        let mut state = self.state.borrow_mut();
+        let state = self.state_mut();
         match &mut state.current_transaction {
             None => {
-                let js = Js::new(JsValue::from(self.clone()));
-                state.current_transaction = Some(crate::Transaction::new(js, origin));
+                state.current_transaction = Some(crate::Transaction::new(self.clone(), origin));
                 let tx = state.current_transaction.as_mut().unwrap();
                 let result = f(tx);
                 state.current_transaction = None;
@@ -138,13 +160,13 @@ impl Doc {
     /// is already a sub-document of another document.
     #[wasm_bindgen(getter)]
     pub fn prelim(&self) -> bool {
-        self.state.borrow().parent_doc.is_none()
+        self.state().parent_doc.is_none()
     }
 
     /// Returns a parent document of this document or null if current document is not sub-document.
     #[wasm_bindgen(getter, js_name = parentDoc)]
     pub fn parent_doc(&self) -> JsValue {
-        match &self.state.borrow().parent_doc {
+        match &self.state().parent_doc {
             None => JsValue::NULL,
             Some(parent) => JsValue::from(parent.clone()),
         }
@@ -153,23 +175,23 @@ impl Doc {
     /// Gets unique peer identifier of this `YDoc` instance.
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> f64 {
-        self.state.borrow().doc.client_id() as f64
+        self.state().doc.client_id() as f64
     }
 
     /// Gets globally unique identifier of this `YDoc` instance.
     #[wasm_bindgen(getter)]
     pub fn guid(&self) -> String {
-        self.state.borrow().doc.guid().to_string()
+        self.state().doc.guid().to_string()
     }
 
     #[wasm_bindgen(getter, js_name = shouldLoad)]
     pub fn should_load(&self) -> bool {
-        self.state.borrow().doc.should_load()
+        self.state().doc.should_load()
     }
 
     #[wasm_bindgen(getter, js_name = autoLoad)]
     pub fn auto_load(&self) -> bool {
-        self.state.borrow().doc.auto_load()
+        self.state().doc.auto_load()
     }
 
     /// Returns a `YText` shared data type, that's accessible for subsequent accesses using given
@@ -239,7 +261,7 @@ impl Doc {
     #[wasm_bindgen(js_name = on)]
     pub fn on(&mut self, event: &str, callback: js_sys::Function) -> Result<()> {
         let abi = callback.subscription_key();
-        let mut state = self.state.borrow_mut();
+        let state = self.state_mut();
         match event {
             "update" => state.doc.observe_update_v1_with(abi, move |txn, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
@@ -277,7 +299,7 @@ impl Doc {
     #[wasm_bindgen(js_name = off)]
     pub fn off(&mut self, event: &str, callback: js_sys::Function) -> Result<bool> {
         let abi = callback.subscription_key();
-        let mut state = self.state.borrow_mut();
+        let state = self.state_mut();
         let unsubscribed = match event {
             "update" => state.doc.unobserve_update_v1(abi),
             "updateV2" => state.doc.unobserve_update_v2(abi),
@@ -296,13 +318,12 @@ impl Doc {
     /// (if it is a subdocument).
     #[wasm_bindgen(js_name = load)]
     pub fn load(&self) -> Result<()> {
-        let parent_doc = self.state.borrow().parent_doc.clone();
+        let parent_doc = self.state().parent_doc.clone();
         match parent_doc {
             Some(parent_doc) => parent_doc.transact(JsValue::UNDEFINED, |parent_txn| {
                 let parent_scope = parent_txn.subdoc_scope();
-                let mut state = self.state.borrow_mut();
-                let mut child_doc = state.doc.get_mut();
-                child_doc.load(parent_scope);
+                let state = self.state_mut();
+                state.doc.load(parent_scope);
                 Ok(())
             }),
             None => Err(JsValue::from_str("not a subdocument").into()),
@@ -312,13 +333,12 @@ impl Doc {
     /// Emit `onDestroy` event and unregister all event handlers.
     #[wasm_bindgen(js_name = destroy)]
     pub fn destroy(&self) -> Result<()> {
-        let parent_doc = self.state.borrow().parent_doc.clone();
+        let parent_doc = self.state().parent_doc.clone();
         match parent_doc {
             Some(parent_doc) => parent_doc.transact(JsValue::UNDEFINED, |parent_txn| {
                 let parent_scope = parent_txn.subdoc_scope();
-                let mut state = self.state.borrow_mut();
-                let mut child_doc = state.doc.get_mut();
-                child_doc.destroy(parent_scope);
+                let state = self.state_mut();
+                state.doc.destroy(parent_scope);
                 Ok(())
             }),
             None => Err(JsValue::from_str("not a subdocument").into()),
@@ -342,7 +362,7 @@ impl Doc {
     #[wasm_bindgen(js_name = getSubdocGuids)]
     pub fn subdoc_guids(&self) -> js_sys::Set {
         let set = js_sys::Array::new();
-        for guid in self.state.borrow().doc.subdoc_guids() {
+        for guid in self.state().doc.subdoc_guids() {
             set.push(&JsValue::from_str(&guid.to_string()));
         }
         js_sys::Set::new(&set)
@@ -367,7 +387,7 @@ impl Doc {
     pub fn roots(&self) -> js_sys::Map {
         let doc = self.clone();
         let result = js_sys::Map::new();
-        for (key, value) in self.state.borrow().doc.root_refs() {
+        for (key, value) in self.state().doc.root_refs() {
             let value = Js::from_value(&value, doc.clone());
             result.set(&JsValue::from_str(&key), &value);
         }

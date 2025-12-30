@@ -25,7 +25,7 @@ impl Awareness {
     ) -> crate::Result<Awareness> {
         let js_doc = Js::new(doc);
         let doc: crate::Doc = js_doc.into_doc().clone();
-        let client_id = doc.state.borrow().doc.client_id();
+        let client_id = doc.state().doc.client_id();
         let inner = YAwareness::with_clock(client_id, JsClock);
         Ok(Awareness { inner, doc })
     }
