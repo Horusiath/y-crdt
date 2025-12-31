@@ -12,14 +12,14 @@ use yrs::RefProvider;
 use crate::js::{Callback, Js, Shared};
 use crate::Result;
 
-#[wasm_bindgen]
-pub struct UndoManager {
+#[wasm_bindgen(js_name = "UndoManager")]
+pub struct WasmUndoManager {
     manager: yrs::undo::UndoManager<JsValue>,
-    doc: crate::Doc,
+    doc: crate::WasmDoc,
 }
 
-impl UndoManager {
-    fn get_scope(doc: &crate::Doc, js: &JsValue) -> Result<BranchPtr> {
+impl WasmUndoManager {
+    fn get_scope(doc: &crate::WasmDoc, js: &JsValue) -> Result<BranchPtr> {
         let shared = Shared::from_ref(js)?;
         let branch_id = if let Some(id) = shared.branch_id() {
             id
@@ -36,10 +36,10 @@ impl UndoManager {
     }
 }
 
-#[wasm_bindgen]
-impl UndoManager {
+#[wasm_bindgen(js_class = "UndoManager")]
+impl WasmUndoManager {
     #[wasm_bindgen(constructor)]
-    pub fn new(doc: &crate::Doc, scope: JsValue, options: JsValue) -> Result<UndoManager> {
+    pub fn new(doc: &crate::WasmDoc, scope: JsValue, options: JsValue) -> Result<WasmUndoManager> {
         let scope = Self::get_scope(doc, &scope)?;
         let mut o = yrs::undo::Options {
             capture_timeout_millis: 500,
@@ -133,21 +133,21 @@ impl UndoManager {
         let abi = callback.subscription_key();
         match event {
             "stack-item-added" => self.manager.observe_item_added_with(abi, move |txn, e| {
-                let event: JsValue = YUndoEvent::new(e).into();
+                let event: JsValue = WasmUndoEvent::new(e).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
                 let meta =
                     Reflect::get(&event, &JsValue::from_str("meta")).unwrap_or(JsValue::UNDEFINED);
                 *e.meta_mut() = meta;
             }),
             "stack-item-popped" => self.manager.observe_item_popped_with(abi, move |txn, e| {
-                let event: JsValue = YUndoEvent::new(e).into();
+                let event: JsValue = WasmUndoEvent::new(e).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
                 let meta =
                     Reflect::get(&event, &JsValue::from_str("meta")).unwrap_or(JsValue::UNDEFINED);
                 *e.meta_mut() = meta;
             }),
             "stack-item-updated" => self.manager.observe_item_updated_with(abi, move |txn, e| {
-                let event: JsValue = YUndoEvent::new(e).into();
+                let event: JsValue = WasmUndoEvent::new(e).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
                 let meta =
                     Reflect::get(&event, &JsValue::from_str("meta")).unwrap_or(JsValue::UNDEFINED);
@@ -170,15 +170,15 @@ impl UndoManager {
     }
 }
 
-#[wasm_bindgen]
-pub struct YUndoEvent {
+#[wasm_bindgen(js_name = "UndoEvent")]
+pub struct WasmUndoEvent {
     origin: JsValue,
     kind: JsValue,
     meta: JsValue,
 }
 
-#[wasm_bindgen]
-impl YUndoEvent {
+#[wasm_bindgen(js_class = "UndoEvent")]
+impl WasmUndoEvent {
     #[wasm_bindgen(getter, js_name = origin)]
     pub fn origin(&self) -> JsValue {
         self.origin.clone()
@@ -204,7 +204,7 @@ impl YUndoEvent {
         } else {
             JsValue::UNDEFINED
         };
-        YUndoEvent {
+        WasmUndoEvent {
             meta: e.meta().clone(),
             origin,
             kind: match e.kind() {

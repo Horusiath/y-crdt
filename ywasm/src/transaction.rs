@@ -1,12 +1,12 @@
-use crate::array::Array;
+use crate::array::WasmArray;
 use crate::collection::SharedCollection;
 use crate::js::Js;
-use crate::map::Map;
-use crate::text::Text;
-use crate::weak::WeakLink;
-use crate::xml_elem::XmlElement;
-use crate::xml_frag::XmlFragment;
-use crate::xml_text::XmlText;
+use crate::map::WasmMap;
+use crate::text::WasmText;
+use crate::weak::WasmWeakLink;
+use crate::xml_elem::WasmXmlElement;
+use crate::xml_frag::WasmXmlFragment;
+use crate::xml_text::WasmXmlText;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
@@ -22,29 +22,29 @@ use yrs::{
     WeakRef, XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 
-#[wasm_bindgen]
-pub struct Transaction {
-    inner: YTransaction<crate::Doc>,
+#[wasm_bindgen(js_name = "Transaction")]
+pub struct WasmTransaction {
+    inner: YTransaction<crate::WasmDoc>,
 }
 
-impl Transaction {
-    pub(crate) fn new(doc: crate::Doc, origin: Option<JsValue>) -> Self {
+impl WasmTransaction {
+    pub(crate) fn new(doc: crate::WasmDoc, origin: Option<JsValue>) -> Self {
         let origin = match origin {
             None => None,
             Some(origin) if origin.is_undefined() => None,
             Some(origin) => Some(Js::from(origin).into()),
         };
         let inner = YTransaction::new(doc, origin);
-        Transaction { inner }
+        WasmTransaction { inner }
     }
 
-    fn doc(&self) -> crate::Doc {
+    fn doc(&self) -> crate::WasmDoc {
         self.inner.doc().clone()
     }
 }
 
-impl Deref for Transaction {
-    type Target = YTransaction<crate::Doc>;
+impl Deref for WasmTransaction {
+    type Target = YTransaction<crate::WasmDoc>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -52,15 +52,15 @@ impl Deref for Transaction {
     }
 }
 
-impl DerefMut for Transaction {
+impl DerefMut for WasmTransaction {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-#[wasm_bindgen]
-impl Transaction {
+#[wasm_bindgen(js_class = "Transaction")]
+impl WasmTransaction {
     /// Returns state vector describing the state of the document
     /// at the moment when the transaction began.
     #[wasm_bindgen(getter, js_name = beforeState)]
@@ -145,28 +145,31 @@ impl Transaction {
                 let doc = self.doc();
                 match b.type_ref() {
                     TypeRef::Array => {
-                        Array(SharedCollection::integrated(ArrayRef::from(b), doc)).into()
+                        WasmArray(SharedCollection::integrated(ArrayRef::from(b), doc)).into()
                     }
-                    TypeRef::Map => Map(SharedCollection::integrated(MapRef::from(b), doc)).into(),
+                    TypeRef::Map => {
+                        WasmMap(SharedCollection::integrated(MapRef::from(b), doc)).into()
+                    }
                     TypeRef::Text => {
-                        Text(SharedCollection::integrated(TextRef::from(b), doc)).into()
+                        WasmText(SharedCollection::integrated(TextRef::from(b), doc)).into()
                     }
                     TypeRef::XmlElement(_) => {
-                        XmlElement(SharedCollection::integrated(XmlElementRef::from(b), doc)).into()
+                        WasmXmlElement(SharedCollection::integrated(XmlElementRef::from(b), doc))
+                            .into()
                     }
                     TypeRef::XmlFragment => {
-                        XmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), doc))
+                        WasmXmlFragment(SharedCollection::integrated(XmlFragmentRef::from(b), doc))
                             .into()
                     }
                     TypeRef::XmlText => {
-                        XmlText(SharedCollection::integrated(XmlTextRef::from(b), doc)).into()
+                        WasmXmlText(SharedCollection::integrated(XmlTextRef::from(b), doc)).into()
                     }
                     TypeRef::WeakLink(_) => {
-                        WeakLink(SharedCollection::integrated(WeakRef::from(b), doc)).into()
+                        WasmWeakLink(SharedCollection::integrated(WeakRef::from(b), doc)).into()
                     }
                     TypeRef::SubDoc => match b.as_subdoc() {
                         None => JsValue::UNDEFINED,
-                        Some(subdoc) => crate::Doc::from_subdoc(&subdoc, doc).into(),
+                        Some(subdoc) => crate::WasmDoc::from_subdoc(&subdoc, doc).into(),
                     },
                     TypeRef::XmlHook | TypeRef::Undefined => JsValue::UNDEFINED,
                 }

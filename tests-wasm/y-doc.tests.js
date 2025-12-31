@@ -286,7 +286,7 @@ export const testRoots = tc => {
     const c = d1.getArray('c')
     const d = d1.getXmlFragment('d')
 
-    const roots = d1.roots()
+    const roots = Array.of(d1.roots())
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([k, v]) => [k, v.constructor])
     t.compare(roots, [

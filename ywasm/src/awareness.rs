@@ -10,29 +10,27 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 
 use crate::js::{Callback, Js};
+use crate::WasmDoc;
 
-#[wasm_bindgen]
-pub struct Awareness {
+#[wasm_bindgen(js_name = "Awareness")]
+pub struct WasmAwareness {
     inner: YAwareness,
-    doc: crate::Doc,
+    doc: crate::WasmDoc,
 }
 
-#[wasm_bindgen]
-impl Awareness {
+#[wasm_bindgen(js_class = "Awareness")]
+impl WasmAwareness {
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        #[wasm_bindgen(unchecked_param_type = "Doc")] doc: JsValue,
-    ) -> crate::Result<Awareness> {
-        let js_doc = Js::new(doc);
-        let doc: crate::Doc = js_doc.into_doc().clone();
+    pub fn new(doc: &WasmDoc) -> crate::Result<WasmAwareness> {
+        let doc = doc.clone();
         let client_id = doc.state().doc.client_id();
         let inner = YAwareness::with_clock(client_id, JsClock);
-        Ok(Awareness { inner, doc })
+        Ok(WasmAwareness { inner, doc })
     }
 
     #[wasm_bindgen(getter, js_name = doc)]
-    pub fn doc(&self) -> JsValue {
-        JsValue::from(self.doc.clone())
+    pub fn doc(&self) -> WasmDoc {
+        self.doc.clone()
     }
 
     #[wasm_bindgen(getter, js_name = meta)]
@@ -134,7 +132,7 @@ impl Awareness {
 }
 
 #[wasm_bindgen(js_name = removeAwarenessStates)]
-pub fn remove_states(awareness: &Awareness, clients: Vec<u64>) -> crate::Result<()> {
+pub fn remove_states(awareness: &WasmAwareness, clients: Vec<u64>) -> crate::Result<()> {
     let awareness: &mut YAwareness = unsafe {
         // we might need to access Awareness in its own observer callback, which means
         // that technically it's already mut borrowed - but callback only needs mutable access
@@ -151,7 +149,7 @@ pub fn remove_states(awareness: &Awareness, clients: Vec<u64>) -> crate::Result<
 }
 
 #[wasm_bindgen(js_name = encodeAwarenessUpdate)]
-pub fn encode_update(awareness: &Awareness, clients: JsValue) -> crate::Result<Uint8Array> {
+pub fn encode_update(awareness: &WasmAwareness, clients: JsValue) -> crate::Result<Uint8Array> {
     let res = if clients.is_null() || clients.is_undefined() {
         awareness.inner.update()
     } else {
@@ -180,7 +178,7 @@ pub fn modify_update(update: Uint8Array, modify: js_sys::Function) -> crate::Res
 
 #[wasm_bindgen(js_name = applyAwarenessUpdate)]
 pub fn apply_update(
-    awareness: &Awareness,
+    awareness: &WasmAwareness,
     update: Uint8Array,
     _origin: JsValue, //TODO: use origin in Awareness::apply_update
 ) -> crate::Result<()> {

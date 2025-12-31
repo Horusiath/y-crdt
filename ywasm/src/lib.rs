@@ -29,22 +29,22 @@ mod xml_text;
 
 type Result<T> = std::result::Result<T, JsValue>;
 
-pub use crate::array::Array;
-pub use crate::array::YArrayEvent as ArrayEvent;
-pub use crate::doc::Doc;
+pub use crate::array::WasmArray;
+pub use crate::array::WasmArrayEvent as ArrayEvent;
+pub use crate::doc::WasmDoc;
 use crate::js::{Js, Shared};
-pub use crate::map::Map;
-pub use crate::map::YMapEvent as MapEvent;
-pub use crate::text::Text;
-pub use crate::text::YTextEvent as TextEvent;
-pub use crate::transaction::Transaction;
-pub use crate::undo::UndoManager;
-pub use crate::undo::YUndoEvent as UndoEvent;
-pub use crate::weak::WeakLink;
-pub use crate::weak::WeakLinkEvent;
-pub use crate::xml_elem::XmlElement as XmlElem;
-pub use crate::xml_frag::XmlFragment;
-pub use crate::xml_text::XmlText;
+pub use crate::map::WasmMap;
+pub use crate::map::WasmMapEvent as MapEvent;
+pub use crate::text::WasmText;
+pub use crate::text::WasmTextEvent as TextEvent;
+pub use crate::transaction::WasmTransaction;
+pub use crate::undo::WasmUndoEvent as UndoEvent;
+pub use crate::undo::WasmUndoManager;
+pub use crate::weak::WasmWeakLink;
+pub use crate::weak::WasmWeakLinkEvent;
+pub use crate::xml_elem::WasmXmlElement as XmlElem;
+pub use crate::xml_frag::WasmXmlFragment;
+pub use crate::xml_text::WasmXmlText;
 
 /// When called will call console log errors whenever internal panic is called from within
 /// WebAssembly module.
@@ -81,7 +81,7 @@ pub fn set_panic_hook() {
 /// applyUpdate(localDoc, remoteDelta)
 /// ```
 #[wasm_bindgen(js_name = encodeStateVector)]
-pub fn encode_state_vector(doc: &crate::Doc) -> Result<js_sys::Uint8Array> {
+pub fn encode_state_vector(doc: &crate::WasmDoc) -> Result<js_sys::Uint8Array> {
     doc.transact(None, |tx| {
         let bytes = tx.state_vector().encode_v1();
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
@@ -189,7 +189,7 @@ pub fn merge_updates_v2(updates: js_sys::Array) -> Result<js_sys::Uint8Array> {
 /// ```
 #[wasm_bindgen(js_name = encodeStateAsUpdate)]
 pub fn encode_state_as_update(
-    doc: &crate::Doc,
+    doc: &crate::WasmDoc,
     vector: Option<js_sys::Uint8Array>,
 ) -> Result<js_sys::Uint8Array> {
     doc.transact(None, |tx| {
@@ -221,7 +221,7 @@ pub fn encode_state_as_update(
 /// ```
 #[wasm_bindgen(js_name = encodeStateAsUpdateV2)]
 pub fn encode_state_as_update_v2(
-    doc: &crate::Doc,
+    doc: &crate::WasmDoc,
     vector: Option<js_sys::Uint8Array>,
 ) -> Result<js_sys::Uint8Array> {
     doc.transact(None, |tx| {
@@ -251,7 +251,7 @@ pub fn encode_state_as_update_v2(
 /// ```
 #[wasm_bindgen(js_name = applyUpdate)]
 pub fn apply_update(
-    doc: &crate::Doc,
+    doc: &crate::WasmDoc,
     update: js_sys::Uint8Array,
     origin: Option<JsValue>,
 ) -> Result<()> {
@@ -286,7 +286,7 @@ pub fn apply_update(
 /// ```
 #[wasm_bindgen(js_name = applyUpdateV2)]
 pub fn apply_update_v2(
-    doc: &crate::Doc,
+    doc: &crate::WasmDoc,
     update: js_sys::Uint8Array,
     origin: Option<JsValue>,
 ) -> Result<()> {
@@ -354,7 +354,7 @@ impl Serialize for Snapshot {
 }
 
 #[wasm_bindgen(js_name = snapshot)]
-pub fn snapshot(doc: &crate::Doc) -> crate::Result<JsValue> {
+pub fn snapshot(doc: &crate::WasmDoc) -> crate::Result<JsValue> {
     doc.transact(None, |tx| {
         let snapshot = tx.snapshot();
         JsValue::from_serde(&Snapshot(snapshot)).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -394,12 +394,12 @@ pub fn decode_snapshot_v1(snapshot: &[u8]) -> Result<JsValue> {
 }
 
 #[wasm_bindgen(js_name = transact)]
-pub fn transact(doc: &crate::Doc, func: Function, origin: Option<JsValue>) -> Result<JsValue> {
+pub fn transact(doc: &crate::WasmDoc, func: Function, origin: Option<JsValue>) -> Result<JsValue> {
     doc.transact(origin, |tx| func.call0(&JsValue::UNDEFINED))
 }
 
 #[wasm_bindgen(js_name = encodeStateFromSnapshotV1)]
-pub fn encode_state_from_snapshot_v1(doc: &crate::Doc, snapshot: JsValue) -> Result<Vec<u8>> {
+pub fn encode_state_from_snapshot_v1(doc: &crate::WasmDoc, snapshot: JsValue) -> Result<Vec<u8>> {
     let snapshot: Snapshot = snapshot
         .into_serde()
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -413,7 +413,7 @@ pub fn encode_state_from_snapshot_v1(doc: &crate::Doc, snapshot: JsValue) -> Res
 }
 
 #[wasm_bindgen(js_name = encodeStateFromSnapshotV2)]
-pub fn encode_state_from_snapshot_v2(doc: &crate::Doc, snapshot: JsValue) -> Result<Vec<u8>> {
+pub fn encode_state_from_snapshot_v2(doc: &crate::WasmDoc, snapshot: JsValue) -> Result<Vec<u8>> {
     let snapshot: Snapshot = snapshot
         .into_serde()
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -459,7 +459,7 @@ pub fn create_sticky_index_from_type(ytype: JsValue, index: u32, assoc: i32) -> 
 /// Converts a sticky index (see: `createStickyIndexFromType`) into an object
 /// containing human-readable index.
 #[wasm_bindgen(js_name=createAbsolutePositionFromRelativePosition)]
-pub fn create_offset_from_sticky_index(rpos: &JsValue, doc: &crate::Doc) -> Result<JsValue> {
+pub fn create_offset_from_sticky_index(rpos: &JsValue, doc: &crate::WasmDoc) -> Result<JsValue> {
     #[derive(Serialize)]
     struct AbsolutePos {
         index: u32,

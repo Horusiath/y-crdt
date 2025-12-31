@@ -1,9 +1,9 @@
-use crate::array::Array;
+use crate::array::WasmArray;
 use crate::collection::SharedCollection;
 use crate::js::{Callback, Js};
-use crate::map::Map;
-use crate::text::Text;
-use crate::xml_frag::XmlFragment;
+use crate::map::WasmMap;
+use crate::text::WasmText;
+use crate::xml_frag::WasmXmlFragment;
 use crate::Result;
 use serde::Deserialize;
 use std::cell::UnsafeCell;
@@ -20,8 +20,8 @@ use yrs::{DocId, JsonPath, JsonPathEval, Mut, MutProvider, OffsetKind, Options, 
 /// Internal state of a ywasm document, wrapped in Rc<UnsafeCell> for sharing.
 pub struct DocState {
     pub(crate) doc: yrs::Doc,
-    pub(crate) current_transaction: Option<crate::Transaction>,
-    pub(crate) parent_doc: Option<Doc>,
+    pub(crate) current_transaction: Option<crate::WasmTransaction>,
+    pub(crate) parent_doc: Option<WasmDoc>,
 }
 
 /// A ywasm document type. Documents are most important units of collaborative resources management.
@@ -48,15 +48,15 @@ pub struct DocState {
 ///     txn.free()
 /// }
 /// ```
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "Doc")]
 #[derive(Clone)]
-pub struct Doc {
+pub struct WasmDoc {
     pub(crate) state: Rc<UnsafeCell<DocState>>,
 }
 
-impl From<yrs::Doc> for Doc {
+impl From<yrs::Doc> for WasmDoc {
     fn from(doc: yrs::Doc) -> Self {
-        Doc {
+        WasmDoc {
             state: Rc::new(UnsafeCell::new(DocState {
                 doc,
                 current_transaction: None,
@@ -66,19 +66,19 @@ impl From<yrs::Doc> for Doc {
     }
 }
 
-impl RefProvider<yrs::Doc> for crate::Doc {
+impl RefProvider<yrs::Doc> for crate::WasmDoc {
     fn get_ref(&self) -> Ref<'_, yrs::Doc> {
         Ref::Direct(unsafe { &(*self.state.get()).doc })
     }
 }
 
-impl MutProvider<yrs::Doc> for crate::Doc {
+impl MutProvider<yrs::Doc> for crate::WasmDoc {
     fn get_mut(&mut self) -> Mut<'_, yrs::Doc> {
         Mut::Direct(unsafe { &mut (*self.state.get()).doc })
     }
 }
 
-impl Doc {
+impl WasmDoc {
     #[inline]
     pub(crate) fn state(&self) -> &DocState {
         unsafe { &*self.state.get() }
@@ -98,28 +98,29 @@ impl Doc {
         }
     }
 
-    pub fn from_subdoc(subdoc: &SubDocHook, parent: Doc) -> Doc {
+    pub fn from_subdoc(subdoc: &SubDocHook, parent: WasmDoc) -> WasmDoc {
         let doc_ref = subdoc.borrow();
         let doc_ref: &dyn DocLike = &**doc_ref;
         let doc_ref: &dyn std::any::Any = doc_ref;
         let doc_ref: &Js = doc_ref.downcast_ref().unwrap();
         let doc = doc_ref.clone().into_doc();
         doc.state_mut().parent_doc = Some(parent);
-        Doc {
+        WasmDoc {
             state: doc.state.clone(),
         }
     }
 
     pub(crate) fn transact<F, T>(&self, origin: Option<JsValue>, f: F) -> T
     where
-        F: FnOnce(&mut YTransaction<crate::Doc>) -> T,
+        F: FnOnce(&mut YTransaction<crate::WasmDoc>) -> T,
     {
         let state = self.state_mut();
         match &mut state.current_transaction {
             None => {
-                state.current_transaction = Some(crate::Transaction::new(self.clone(), origin));
+                state.current_transaction = Some(crate::WasmTransaction::new(self.clone(), origin));
                 let tx = state.current_transaction.as_mut().unwrap();
                 let result = f(tx);
+                tx.commit().unwrap();
                 state.current_transaction = None;
                 result
             }
@@ -128,13 +129,13 @@ impl Doc {
     }
 }
 
-#[wasm_bindgen]
-impl Doc {
+#[wasm_bindgen(js_class = "Doc")]
+impl WasmDoc {
     /// Creates a new ywasm document. If `id` parameter was passed it will be used as this document
     /// globally unique identifier (it's up to caller to ensure that requirement). Otherwise, it will
     /// be assigned a randomly generated number.
     #[wasm_bindgen(constructor)]
-    pub fn new(options: Option<JsValue>) -> Result<Doc> {
+    pub fn new(options: Option<JsValue>) -> Result<WasmDoc> {
         use gloo_utils::format::JsValueSerdeExt;
         let js_options = match options {
             None => None,
@@ -202,11 +203,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YText` instance.
     #[wasm_bindgen(js_name = getText)]
-    pub fn get_text(&self, name: &str) -> Text {
+    pub fn get_text(&self, name: &str) -> WasmText {
         let doc = self.clone();
         self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_text(name);
-            Text(SharedCollection::integrated(shared_ref, doc.clone()))
+            WasmText(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -218,11 +219,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YArray` instance.
     #[wasm_bindgen(js_name = getArray)]
-    pub fn get_array(&self, name: &str) -> Array {
+    pub fn get_array(&self, name: &str) -> WasmArray {
         let doc = self.clone();
         self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_array(name);
-            Array(SharedCollection::integrated(shared_ref, doc.clone()))
+            WasmArray(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -234,11 +235,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YMap` instance.
     #[wasm_bindgen(js_name = getMap)]
-    pub fn get_map(&self, name: &str) -> Map {
+    pub fn get_map(&self, name: &str) -> WasmMap {
         let doc = self.clone();
         self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_map(name);
-            Map(SharedCollection::integrated(shared_ref, doc.clone()))
+            WasmMap(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -250,11 +251,11 @@ impl Doc {
     /// If there was an instance with this name, but it was of different type, it will be projected
     /// onto `YXmlFragment` instance.
     #[wasm_bindgen(js_name = getXmlFragment)]
-    pub fn get_xml_fragment(&self, name: &str) -> XmlFragment {
+    pub fn get_xml_fragment(&self, name: &str) -> WasmXmlFragment {
         let doc = self.clone();
         self.transact(None, |tx| {
             let shared_ref = tx.get_or_insert_xml_fragment(name);
-            XmlFragment(SharedCollection::integrated(shared_ref, doc.clone()))
+            WasmXmlFragment(SharedCollection::integrated(shared_ref, doc.clone()))
         })
     }
 
@@ -457,22 +458,19 @@ pub struct YSubdocsEvent {
 
 #[wasm_bindgen]
 impl YSubdocsEvent {
-    fn new(e: &yrs::SubdocsEvent, parent_doc: &Doc) -> Self {
-        let added = js_sys::Array::from_iter(
-            e.added()
-                .into_iter()
-                .map(|subdoc| JsValue::from(crate::Doc::from_subdoc(subdoc, parent_doc.clone()))),
-        );
-        let removed = js_sys::Array::from_iter(
-            e.removed()
-                .into_iter()
-                .map(|subdoc| JsValue::from(crate::Doc::from_subdoc(subdoc, parent_doc.clone()))),
-        );
-        let loaded = js_sys::Array::from_iter(
-            e.loaded()
-                .into_iter()
-                .map(|subdoc| JsValue::from(crate::Doc::from_subdoc(subdoc, parent_doc.clone()))),
-        );
+    fn new(e: &yrs::SubdocsEvent, parent_doc: &WasmDoc) -> Self {
+        let added =
+            js_sys::Array::from_iter(e.added().into_iter().map(|subdoc| {
+                JsValue::from(crate::WasmDoc::from_subdoc(subdoc, parent_doc.clone()))
+            }));
+        let removed =
+            js_sys::Array::from_iter(e.removed().into_iter().map(|subdoc| {
+                JsValue::from(crate::WasmDoc::from_subdoc(subdoc, parent_doc.clone()))
+            }));
+        let loaded =
+            js_sys::Array::from_iter(e.loaded().into_iter().map(|subdoc| {
+                JsValue::from(crate::WasmDoc::from_subdoc(subdoc, parent_doc.clone()))
+            }));
         YSubdocsEvent {
             added,
             removed,

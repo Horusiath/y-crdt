@@ -16,7 +16,7 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
     }
 
     #[inline]
-    pub fn integrated(shared_ref: S, doc: crate::Doc) -> Self {
+    pub fn integrated(shared_ref: S, doc: crate::WasmDoc) -> Self {
         SharedCollection::Integrated(Integrated::new(shared_ref, doc))
     }
 
@@ -32,7 +32,7 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
         }
     }
 
-    pub fn try_integrated(&self) -> Result<(&BranchID, &crate::Doc)> {
+    pub fn try_integrated(&self) -> Result<(&BranchID, &crate::WasmDoc)> {
         match self {
             SharedCollection::Integrated(i) => {
                 let branch_id = i.hook.id();
@@ -71,18 +71,18 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
 
 pub struct Integrated<S> {
     pub hook: Hook<S>,
-    pub doc: crate::Doc,
+    pub doc: crate::WasmDoc,
 }
 
 impl<S: SharedRef + 'static> Integrated<S> {
-    pub fn new(shared_ref: S, doc: crate::Doc) -> Self {
+    pub fn new(shared_ref: S, doc: crate::WasmDoc) -> Self {
         let desc = shared_ref.hook();
         Integrated { hook: desc, doc }
     }
 
     pub fn transact<F, T>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&S, &mut YTransaction<crate::Doc>) -> Result<T>,
+        F: FnOnce(&S, &mut YTransaction<crate::WasmDoc>) -> Result<T>,
     {
         self.doc.transact(None, |tx| {
             let shared_ref = self

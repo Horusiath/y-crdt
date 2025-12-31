@@ -1,7 +1,7 @@
 use crate::collection::SharedCollection;
 use crate::js::{Callback, Js, OptionDisposed, Shared, ValueRef};
 use crate::xml::XmlAttrs;
-use crate::xml_frag::YXmlEvent;
+use crate::xml_frag::WasmXmlEvent;
 use gloo_utils::format::JsValueSerdeExt;
 use std::iter::FromIterator;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -44,17 +44,17 @@ impl PrelimXmElement {
 /// - Child node insertion uses sequencing rules from other Yrs collections - elements are inserted
 ///   using interleave-resistant algorithm, where order of concurrent inserts at the same index
 ///   is established using peer's document id seniority.
-#[wasm_bindgen]
-pub struct XmlElement(pub(crate) SharedCollection<PrelimXmElement, XmlElementRef>);
+#[wasm_bindgen(js_name = "XmlElement")]
+pub struct WasmXmlElement(pub(crate) SharedCollection<PrelimXmElement, XmlElementRef>);
 
-#[wasm_bindgen]
-impl XmlElement {
+#[wasm_bindgen(js_class = "XmlElement")]
+impl WasmXmlElement {
     #[wasm_bindgen(constructor)]
     pub fn new(
         name: String,
         attributes: Option<JsValue>,
         children: Option<JsValue>,
-    ) -> crate::Result<XmlElement> {
+    ) -> crate::Result<WasmXmlElement> {
         let attributes = match attributes {
             Some(attributes) => XmlAttrs::parse_attrs_any(attributes)?,
             None => Attrs::default(),
@@ -69,7 +69,7 @@ impl XmlElement {
         for child in children.iter() {
             Js::assert_xml_prelim(child)?;
         }
-        Ok(XmlElement(SharedCollection::prelim(PrelimXmElement {
+        Ok(WasmXmlElement(SharedCollection::prelim(PrelimXmElement {
             name,
             attributes,
             children,
@@ -371,7 +371,7 @@ impl XmlElement {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
                     target.observe_with(abi, move |_, e| {
-                        let e = YXmlEvent::new(e, &doc);
+                        let e = WasmXmlEvent::new(e, &doc);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())

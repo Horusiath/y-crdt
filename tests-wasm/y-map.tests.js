@@ -108,6 +108,7 @@ export const testObserver = tc => {
     let entries = null
     let origin = null
     let callback = e => {
+        console.log('observe callback called', e.origin, e.keys)
         target = e.target
         entries = e.keys
         origin = e.origin

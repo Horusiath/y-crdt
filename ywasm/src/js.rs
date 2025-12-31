@@ -1,12 +1,12 @@
-use crate::array::{Array, ArrayExt};
+use crate::array::{ArrayExt, WasmArray};
 use crate::collection::{Integrated, SharedCollection};
 use crate::js::errors::REF_DISPOSED;
-use crate::map::Map;
-use crate::text::Text;
-use crate::weak::WeakLink;
-use crate::xml_elem::XmlElement;
-use crate::xml_frag::XmlFragment;
-use crate::xml_text::XmlText;
+use crate::map::WasmMap;
+use crate::text::WasmText;
+use crate::weak::WasmWeakLink;
+use crate::xml_elem::WasmXmlElement;
+use crate::xml_frag::WasmXmlFragment;
+use crate::xml_text::WasmXmlText;
 use crate::Result;
 use js_sys::Uint8Array;
 use std::collections::{Bound, HashMap};
@@ -64,12 +64,12 @@ impl Js {
         }
     }
 
-    pub fn into_doc(self) -> RcRef<crate::Doc> {
-        unsafe { crate::Doc::ref_from_abi(self.0.into_abi()) }
+    pub fn into_doc(self) -> RcRef<crate::WasmDoc> {
+        unsafe { crate::WasmDoc::ref_from_abi(self.0.into_abi()) }
     }
 
-    pub fn into_doc_mut(self) -> RcRefMut<crate::Doc> {
-        unsafe { crate::Doc::ref_mut_from_abi(self.0.into_abi()) }
+    pub fn into_doc_mut(self) -> RcRefMut<crate::WasmDoc> {
+        unsafe { crate::WasmDoc::ref_mut_from_abi(self.0.into_abi()) }
     }
 
     pub fn assert_xml_prelim(xml_node: &JsValue) -> crate::Result<()> {
@@ -120,29 +120,35 @@ impl Js {
         }
     }
 
-    pub fn from_xml(value: XmlOut, doc: crate::Doc) -> Self {
+    pub fn from_xml(value: XmlOut, doc: crate::WasmDoc) -> Self {
         Js(match value {
-            XmlOut::Element(v) => XmlElement(SharedCollection::integrated(v, doc.clone())).into(),
-            XmlOut::Fragment(v) => XmlFragment(SharedCollection::integrated(v, doc.clone())).into(),
-            XmlOut::Text(v) => XmlText(SharedCollection::integrated(v, doc)).into(),
+            XmlOut::Element(v) => {
+                WasmXmlElement(SharedCollection::integrated(v, doc.clone())).into()
+            }
+            XmlOut::Fragment(v) => {
+                WasmXmlFragment(SharedCollection::integrated(v, doc.clone())).into()
+            }
+            XmlOut::Text(v) => WasmXmlText(SharedCollection::integrated(v, doc)).into(),
         })
     }
 
-    pub fn from_value(value: &Out, doc: crate::Doc) -> Self {
+    pub fn from_value(value: &Out, doc: crate::WasmDoc) -> Self {
         match value {
             Out::Any(any) => Self::from_any(any),
-            Out::Text(c) => Js(Text(SharedCollection::integrated(c.clone(), doc)).into()),
-            Out::Map(c) => Js(Map(SharedCollection::integrated(c.clone(), doc)).into()),
-            Out::Array(c) => Js(Array(SharedCollection::integrated(c.clone(), doc)).into()),
-            Out::SubDoc(subdoc) => Js(crate::Doc::from_subdoc(subdoc, doc).into()),
-            Out::WeakLink(c) => Js(WeakLink(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::Text(c) => Js(WasmText(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::Map(c) => Js(WasmMap(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::Array(c) => Js(WasmArray(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::SubDoc(subdoc) => Js(crate::WasmDoc::from_subdoc(subdoc, doc).into()),
+            Out::WeakLink(c) => {
+                Js(WasmWeakLink(SharedCollection::integrated(c.clone(), doc)).into())
+            }
             Out::XmlElement(c) => {
-                Js(XmlElement(SharedCollection::integrated(c.clone(), doc)).into())
+                Js(WasmXmlElement(SharedCollection::integrated(c.clone(), doc)).into())
             }
             Out::XmlFragment(c) => {
-                Js(XmlFragment(SharedCollection::integrated(c.clone(), doc)).into())
+                Js(WasmXmlFragment(SharedCollection::integrated(c.clone(), doc)).into())
             }
-            Out::XmlText(c) => Js(XmlText(SharedCollection::integrated(c.clone(), doc)).into()),
+            Out::XmlText(c) => Js(WasmXmlText(SharedCollection::integrated(c.clone(), doc)).into()),
             Out::UndefinedRef(_) => Js(JsValue::UNDEFINED),
         }
     }
@@ -313,32 +319,34 @@ pub enum ValueRef {
 }
 
 pub enum Shared {
-    Text(RcRefMut<Text>),
-    Map(RcRefMut<Map>),
-    Array(RcRefMut<Array>),
-    Weak(RcRefMut<WeakLink>),
-    XmlText(RcRefMut<XmlText>),
-    XmlElement(RcRefMut<XmlElement>),
-    XmlFragment(RcRefMut<XmlFragment>),
-    Doc(crate::Doc),
+    Text(RcRefMut<WasmText>),
+    Map(RcRefMut<WasmMap>),
+    Array(RcRefMut<WasmArray>),
+    Weak(RcRefMut<WasmWeakLink>),
+    XmlText(RcRefMut<WasmXmlText>),
+    XmlElement(RcRefMut<WasmXmlElement>),
+    XmlFragment(RcRefMut<WasmXmlFragment>),
+    Doc(crate::WasmDoc),
 }
 
 impl Shared {
     pub fn from_ref(js: &JsValue) -> Result<Self> {
         let tag = Js::get_type(js)?;
         match tag as u8 {
-            TYPE_REFS_TEXT => Ok(Shared::Text(convert::mut_from_js::<Text>(js)?)),
-            TYPE_REFS_MAP => Ok(Shared::Map(convert::mut_from_js::<Map>(js)?)),
-            TYPE_REFS_ARRAY => Ok(Shared::Array(convert::mut_from_js::<Array>(js)?)),
-            TYPE_REFS_XML_TEXT => Ok(Shared::XmlText(convert::mut_from_js::<XmlText>(js)?)),
-            TYPE_REFS_XML_ELEMENT => {
-                Ok(Shared::XmlElement(convert::mut_from_js::<XmlElement>(js)?))
-            }
-            TYPE_REFS_XML_FRAGMENT => Ok(Shared::XmlFragment(convert::mut_from_js::<XmlFragment>(
-                js,
-            )?)),
-            TYPE_REFS_WEAK => Ok(Shared::Weak(convert::mut_from_js::<WeakLink>(js)?)),
-            TYPE_REFS_DOC => Ok(Shared::Doc(convert::mut_from_js::<crate::Doc>(js)?.clone())),
+            TYPE_REFS_TEXT => Ok(Shared::Text(convert::mut_from_js::<WasmText>(js)?)),
+            TYPE_REFS_MAP => Ok(Shared::Map(convert::mut_from_js::<WasmMap>(js)?)),
+            TYPE_REFS_ARRAY => Ok(Shared::Array(convert::mut_from_js::<WasmArray>(js)?)),
+            TYPE_REFS_XML_TEXT => Ok(Shared::XmlText(convert::mut_from_js::<WasmXmlText>(js)?)),
+            TYPE_REFS_XML_ELEMENT => Ok(Shared::XmlElement(
+                convert::mut_from_js::<WasmXmlElement>(js)?,
+            )),
+            TYPE_REFS_XML_FRAGMENT => Ok(Shared::XmlFragment(convert::mut_from_js::<
+                WasmXmlFragment,
+            >(js)?)),
+            TYPE_REFS_WEAK => Ok(Shared::Weak(convert::mut_from_js::<WasmWeakLink>(js)?)),
+            TYPE_REFS_DOC => Ok(Shared::Doc(
+                convert::mut_from_js::<crate::WasmDoc>(js)?.clone(),
+            )),
             _ => Err(js.clone()),
         }
     }
@@ -369,7 +377,7 @@ impl Shared {
         }
     }
 
-    pub fn try_integrated(&self) -> Result<(&BranchID, &crate::Doc)> {
+    pub fn try_integrated(&self) -> Result<(&BranchID, &crate::WasmDoc)> {
         match self {
             Shared::Text(v) => v.0.try_integrated(),
             Shared::Map(v) => v.0.try_integrated(),
@@ -415,15 +423,15 @@ impl Prelim for Shared {
     }
 
     fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, inner_ref: ItemPtr) {
-        let txn: &mut Transaction<crate::Doc> = unsafe { std::mem::transmute(txn) }; // only Js type is valid here
+        let txn: &mut Transaction<crate::WasmDoc> = unsafe { std::mem::transmute(txn) }; // only Js type is valid here
         let doc = txn.doc().clone();
         let yrs_doc = &doc.state().doc;
         match self {
             Shared::Text(mut cell) => {
                 let text = TextRef::from_item(inner_ref, yrs_doc).unwrap();
-                if let Text(SharedCollection::Prelim(raw)) = std::mem::replace(
+                if let WasmText(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
-                    Text(SharedCollection::Integrated(Integrated::new(
+                    WasmText(SharedCollection::Integrated(Integrated::new(
                         text.clone(),
                         doc.clone(),
                     ))),
@@ -433,9 +441,9 @@ impl Prelim for Shared {
             }
             Shared::Map(mut cell) => {
                 let map = MapRef::from_item(inner_ref, yrs_doc).unwrap();
-                if let Map(SharedCollection::Prelim(raw)) = std::mem::replace(
+                if let WasmMap(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
-                    Map(SharedCollection::Integrated(Integrated::new(
+                    WasmMap(SharedCollection::Integrated(Integrated::new(
                         map.clone(),
                         doc.clone(),
                     ))),
@@ -447,9 +455,9 @@ impl Prelim for Shared {
             }
             Shared::Array(mut cell) => {
                 let array = ArrayRef::from_item(inner_ref, yrs_doc).unwrap();
-                if let Array(SharedCollection::Prelim(raw)) = std::mem::replace(
+                if let WasmArray(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
-                    Array(SharedCollection::Integrated(Integrated::new(
+                    WasmArray(SharedCollection::Integrated(Integrated::new(
                         array.clone(),
                         doc.clone(),
                     ))),
@@ -459,9 +467,9 @@ impl Prelim for Shared {
             }
             Shared::XmlText(mut cell) => {
                 let xml_text = XmlTextRef::from_item(inner_ref, yrs_doc).unwrap();
-                if let XmlText(SharedCollection::Prelim(raw)) = std::mem::replace(
+                if let WasmXmlText(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
-                    XmlText(SharedCollection::Integrated(Integrated::new(
+                    WasmXmlText(SharedCollection::Integrated(Integrated::new(
                         xml_text.clone(),
                         doc.clone(),
                     ))),
@@ -474,9 +482,9 @@ impl Prelim for Shared {
             }
             Shared::XmlElement(mut cell) => {
                 let xml_element = XmlElementRef::from_item(inner_ref, yrs_doc).unwrap();
-                if let XmlElement(SharedCollection::Prelim(raw)) = std::mem::replace(
+                if let WasmXmlElement(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
-                    XmlElement(SharedCollection::Integrated(Integrated::new(
+                    WasmXmlElement(SharedCollection::Integrated(Integrated::new(
                         xml_element.clone(),
                         doc.clone(),
                     ))),
@@ -491,9 +499,9 @@ impl Prelim for Shared {
             }
             Shared::XmlFragment(mut cell) => {
                 let xml_fragment = XmlFragmentRef::from_item(inner_ref, yrs_doc).unwrap();
-                if let XmlFragment(SharedCollection::Prelim(raw)) = std::mem::replace(
+                if let WasmXmlFragment(SharedCollection::Prelim(raw)) = std::mem::replace(
                     &mut *cell,
-                    XmlFragment(SharedCollection::Integrated(Integrated::new(
+                    WasmXmlFragment(SharedCollection::Integrated(Integrated::new(
                         xml_fragment.clone(),
                         doc.clone(),
                     ))),
@@ -507,7 +515,7 @@ impl Prelim for Shared {
                 let weak_link: WeakRef<BranchPtr> = WeakRef::from_item(inner_ref, yrs_doc).unwrap();
                 let _ = std::mem::replace(
                     &mut *cell,
-                    WeakLink(SharedCollection::Integrated(Integrated::new(
+                    WasmWeakLink(SharedCollection::Integrated(Integrated::new(
                         weak_link.clone(),
                         doc.clone(),
                     ))),
@@ -584,15 +592,15 @@ pub trait Callback: AsRef<JsValue> {
 impl Callback for js_sys::Function {}
 
 pub(crate) mod convert {
-    use crate::array::YArrayEvent;
+    use crate::array::WasmArrayEvent;
     use crate::js::errors::INVALID_DELTA;
     use crate::js::Js;
-    use crate::map::YMapEvent;
-    use crate::text::YTextEvent;
-    use crate::weak::WeakLinkEvent;
-    use crate::xml_frag::YXmlEvent;
-    use crate::xml_text::YXmlTextEvent;
-    use crate::Text;
+    use crate::map::WasmMapEvent;
+    use crate::text::WasmTextEvent;
+    use crate::weak::WasmWeakLinkEvent;
+    use crate::xml_frag::WasmXmlEvent;
+    use crate::xml_text::WasmXmlTextEvent;
+    use crate::WasmText;
     use gloo_utils::format::JsValueSerdeExt;
     use std::iter::FromIterator;
     use wasm_bindgen::convert::RefMutFromWasmAbi;
@@ -606,7 +614,8 @@ pub(crate) mod convert {
         let attributes = js_sys::Reflect::get(&js, &JsValue::from("attributes"));
         if let Ok(insert) = js_sys::Reflect::get(&js, &JsValue::from("insert")) {
             if !insert.is_undefined() {
-                let attrs = Text::parse_fmt(attributes.unwrap_or(JsValue::UNDEFINED)).map(Box::new);
+                let attrs =
+                    WasmText::parse_fmt(attributes.unwrap_or(JsValue::UNDEFINED)).map(Box::new);
                 return Ok(Delta::Inserted(Js(insert), attrs));
             }
         }
@@ -617,7 +626,8 @@ pub(crate) mod convert {
         }
         if let Ok(retain) = js_sys::Reflect::get(&js, &JsValue::from("retain")) {
             if let Some(len) = retain.as_f64() {
-                let attrs = Text::parse_fmt(attributes.unwrap_or(JsValue::UNDEFINED)).map(Box::new);
+                let attrs =
+                    WasmText::parse_fmt(attributes.unwrap_or(JsValue::UNDEFINED)).map(Box::new);
                 return Ok(Delta::Retain(len as u32, attrs));
             }
         }
@@ -636,7 +646,7 @@ pub(crate) mod convert {
         Ok(target)
     }
 
-    pub fn change_into_js(change: &Change, doc: &crate::Doc) -> JsValue {
+    pub fn change_into_js(change: &Change, doc: &crate::WasmDoc) -> JsValue {
         let result = js_sys::Object::new();
         match change {
             Change::Added(values) => {
@@ -656,7 +666,10 @@ pub(crate) mod convert {
         result.into()
     }
 
-    pub fn entry_change_into_js(change: &EntryChange, doc: crate::Doc) -> crate::Result<JsValue> {
+    pub fn entry_change_into_js(
+        change: &EntryChange,
+        doc: crate::WasmDoc,
+    ) -> crate::Result<JsValue> {
         let result = js_sys::Object::new();
         let action = JsValue::from("action");
         match change {
@@ -681,7 +694,7 @@ pub(crate) mod convert {
         Ok(result.into())
     }
 
-    pub fn text_delta_into_js(delta: &Delta, doc: &crate::Doc) -> crate::Result<JsValue> {
+    pub fn text_delta_into_js(delta: &Delta, doc: &crate::WasmDoc) -> crate::Result<JsValue> {
         let result = js_sys::Object::new();
         match delta {
             Delta::Inserted(value, attrs) => {
@@ -730,16 +743,16 @@ pub(crate) mod convert {
         result.into()
     }
 
-    pub fn events_into_js(doc: &crate::Doc, e: &Events) -> JsValue {
+    pub fn events_into_js(doc: &crate::WasmDoc, e: &Events) -> JsValue {
         let mut array = js_sys::Array::new();
         let mapped = e.iter().map(|e| {
             let js: JsValue = match e {
-                Event::Text(e) => YTextEvent::new(e, doc).into(),
-                Event::Map(e) => YMapEvent::new(e, doc).into(),
-                Event::Array(e) => YArrayEvent::new(e, doc).into(),
-                Event::Weak(e) => WeakLinkEvent::new(e, doc).into(),
-                Event::XmlFragment(e) => YXmlEvent::new(e, doc).into(),
-                Event::XmlText(e) => YXmlTextEvent::new(e, doc).into(),
+                Event::Text(e) => WasmTextEvent::new(e, doc).into(),
+                Event::Map(e) => WasmMapEvent::new(e, doc).into(),
+                Event::Array(e) => WasmArrayEvent::new(e, doc).into(),
+                Event::Weak(e) => WasmWeakLinkEvent::new(e, doc).into(),
+                Event::XmlFragment(e) => WasmXmlEvent::new(e, doc).into(),
+                Event::XmlText(e) => WasmXmlTextEvent::new(e, doc).into(),
             };
             js
         });
@@ -808,7 +821,7 @@ pub(crate) mod convert {
         Ok(result)
     }
 
-    pub fn diff_into_js(diff: Diff<JsValue>, doc: &crate::Doc) -> crate::Result<JsValue> {
+    pub fn diff_into_js(diff: Diff<JsValue>, doc: &crate::WasmDoc) -> crate::Result<JsValue> {
         let delta = Delta::Inserted(diff.insert, diff.attributes);
         let js = text_delta_into_js(&delta, doc)?;
         if let Some(ychange) = diff.ychange {
