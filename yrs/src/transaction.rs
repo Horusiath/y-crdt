@@ -236,6 +236,7 @@ impl TransactionState {
             let mut changed_parents: HashMap<BranchPtr, Vec<usize>> = HashMap::new();
             let mut event_cache = Vec::new();
 
+            //TODO: remove need for clone
             let changed_collections = state.changed.clone();
             for (ptr, subs) in changed_collections {
                 if let TypePtr::Branch(branch) = ptr {

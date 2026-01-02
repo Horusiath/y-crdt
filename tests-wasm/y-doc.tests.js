@@ -286,7 +286,7 @@ export const testRoots = tc => {
     const c = d1.getArray('c')
     const d = d1.getXmlFragment('d')
 
-    const roots = Array.of(d1.roots())
+    const roots = Array.of(...d1.roots().entries())
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([k, v]) => [k, v.constructor])
     t.compare(roots, [
@@ -300,7 +300,7 @@ export const testRoots = tc => {
 
     let d2 = new Y.Doc()
     exchangeUpdates([d1, d2])
-    t.compare(d2.roots(), Map.of(['a', undefined]))
+    t.compare(d2.roots(), new Map([['a', undefined]]))
 }
 
 /**

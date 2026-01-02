@@ -1,5 +1,6 @@
 use crate::collection::{Integrated, SharedCollection};
 use crate::js;
+use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed};
 use crate::weak::WasmWeakLink;
 use gloo_utils::format::JsValueSerdeExt;
@@ -227,8 +228,9 @@ impl WasmMap {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
-                    target.observe_with(abi, move |_, e| {
-                        let e = WasmMapEvent::new(e, &doc);
+                    target.observe_with(abi, move |tx, e| {
+                        let origin = origin_into_js(tx.origin());
+                        let e = WasmMapEvent::new(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -265,8 +267,9 @@ impl WasmMap {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
+                    let origin = origin_into_js(tx.origin());
                     target.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(&doc, e);
+                        let e = crate::js::convert::events_into_js(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -297,14 +300,16 @@ pub struct WasmMapEvent {
     doc: crate::WasmDoc,
     target: Option<JsValue>,
     keys: Option<JsValue>,
+    origin: JsValue,
 }
 
 #[wasm_bindgen(js_class = "MapEvent")]
 impl WasmMapEvent {
-    pub(crate) fn new<'doc>(event: &MapEvent, doc: &crate::WasmDoc) -> Self {
+    pub(crate) fn new<'doc>(event: &MapEvent, doc: &crate::WasmDoc, origin: &JsValue) -> Self {
         let inner: &'static MapEvent = unsafe { std::mem::transmute(event) };
         WasmMapEvent {
             inner,
+            origin: origin.clone(),
             doc: doc.clone(),
             target: None,
             keys: None,
@@ -313,7 +318,7 @@ impl WasmMapEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        self.doc.current_origin()
+        self.origin.clone()
     }
 
     /// Returns an array of keys and indexes creating a path from root type down to current instance

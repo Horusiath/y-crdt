@@ -1,4 +1,5 @@
 use crate::collection::SharedCollection;
+use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed, Shared, ValueRef};
 use crate::xml::XmlAttrs;
 use crate::xml_frag::WasmXmlEvent;
@@ -370,8 +371,9 @@ impl WasmXmlElement {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
-                    target.observe_with(abi, move |_, e| {
-                        let e = WasmXmlEvent::new(e, &doc);
+                    target.observe_with(abi, move |tx, e| {
+                        let origin = origin_into_js(tx.origin());
+                        let e = WasmXmlEvent::new(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -408,8 +410,9 @@ impl WasmXmlElement {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
+                    let origin = origin_into_js(tx.origin());
                     target.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(&doc, e);
+                        let e = crate::js::convert::events_into_js(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())

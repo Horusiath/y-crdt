@@ -1,4 +1,5 @@
 use crate::collection::SharedCollection;
+use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed, YRange};
 use crate::text::WasmText;
 use crate::weak::WasmWeakLink;
@@ -466,8 +467,9 @@ impl WasmXmlText {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
-                    target.observe_with(abi, move |_, e| {
-                        let e = WasmXmlTextEvent::new(e, &doc);
+                    target.observe_with(abi, move |tx, e| {
+                        let origin = origin_into_js(tx.origin());
+                        let e = WasmXmlTextEvent::new(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -504,8 +506,9 @@ impl WasmXmlText {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
+                    let origin = origin_into_js(tx.origin());
                     target.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(&doc, e);
+                        let e = crate::js::convert::events_into_js(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -537,14 +540,16 @@ pub struct WasmXmlTextEvent {
     target: Option<JsValue>,
     delta: Option<JsValue>,
     keys: Option<JsValue>,
+    origin: JsValue,
 }
 
 #[wasm_bindgen(js_class = "XmlTextEvent")]
 impl WasmXmlTextEvent {
-    pub(crate) fn new<'doc>(event: &XmlTextEvent, doc: &crate::WasmDoc) -> Self {
+    pub(crate) fn new<'doc>(event: &XmlTextEvent, doc: &crate::WasmDoc, origin: &JsValue) -> Self {
         let inner: &'static XmlTextEvent = unsafe { std::mem::transmute(event) };
         WasmXmlTextEvent {
             inner,
+            origin: origin.clone(),
             doc: doc.clone(),
             target: None,
             delta: None,
@@ -572,7 +577,7 @@ impl WasmXmlTextEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        self.doc.current_origin()
+        self.origin.clone()
     }
 
     /// Returns a list of text changes made over corresponding `YText` collection within

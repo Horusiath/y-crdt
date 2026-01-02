@@ -26,9 +26,9 @@ use yrs::types::{
 };
 use yrs::FromOut;
 use yrs::{
-    Any, ArrayRef, BranchID, Doc, Map as _, MapRef, Mut, MutProvider, Origin, Out, Ref,
-    RefProvider, Text as _, TextRef, Transaction, WeakRef, Xml, XmlElementRef, XmlFragment as _,
-    XmlFragmentRef, XmlOut, XmlTextRef,
+    Any, ArrayRef, BranchID, Doc, Map as _, MapRef, MutProvider, Origin, Out, RefProvider,
+    Text as _, TextRef, Transaction, WeakRef, Xml, XmlElementRef, XmlFragment as _, XmlFragmentRef,
+    XmlOut, XmlTextRef,
 };
 
 pub trait OptionDisposed {
@@ -608,7 +608,15 @@ pub(crate) mod convert {
     use yrs::types::text::{ChangeKind, Diff, YChange};
     use yrs::types::{Change, Delta, EntryChange, Event, Events, Path, PathSegment};
     use yrs::updates::decoder::Decode;
-    use yrs::{DeleteSet, Doc, StateVector, Transaction};
+    use yrs::{DeleteSet, Origin, StateVector};
+
+    pub fn origin_into_js(origin: Option<&Origin>) -> JsValue {
+        if let Some(origin) = origin {
+            Js::from(origin).into()
+        } else {
+            JsValue::UNDEFINED
+        }
+    }
 
     pub fn js_into_delta(js: JsValue) -> crate::Result<Delta<Js>> {
         let attributes = js_sys::Reflect::get(&js, &JsValue::from("attributes"));
@@ -743,16 +751,16 @@ pub(crate) mod convert {
         result.into()
     }
 
-    pub fn events_into_js(doc: &crate::WasmDoc, e: &Events) -> JsValue {
+    pub fn events_into_js(e: &Events, doc: &crate::WasmDoc, origin: &JsValue) -> JsValue {
         let mut array = js_sys::Array::new();
         let mapped = e.iter().map(|e| {
             let js: JsValue = match e {
-                Event::Text(e) => WasmTextEvent::new(e, doc).into(),
-                Event::Map(e) => WasmMapEvent::new(e, doc).into(),
-                Event::Array(e) => WasmArrayEvent::new(e, doc).into(),
-                Event::Weak(e) => WasmWeakLinkEvent::new(e, doc).into(),
-                Event::XmlFragment(e) => WasmXmlEvent::new(e, doc).into(),
-                Event::XmlText(e) => WasmXmlTextEvent::new(e, doc).into(),
+                Event::Text(e) => WasmTextEvent::new(e, doc, origin).into(),
+                Event::Map(e) => WasmMapEvent::new(e, doc, origin).into(),
+                Event::Array(e) => WasmArrayEvent::new(e, doc, origin).into(),
+                Event::Weak(e) => WasmWeakLinkEvent::new(e, doc, origin).into(),
+                Event::XmlFragment(e) => WasmXmlEvent::new(e, doc, origin).into(),
+                Event::XmlText(e) => WasmXmlTextEvent::new(e, doc, origin).into(),
             };
             js
         });

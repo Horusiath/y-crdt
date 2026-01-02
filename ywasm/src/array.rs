@@ -1,4 +1,5 @@
 use crate::collection::{Integrated, SharedCollection};
+use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed, ValueRef, YRange};
 use crate::weak::WasmWeakLink;
 use crate::Result;
@@ -261,8 +262,9 @@ impl WasmArray {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
-                    target.observe_with(abi, move |_, e| {
-                        let e = WasmArrayEvent::new(e, &doc);
+                    target.observe_with(abi, move |tx, e| {
+                        let origin = origin_into_js(tx.origin());
+                        let e = WasmArrayEvent::new(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -302,8 +304,9 @@ impl WasmArray {
                 c.doc.transact(None, |tx| {
                     let target = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
+                    let origin = origin_into_js(tx.origin());
                     target.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(&doc, e);
+                        let e = crate::js::convert::events_into_js(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -373,16 +376,18 @@ impl ArrayExt for ArrayRef {}
 pub struct WasmArrayEvent {
     inner: &'static ArrayEvent,
     doc: crate::WasmDoc,
+    origin: JsValue,
     target: Option<JsValue>,
     delta: Option<JsValue>,
 }
 
 #[wasm_bindgen(js_class = "ArrayEvent")]
 impl WasmArrayEvent {
-    pub(crate) fn new<'doc>(event: &ArrayEvent, doc: &crate::WasmDoc) -> Self {
+    pub(crate) fn new<'doc>(event: &ArrayEvent, doc: &crate::WasmDoc, origin: &JsValue) -> Self {
         let inner: &'static ArrayEvent = unsafe { std::mem::transmute(event) };
         WasmArrayEvent {
             inner,
+            origin: origin.clone(),
             doc: doc.clone(),
             target: None,
             delta: None,
@@ -410,7 +415,7 @@ impl WasmArrayEvent {
 
     #[wasm_bindgen(getter)]
     pub fn origin(&mut self) -> JsValue {
-        self.doc.current_origin()
+        self.origin.clone()
     }
 
     /// Returns a list of text changes made over corresponding `YArray` collection within

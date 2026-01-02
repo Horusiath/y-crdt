@@ -1,4 +1,5 @@
 use crate::collection::SharedCollection;
+use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed};
 use crate::Result;
 use std::sync::Arc;
@@ -152,8 +153,9 @@ impl WasmWeakLink {
                 c.doc.transact(None, |tx| {
                     let weak_ref = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
+                    let origin = origin_into_js(tx.origin());
                     weak_ref.observe_with(abi, move |_, e| {
-                        let e = WasmWeakLinkEvent::new(e, &doc);
+                        let e = WasmWeakLinkEvent::new(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e.into()).unwrap();
                     });
                     Ok(())
@@ -190,8 +192,9 @@ impl WasmWeakLink {
                 c.doc.transact(None, |tx| {
                     let weak_ref = c.hook.get(tx).ok_or_disposed()?;
                     let doc = c.doc.clone();
+                    let origin = origin_into_js(tx.origin());
                     weak_ref.observe_deep_with(abi, move |_, e| {
-                        let e = crate::js::convert::events_into_js(&doc, e);
+                        let e = crate::js::convert::events_into_js(e, &doc, &origin);
                         callback.call1(&JsValue::UNDEFINED, &e).unwrap();
                     });
                     Ok(())
@@ -220,19 +223,19 @@ impl WasmWeakLink {
 pub struct WasmWeakLinkEvent {
     inner: &'static WeakEvent,
     doc: crate::WasmDoc,
-    target: Option<JsValue>,
     origin: JsValue,
+    target: Option<JsValue>,
 }
 
 #[wasm_bindgen(js_class = "WeakLinkEvent")]
 impl WasmWeakLinkEvent {
-    pub(crate) fn new<'doc>(event: &WeakEvent, doc: &crate::WasmDoc) -> Self {
+    pub(crate) fn new<'doc>(event: &WeakEvent, doc: &crate::WasmDoc, origin: &JsValue) -> Self {
         let inner: &'static WeakEvent = unsafe { std::mem::transmute(event) };
         let origin = doc.current_origin();
         WasmWeakLinkEvent {
             inner,
+            origin: origin.clone(),
             doc: doc.clone(),
-            origin,
             target: None,
         }
     }
