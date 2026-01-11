@@ -181,7 +181,7 @@ impl WasmXmlElement {
             }
             SharedCollection::Integrated(c) => {
                 let doc = c.doc.clone();
-                c.transact(|c, txn| match c.first_child() {
+                c.transact(|c, _| match c.first_child() {
                     None => Ok(JsValue::UNDEFINED),
                     Some(xml) => Ok(Js::from_xml(xml, doc).into()),
                 })
@@ -242,7 +242,7 @@ impl WasmXmlElement {
             }
             SharedCollection::Integrated(c) => {
                 let doc = c.doc.clone();
-                c.transact(|c, txn| match c.parent() {
+                c.transact(|c, _| match c.parent() {
                     None => Ok(JsValue::UNDEFINED),
                     Some(node) => Ok(Js::from_xml(node, doc).into()),
                 })

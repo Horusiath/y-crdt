@@ -1,10 +1,9 @@
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
 use serde::Serialize;
-use std::ops::Deref;
+use std::cell::UnsafeCell;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
-
 use yrs::sync::{Awareness as YAwareness, AwarenessUpdate, Timestamp};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -14,8 +13,22 @@ use crate::WasmDoc;
 
 #[wasm_bindgen(js_name = "Awareness")]
 pub struct WasmAwareness {
-    inner: YAwareness,
+    inner: UnsafeCell<YAwareness>,
     doc: crate::WasmDoc,
+}
+
+impl WasmAwareness {
+    fn inner_mut(&self) -> &mut YAwareness {
+        // we might need to access Awareness in its own observer callback, which means
+        // that technically it's already mut borrowed - but callback only needs mutable access
+        // to event handlers, while rest of the awareness is needed in callback actions that we
+        // don't want to panic with
+        unsafe { &mut *self.inner.get() }
+    }
+
+    fn inner(&self) -> &YAwareness {
+        unsafe { &*self.inner.get() }
+    }
 }
 
 #[wasm_bindgen(js_class = "Awareness")]
@@ -24,7 +37,7 @@ impl WasmAwareness {
     pub fn new(doc: &WasmDoc) -> crate::Result<WasmAwareness> {
         let doc = doc.clone();
         let client_id = doc.state().doc.client_id();
-        let inner = YAwareness::with_clock(client_id, JsClock);
+        let inner = UnsafeCell::new(YAwareness::with_clock(client_id, JsClock));
         Ok(WasmAwareness { inner, doc })
     }
 
@@ -41,7 +54,8 @@ impl WasmAwareness {
             last_updated: u64,
         }
         let result = js_sys::Map::new();
-        for (client_id, state) in self.inner.iter() {
+        let awareness = self.inner();
+        for (client_id, state) in awareness.iter() {
             let info = ClientStateMeta {
                 clock: state.clock,
                 last_updated: state.last_updated,
@@ -53,31 +67,33 @@ impl WasmAwareness {
     }
 
     #[wasm_bindgen(js_name = destroy)]
-    pub fn destroy(&mut self) {
-        self.inner.clean_local_state();
+    pub fn destroy(&self) {
+        let awareness = self.inner_mut();
+        awareness.clean_local_state();
     }
 
     #[wasm_bindgen(js_name = getLocalState)]
     pub fn local_state(&self) -> crate::Result<JsValue> {
-        match self.inner.local_state_raw() {
+        match self.inner().local_state_raw() {
             None => Ok(JsValue::NULL),
             Some(js) => js_sys::JSON::parse(js.as_ref()),
         }
     }
 
     #[wasm_bindgen(js_name = setLocalState)]
-    pub fn set_local_state(&mut self, state: JsValue) -> crate::Result<()> {
+    pub fn set_local_state(&self, state: JsValue) -> crate::Result<()> {
+        let awareness = self.inner_mut();
         if state.is_null() {
-            self.inner.clean_local_state();
+            awareness.clean_local_state();
         } else {
             let json = js_sys::JSON::stringify(&state)?.as_string().unwrap();
-            self.inner.set_local_state_raw(json);
+            awareness.set_local_state_raw(json);
         }
         Ok(())
     }
 
     #[wasm_bindgen(js_name = setLocalStateField)]
-    pub fn set_field(&mut self, key: &str, value: JsValue) -> crate::Result<()> {
+    pub fn set_field(&self, key: &str, value: JsValue) -> crate::Result<()> {
         let state = self.local_state()?;
         js_sys::Reflect::set(&state, &JsValue::from_str(key), &value)?;
         self.set_local_state(state)
@@ -86,7 +102,7 @@ impl WasmAwareness {
     #[wasm_bindgen(js_name = getStates)]
     pub fn states(&self) -> crate::Result<js_sys::Map> {
         let result = js_sys::Map::new();
-        for (client_id, state) in self.inner.iter() {
+        for (client_id, state) in self.inner().iter() {
             if let Some(data) = &state.data {
                 let state = js_sys::JSON::parse(data.as_ref())?;
                 result.set(&JsValue::from_f64(*client_id as f64), &state);
@@ -98,8 +114,9 @@ impl WasmAwareness {
     #[wasm_bindgen(js_name = on)]
     pub fn on(&self, event: &str, callback: js_sys::Function) -> crate::Result<()> {
         let abi = callback.subscription_key();
+        let awareness = self.inner();
         match event {
-            "update" => self.inner.on_update_with(abi, move |_, e, origin| {
+            "update" => awareness.on_update_with(abi, move |_, e, origin| {
                 let json = JsValue::from_serde(e.summary()).unwrap();
                 let origin = match origin {
                     None => JsValue::UNDEFINED,
@@ -107,7 +124,7 @@ impl WasmAwareness {
                 };
                 callback.call2(&JsValue::NULL, &json, &origin).unwrap();
             }),
-            "change" => self.inner.on_change_with(abi, move |_, e, origin| {
+            "change" => awareness.on_change_with(abi, move |_, e, origin| {
                 let json = JsValue::from_serde(e.summary()).unwrap();
                 let origin = match origin {
                     None => JsValue::UNDEFINED,
@@ -123,9 +140,10 @@ impl WasmAwareness {
     #[wasm_bindgen(js_name = off)]
     pub fn off(&self, event: &str, callback: js_sys::Function) -> crate::Result<bool> {
         let abi = callback.subscription_key();
+        let awareness = self.inner();
         match event {
-            "update" => Ok(self.inner.unobserve_update(abi)),
-            "change" => Ok(self.inner.unobserve_change(abi)),
+            "update" => Ok(awareness.unobserve_update(abi)),
+            "change" => Ok(awareness.unobserve_change(abi)),
             unknown => return Err(JsValue::from_str(&format!("Unknown event: {}", unknown))),
         }
     }
@@ -133,15 +151,7 @@ impl WasmAwareness {
 
 #[wasm_bindgen(js_name = removeAwarenessStates)]
 pub fn remove_states(awareness: &WasmAwareness, clients: Vec<u64>) -> crate::Result<()> {
-    let awareness: &mut YAwareness = unsafe {
-        // we might need to access Awareness in its own observer callback, which means
-        // that technically it's already mut borrowed - but callback only needs mutable access
-        // to event handlers, while rest of the awareness is needed in callback actions that we
-        // don't want to panic with
-        (&awareness.inner as *const YAwareness as *mut YAwareness)
-            .as_mut()
-            .unwrap()
-    };
+    let awareness = awareness.inner_mut();
     for client_id in clients {
         awareness.remove_state(client_id);
     }
@@ -150,12 +160,13 @@ pub fn remove_states(awareness: &WasmAwareness, clients: Vec<u64>) -> crate::Res
 
 #[wasm_bindgen(js_name = encodeAwarenessUpdate)]
 pub fn encode_update(awareness: &WasmAwareness, clients: JsValue) -> crate::Result<Uint8Array> {
+    let awareness = awareness.inner();
     let res = if clients.is_null() || clients.is_undefined() {
-        awareness.inner.update()
+        awareness.update()
     } else {
         let client_ids: Vec<u64> =
             JsValue::into_serde(&clients).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        awareness.inner.update_with_clients(client_ids)
+        awareness.update_with_clients(client_ids)
     };
 
     let update = res.map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -185,15 +196,7 @@ pub fn apply_update(
     let update = AwarenessUpdate::decode_v1(&update.to_vec())
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    let awareness: &mut YAwareness = unsafe {
-        // we might need to access Awareness in its own observer callback, which means
-        // that technically it's already mut borrowed - but callback only needs mutable access
-        // to event handlers, while rest of the awareness is needed in callback actions that we
-        // don't want to panic with
-        (&awareness.inner as *const YAwareness as *mut YAwareness)
-            .as_mut()
-            .unwrap()
-    };
+    let awareness = awareness.inner_mut();
     awareness
         .apply_update(update)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;

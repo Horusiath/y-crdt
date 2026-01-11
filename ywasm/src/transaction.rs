@@ -18,8 +18,8 @@ use yrs::types::TypeRef;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    ArrayRef, BranchID, JsonPath, JsonPathEval, MapRef, Origin, RefProvider, TextRef, Update,
-    WeakRef, XmlElementRef, XmlFragmentRef, XmlTextRef,
+    ArrayRef, BranchID, JsonPath, JsonPathEval, MapRef, RefProvider, TextRef, Update, WeakRef,
+    XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 
 #[wasm_bindgen(js_name = "Transaction")]
@@ -137,7 +137,6 @@ impl WasmTransaction {
             JsValue::into_serde(&id).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let doc = self.deref().doc().get_ref();
         let doc = &*doc;
-        let txn = self.deref();
         Ok(match branch_id.get_branch(doc) {
             None => JsValue::UNDEFINED,
             Some(b) if b.is_deleted() => JsValue::UNDEFINED,

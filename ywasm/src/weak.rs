@@ -1,4 +1,4 @@
-use crate::collection::SharedCollection;
+use crate::collection::{Integrated, SharedCollection};
 use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed};
 use crate::Result;
@@ -31,13 +31,6 @@ impl WasmWeakLink {
                 .transact(|shared_ref, _| Ok(shared_ref.source().clone()))
                 .unwrap(),
             SharedCollection::Prelim(v) => v.prelim.source().clone(),
-        }
-    }
-
-    fn doc(&self) -> &crate::WasmDoc {
-        match &self.0 {
-            SharedCollection::Integrated(c) => &c.doc,
-            SharedCollection::Prelim(v) => &v.doc,
         }
     }
 }
@@ -224,19 +217,16 @@ pub struct WasmWeakLinkEvent {
     inner: &'static WeakEvent,
     doc: crate::WasmDoc,
     origin: JsValue,
-    target: Option<JsValue>,
 }
 
 #[wasm_bindgen(js_class = "WeakLinkEvent")]
 impl WasmWeakLinkEvent {
     pub(crate) fn new<'doc>(event: &WeakEvent, doc: &crate::WasmDoc, origin: &JsValue) -> Self {
         let inner: &'static WeakEvent = unsafe { std::mem::transmute(event) };
-        let origin = doc.current_origin();
         WasmWeakLinkEvent {
             inner,
             origin: origin.clone(),
             doc: doc.clone(),
-            target: None,
         }
     }
 
@@ -249,12 +239,12 @@ impl WasmWeakLinkEvent {
     #[wasm_bindgen(getter)]
     pub fn target(&mut self) -> JsValue {
         let target: WeakRef<BranchPtr> = self.inner.as_target();
-        let doc = self.doc.clone();
-        let js = self.target.get_or_insert_with(|| {
-            let target = target.clone();
-            WasmWeakLink(SharedCollection::integrated(target, doc)).into()
-        });
-        js.clone()
+        let hook = target.hook();
+        let text_ref = WasmWeakLink(SharedCollection::Integrated(Integrated {
+            hook,
+            doc: self.doc.clone(),
+        }));
+        text_ref.into()
     }
 
     /// Returns an array of keys and indexes creating a path from root type down to current instance

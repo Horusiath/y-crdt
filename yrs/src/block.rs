@@ -1,5 +1,5 @@
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::{MutProvider, RefProvider};
+use crate::cell::MutProvider;
 use crate::doc::{OffsetKind, SubDocHook};
 use crate::encoding::read::Error;
 use crate::error::UpdateError;

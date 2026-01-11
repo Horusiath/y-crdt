@@ -1,4 +1,3 @@
-use crate::doc::DocLike;
 use crate::encoding::read;
 use crate::encoding::read::Cursor;
 use crate::error::UpdateError;

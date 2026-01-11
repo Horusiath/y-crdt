@@ -172,7 +172,7 @@ pub trait Map: AsRef<Branch> + Sized {
         MapIter::new(self.as_ref(), txn)
     }
 
-    fn into_iter<D: RefProvider<Doc>>(self, txn: &Transaction<D>) -> MapIntoIter<D> {
+    fn into_iter<D: RefProvider<Doc>>(self, txn: &Transaction<D>) -> MapIntoIter<'_, D> {
         let branch_ptr = BranchPtr::from(self.as_ref());
         MapIntoIter::new(branch_ptr, txn)
     }

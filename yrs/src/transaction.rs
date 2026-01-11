@@ -1,6 +1,6 @@
 use crate::block::{Item, ItemContent, ItemPosition, ItemPtr, Prelim, ID};
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::{Cell, Mut, MutProvider, Ref, RefProvider};
+use crate::cell::{Cell, Mut, MutProvider, RefProvider};
 use crate::doc::{SubDocHook, SubdocRefs};
 use crate::error::{Error, UpdateError};
 use crate::event::SubdocsEvent;
@@ -8,7 +8,7 @@ use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
-use crate::store::{DocEvents, Store};
+use crate::store::Store;
 use crate::types::{Event, Events, RootRef, TypePtr, TypeRef};
 use crate::update::Update;
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
@@ -889,9 +889,6 @@ where
         }
     }
 
-    pub(crate) fn split(&self) -> (Ref<'_, Doc>, Option<&TransactionState>) {
-        (self.doc.get_ref(), self.state.as_deref())
-    }
     /// Returns a list of root level types changed in a scope of the current transaction. This
     /// list is not filled right away, but as a part of [Transaction::commit] process.
     pub fn changed_parent_types(&self) -> &[BranchPtr] {
@@ -1275,7 +1272,7 @@ impl<'doc> Iterator for RootRefs<'doc> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Subdocs {
     pub(crate) added: Vec<SubDocHook>,
     pub(crate) loaded: Vec<SubDocHook>,

@@ -132,21 +132,21 @@ impl WasmUndoManager {
     pub fn on(&mut self, event: &str, callback: js_sys::Function) -> crate::Result<()> {
         let abi = callback.subscription_key();
         match event {
-            "stack-item-added" => self.manager.observe_item_added_with(abi, move |txn, e| {
+            "stack-item-added" => self.manager.observe_item_added_with(abi, move |_, e| {
                 let event: JsValue = WasmUndoEvent::new(e).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
                 let meta =
                     Reflect::get(&event, &JsValue::from_str("meta")).unwrap_or(JsValue::UNDEFINED);
                 *e.meta_mut() = meta;
             }),
-            "stack-item-popped" => self.manager.observe_item_popped_with(abi, move |txn, e| {
+            "stack-item-popped" => self.manager.observe_item_popped_with(abi, move |_, e| {
                 let event: JsValue = WasmUndoEvent::new(e).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
                 let meta =
                     Reflect::get(&event, &JsValue::from_str("meta")).unwrap_or(JsValue::UNDEFINED);
                 *e.meta_mut() = meta;
             }),
-            "stack-item-updated" => self.manager.observe_item_updated_with(abi, move |txn, e| {
+            "stack-item-updated" => self.manager.observe_item_updated_with(abi, move |_, e| {
                 let event: JsValue = WasmUndoEvent::new(e).into();
                 callback.call1(&JsValue::UNDEFINED, &event).unwrap();
                 let meta =

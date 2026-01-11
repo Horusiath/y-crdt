@@ -601,8 +601,9 @@ impl std::fmt::Display for DocId {
 
 pub struct SubDocRef<'tx, D: RefProvider<Doc>> {
     parent_txn: &'tx Transaction<D>,
-    transient_ref: CellRef<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
     subdoc_ref: crate::Ref<'tx, Doc>,
+    #[allow(dead_code)]
+    transient_ref: CellRef<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
 }
 
 impl<'tx, D: RefProvider<Doc>> SubDocRef<'tx, D> {
@@ -635,8 +636,9 @@ impl<'tx, D: RefProvider<Doc>> Deref for SubDocRef<'tx, D> {
 
 pub struct SubDocMut<'tx> {
     parent_scope: &'tx mut Option<Box<Subdocs>>,
-    transient_ref: CellMut<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
     subdoc_ref: crate::Mut<'tx, Doc>,
+    #[allow(dead_code)]
+    transient_ref: CellMut<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
 }
 
 impl<'tx> SubDocMut<'tx> {
@@ -682,8 +684,9 @@ impl<'tx> DerefMut for SubDocMut<'tx> {
 
 pub struct SubdocRefs<'tx, D: RefProvider<Doc>> {
     txn: &'tx Transaction<D>,
-    doc: crate::cell::Ref<'tx, Doc>,
     inner: std::collections::hash_set::Iter<'tx, (DocId, ID)>,
+    #[allow(dead_code)]
+    doc: crate::cell::Ref<'tx, Doc>,
 }
 
 impl<'tx, D: RefProvider<Doc>> SubdocRefs<'tx, D> {

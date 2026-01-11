@@ -1,4 +1,3 @@
-use crate::js::Js;
 use crate::Result;
 use gloo_utils::format::JsValueSerdeExt;
 use wasm_bindgen::JsValue;

@@ -90,14 +90,6 @@ impl WasmDoc {
         unsafe { &mut *self.state.get() }
     }
 
-    pub(crate) fn current_origin(&self) -> JsValue {
-        let state = self.state();
-        match &state.current_transaction {
-            Some(tx) => tx.origin(),
-            None => JsValue::UNDEFINED,
-        }
-    }
-
     pub fn from_subdoc(subdoc: &SubDocHook, parent: WasmDoc) -> WasmDoc {
         let doc_ref = subdoc.borrow();
         let doc_ref: &dyn DocLike = &**doc_ref;
@@ -264,11 +256,11 @@ impl WasmDoc {
         let abi = callback.subscription_key();
         let state = self.state_mut();
         match event {
-            "update" => state.doc.observe_update_v1_with(abi, move |txn, e| {
+            "update" => state.doc.observe_update_v1_with(abi, move |_, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
                 callback.call1(&JsValue::UNDEFINED, &update).unwrap();
             }),
-            "updateV2" => state.doc.observe_update_v2_with(abi, move |txn, e| {
+            "updateV2" => state.doc.observe_update_v2_with(abi, move |_, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
                 callback.call1(&JsValue::UNDEFINED, &update).unwrap();
             }),
@@ -287,7 +279,7 @@ impl WasmDoc {
             }),
             "cleanup" => state
                 .doc
-                .observe_transaction_cleanup_with(abi, move |txn, _| {
+                .observe_transaction_cleanup_with(abi, move |_, _| {
                     callback.call0(&JsValue::UNDEFINED).unwrap();
                 }),
             other => {

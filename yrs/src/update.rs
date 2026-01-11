@@ -8,7 +8,6 @@ use crate::block::{
     BlockRange, ClientID, Item, ItemContent, ItemPtr, BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER,
     HAS_ORIGIN, HAS_PARENT_SUB, HAS_RIGHT_ORIGIN,
 };
-use crate::cell::MutProvider;
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
 use crate::id_set::{DeleteSet, IdSet};
@@ -18,7 +17,7 @@ use crate::types::TypePtr;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
-use crate::{Doc, OffsetKind, StateVector, Transaction, ID};
+use crate::{Doc, OffsetKind, StateVector, ID};
 
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct UpdateBlocks {

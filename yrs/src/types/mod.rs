@@ -10,7 +10,7 @@ pub use text::TextRef;
 
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::{Branch, BranchPtr};
-use crate::cell::{MutProvider, RefProvider};
+use crate::cell::RefProvider;
 use crate::encoding::read::Error;
 use crate::transaction::TransactionState;
 use crate::types::array::ArrayEvent;

@@ -119,7 +119,7 @@ impl WasmXmlFragment {
             SharedCollection::Prelim(c) => Ok(c.first().cloned().unwrap_or(JsValue::UNDEFINED)),
             SharedCollection::Integrated(c) => {
                 let doc = c.doc.clone();
-                c.transact(|c, txn| match c.first_child() {
+                c.transact(|c, _| match c.first_child() {
                     None => Ok(JsValue::UNDEFINED),
                     Some(xml) => Ok(Js::from_xml(xml, doc).into()),
                 })
@@ -253,7 +253,6 @@ impl WasmXmlFragment {
 pub struct WasmXmlEvent {
     inner: &'static XmlEvent,
     doc: crate::WasmDoc,
-    target: Option<JsValue>,
     keys: Option<JsValue>,
     delta: Option<JsValue>,
     origin: JsValue,
@@ -267,7 +266,6 @@ impl WasmXmlEvent {
             inner,
             origin: origin.clone(),
             doc: doc.clone(),
-            target: None,
             delta: None,
             keys: None,
         }
@@ -282,13 +280,10 @@ impl WasmXmlEvent {
 
     /// Returns a current shared type instance, that current event changes refer to.
     #[wasm_bindgen(getter)]
-    pub fn target(&mut self) -> JsValue {
+    pub fn target(&self) -> JsValue {
         let target = self.inner.target();
-        let doc = self.doc.clone();
-        let js = self
-            .target
-            .get_or_insert_with(|| Js::from_xml(target.clone(), doc).into());
-        js.clone()
+        let js = Js::from_xml(target.clone(), self.doc.clone());
+        js.into()
     }
 
     #[wasm_bindgen(getter)]

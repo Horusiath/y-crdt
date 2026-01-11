@@ -1017,7 +1017,7 @@ pub trait Xml: AsRef<Branch> {
     /// can be found inside of a current XML element.
     fn get_attribute<D: RefProvider<Doc>>(
         &self,
-        txn: &Transaction<D>,
+        _txn: &Transaction<D>,
         attr_name: &str,
     ) -> Option<Out> {
         let branch = self.as_ref();

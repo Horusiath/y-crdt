@@ -377,7 +377,6 @@ pub struct WasmArrayEvent {
     inner: &'static ArrayEvent,
     doc: crate::WasmDoc,
     origin: JsValue,
-    target: Option<JsValue>,
     delta: Option<JsValue>,
 }
 
@@ -389,7 +388,6 @@ impl WasmArrayEvent {
             inner,
             origin: origin.clone(),
             doc: doc.clone(),
-            target: None,
             delta: None,
         }
     }

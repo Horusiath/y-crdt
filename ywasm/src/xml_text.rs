@@ -1,4 +1,4 @@
-use crate::collection::SharedCollection;
+use crate::collection::{Integrated, SharedCollection};
 use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js, OptionDisposed, YRange};
 use crate::text::WasmText;
@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::types::xml::XmlTextEvent;
 use yrs::types::{Attrs, TYPE_REFS_XML_TEXT};
-use yrs::{DeepObservable, GetString, Observable, Quotable, Text as _, Xml, XmlTextRef};
+use yrs::{DeepObservable, GetString, Observable, Quotable, SharedRef, Text as _, Xml, XmlTextRef};
 
 pub(crate) struct PrelimXmlText {
     pub attributes: Attrs,
@@ -363,7 +363,7 @@ impl WasmXmlText {
             }
             SharedCollection::Integrated(c) => {
                 let doc = c.doc.clone();
-                c.transact(|c, txn| match c.parent() {
+                c.transact(|c, _| match c.parent() {
                     None => Ok(JsValue::UNDEFINED),
                     Some(node) => Ok(Js::from_xml(node, doc).into()),
                 })
@@ -537,7 +537,6 @@ impl WasmXmlText {
 pub struct WasmXmlTextEvent {
     inner: &'static XmlTextEvent,
     doc: crate::WasmDoc,
-    target: Option<JsValue>,
     delta: Option<JsValue>,
     keys: Option<JsValue>,
     origin: JsValue,
@@ -551,7 +550,6 @@ impl WasmXmlTextEvent {
             inner,
             origin: origin.clone(),
             doc: doc.clone(),
-            target: None,
             delta: None,
             keys: None,
         }
@@ -566,13 +564,14 @@ impl WasmXmlTextEvent {
 
     /// Returns a current shared type instance, that current event changes refer to.
     #[wasm_bindgen(getter)]
-    pub fn target(&mut self) -> JsValue {
+    pub fn target(&self) -> JsValue {
         let target = self.inner.target();
-        let doc = self.doc.clone();
-        let js = self.target.get_or_insert_with(|| {
-            WasmXmlText(SharedCollection::integrated(target.clone(), doc)).into()
-        });
-        js.clone()
+        let hook = target.hook();
+        let text_ref = WasmXmlText(SharedCollection::Integrated(Integrated {
+            hook,
+            doc: self.doc.clone(),
+        }));
+        text_ref.into()
     }
 
     #[wasm_bindgen(getter)]

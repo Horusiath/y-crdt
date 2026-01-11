@@ -3,17 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{hash_map, HashMap};
 use std::fmt::Formatter;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use thiserror::Error;
 
 use crate::block::ClientID;
-use crate::cell::Cell;
-use crate::doc::DocLike;
 use crate::sync::{Clock, Timestamp};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{Doc, Observer, Origin};
+use crate::{Observer, Origin};
 
 const NULL_STR: &str = "null";
 
@@ -635,7 +632,6 @@ mod test {
 
     use crate::sync::awareness::{AwarenessUpdateSummary, Event};
     use crate::sync::Awareness;
-    use crate::Doc;
 
     #[test]
     fn awareness() {

@@ -298,7 +298,6 @@ impl WasmMap {
 pub struct WasmMapEvent {
     inner: &'static MapEvent,
     doc: crate::WasmDoc,
-    target: Option<JsValue>,
     keys: Option<JsValue>,
     origin: JsValue,
 }
@@ -311,7 +310,6 @@ impl WasmMapEvent {
             inner,
             origin: origin.clone(),
             doc: doc.clone(),
-            target: None,
             keys: None,
         }
     }

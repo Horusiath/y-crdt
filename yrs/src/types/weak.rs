@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{Bound, HashSet};
 use std::convert::TryFrom;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut, RangeBounds};
+use std::ops::{DerefMut, RangeBounds};
 use std::sync::Arc;
 
 use thiserror::Error;

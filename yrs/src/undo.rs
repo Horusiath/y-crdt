@@ -5,7 +5,7 @@ use crate::branch::{Branch, BranchPtr};
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
-use crate::transaction::{Origin, TransactionState};
+use crate::transaction::Origin;
 use crate::{DeleteSet, Doc, Observer, Transaction, ID};
 
 use crate::cell::{Cell, CellRef, MutProvider};

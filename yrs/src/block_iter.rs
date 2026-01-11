@@ -360,7 +360,7 @@ impl BlockIter {
         txn: &mut Transaction<D>,
         value: V,
     ) -> Option<ItemPtr> {
-        let (mut doc_ref, state) = txn.split_mut();
+        let mut doc_ref = txn.doc_mut().get_mut();
         let doc = &mut *doc_ref;
         self.reduce_moves(doc);
         self.split_rel(doc);

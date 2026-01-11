@@ -11,10 +11,10 @@ use crate::Result;
 use js_sys::Uint8Array;
 use std::collections::{Bound, HashMap};
 use std::convert::TryInto;
-use std::ops::{Deref, DerefMut, RangeBounds};
+use std::ops::{Deref, RangeBounds};
 use std::sync::Arc;
 use wasm_bindgen::__rt::{RcRef, RcRefMut};
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi, RefMutFromWasmAbi};
+use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi, RefFromWasmAbi};
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::{Branch, BranchPtr};
@@ -26,9 +26,8 @@ use yrs::types::{
 };
 use yrs::FromOut;
 use yrs::{
-    Any, ArrayRef, BranchID, Doc, Map as _, MapRef, MutProvider, Origin, Out, RefProvider,
-    Text as _, TextRef, Transaction, WeakRef, Xml, XmlElementRef, XmlFragment as _, XmlFragmentRef,
-    XmlOut, XmlTextRef,
+    Any, ArrayRef, BranchID, Doc, Map as _, MapRef, MutProvider, Origin, Out, Text as _, TextRef,
+    Transaction, WeakRef, Xml, XmlElementRef, XmlFragment as _, XmlFragmentRef, XmlOut, XmlTextRef,
 };
 
 pub trait OptionDisposed {
@@ -57,19 +56,8 @@ impl Js {
         Js(js)
     }
 
-    pub fn prelim(&self) -> bool {
-        match js_sys::Reflect::get(&self.0, &JsValue::from_str("prelim")) {
-            Ok(js) => js.as_bool().unwrap_or(false),
-            Err(_) => false,
-        }
-    }
-
     pub fn into_doc(self) -> RcRef<crate::WasmDoc> {
         unsafe { crate::WasmDoc::ref_from_abi(self.0.into_abi()) }
-    }
-
-    pub fn into_doc_mut(self) -> RcRefMut<crate::WasmDoc> {
-        unsafe { crate::WasmDoc::ref_mut_from_abi(self.0.into_abi()) }
     }
 
     pub fn assert_xml_prelim(xml_node: &JsValue) -> crate::Result<()> {
@@ -273,7 +261,7 @@ impl Prelim for Js {
 
     fn into_content<D: MutProvider<Doc>>(
         self,
-        txn: &mut Transaction<D>,
+        _txn: &mut Transaction<D>,
     ) -> (ItemContent, Option<Self>) {
         match self.as_value().unwrap() {
             ValueRef::Any(any) => (ItemContent::Any(vec![any]), None),
@@ -289,7 +277,7 @@ impl Prelim for Js {
                     }
                     _ => { /* good to go */ }
                 }
-                let type_ref = shared.type_ref(txn);
+                let type_ref = shared.type_ref();
                 let branch = Branch::new(type_ref);
                 (ItemContent::Type(branch), Some(self))
             }
@@ -390,7 +378,7 @@ impl Shared {
         }
     }
 
-    fn type_ref<D: MutProvider<Doc>>(&self, txn: &Transaction<D>) -> TypeRef {
+    fn type_ref(&self) -> TypeRef {
         match self {
             Shared::Text(_) => TypeRef::Text,
             Shared::Map(_) => TypeRef::Map,
@@ -415,9 +403,9 @@ impl Prelim for Shared {
 
     fn into_content<D: MutProvider<Doc>>(
         self,
-        txn: &mut Transaction<D>,
+        _txn: &mut Transaction<D>,
     ) -> (ItemContent, Option<Self>) {
-        let type_ref = self.type_ref(txn);
+        let type_ref = self.type_ref();
         let branch = Branch::new(type_ref);
         (ItemContent::Type(branch), Some(self))
     }
@@ -848,8 +836,6 @@ pub(crate) mod convert {
 }
 
 pub(crate) mod errors {
-    pub const NON_TRANSACTION: &'static str = "provided argument was not a ywasm transaction";
-    pub const INVALID_TRANSACTION_CTX: &'static str = "cannot modify transaction in this context";
     pub const REF_DISPOSED: &'static str = "shared collection has been destroyed";
     pub const OUT_OF_BOUNDS: &'static str = "index outside of the bounds of an array";
     pub const KEY_NOT_FOUND: &'static str = "key was not found in a map";

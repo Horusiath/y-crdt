@@ -419,7 +419,6 @@ pub struct WasmTextEvent {
     inner: &'static TextEvent,
     doc: crate::WasmDoc,
     origin: JsValue,
-    target: Option<JsValue>,
     delta: Option<JsValue>,
 }
 
@@ -431,7 +430,6 @@ impl WasmTextEvent {
             inner,
             origin: origin.clone(),
             doc: doc.clone(),
-            target: None,
             delta: None,
         }
     }
