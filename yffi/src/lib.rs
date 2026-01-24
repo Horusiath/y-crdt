@@ -7,28 +7,27 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 use yrs::block::{ClientID, EmbedPrelim, ItemContent, ItemPtr, Prelim, Unused};
 use yrs::branch::BranchPtr;
-use yrs::cell::MutProvider;
 use yrs::doc::SubDocHook;
 use yrs::encoding::read::Error;
 use yrs::error::UpdateError;
-use yrs::json_path::JsonPathIter as NativeJsonPathIter;
+use yrs::json_path::JsonPathIter as YrsJsonPathIter;
 use yrs::types::array::ArrayEvent;
-use yrs::types::array::ArrayIter as NativeArrayIter;
+use yrs::types::array::ArrayIter as YrsArrayIter;
 use yrs::types::map::MapEvent;
-use yrs::types::map::MapIter as NativeMapIter;
+use yrs::types::map::MapIter as YrsMapIter;
 use yrs::types::text::{Diff, TextEvent, YChange};
-use yrs::types::weak::{LinkSource, Unquote as NativeUnquote, WeakEvent, WeakRef};
-use yrs::types::xml::{Attributes as NativeAttributes, XmlOut};
-use yrs::types::xml::{TreeWalker as NativeTreeWalker, XmlFragment};
+use yrs::types::weak::{LinkSource, Unquote as YrsUnquote, WeakEvent, WeakRef};
+use yrs::types::xml::{Attributes as YrsAttributes, XmlOut};
+use yrs::types::xml::{TreeWalker as YrsTreeWalker, XmlFragment};
 use yrs::types::xml::{XmlEvent, XmlTextEvent};
 use yrs::types::{Attrs, Change, Delta, EntryChange, Event, PathSegment, ToJson, TypeRef};
 use yrs::undo::EventKind;
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use yrs::{
-    uuid_v4, Any, Array, ArrayRef, Assoc, BranchID, DeleteSet, Doc, DocId, GetString, JsonPath,
-    JsonPathEval, Map, MapRef, Observable, OffsetKind, Options, Origin, Out, Quotable, Snapshot,
-    StateVector, StickyIndex, SubdocsEvent, Text, TextRef, Transaction, TransactionCleanupEvent,
+    uuid_v4, Any, Array, ArrayRef, Assoc, BranchID, DeleteSet, DocId, GetString, JsonPath,
+    JsonPathEval, Map, MapRef, MutProvider, Observable, OffsetKind, Options, Origin, Out, Quotable,
+    Snapshot, StateVector, StickyIndex, SubdocsEvent, Text, TextRef, TransactionCleanupEvent,
     Update, Uuid, Xml, XmlElementPrelim, XmlElementRef, XmlFragmentRef, XmlTextPrelim, XmlTextRef,
     ID,
 };
@@ -126,35 +125,35 @@ pub type Subscription = yrs::Subscription;
 
 /// Iterator structure used by shared array data type.
 #[repr(transparent)]
-pub struct ArrayIter(NativeArrayIter<'static>);
+pub struct ArrayIter(YrsArrayIter<'static, &'static mut Doc>);
 
 /// Iterator structure used by `yweak_iter` function call.
 #[repr(transparent)]
-pub struct WeakIter(NativeUnquote<'static>);
+pub struct WeakIter(YrsUnquote<'static>);
 
 /// Iterator structure used by shared map data type. Map iterators are unordered - there's no
 /// specific order in which map entries will be returned during consecutive iterator calls.
 #[repr(transparent)]
-pub struct MapIter(NativeMapIter<'static>);
+pub struct MapIter(YrsMapIter<'static, &'static mut Doc>);
 
 /// Iterator structure used by XML nodes (elements and text) to iterate over node's attributes.
 /// Attribute iterators are unordered - there's no specific order in which map entries will be
 /// returned during consecutive iterator calls.
 #[repr(transparent)]
-pub struct Attributes(NativeAttributes<'static>);
+pub struct Attributes(YrsAttributes<'static, &'static mut Doc>);
 
 /// Iterator used to traverse over the complex nested tree structure of a XML node. XML node
 /// iterator walks only over `YXmlElement` and `YXmlText` nodes. It does so in ordered manner (using
 /// the order in which children are ordered within their parent nodes) and using **depth-first**
 /// traverse.
 #[repr(transparent)]
-pub struct TreeWalker(NativeTreeWalker<'static>);
+pub struct TreeWalker(YrsTreeWalker<'static, &'static mut Doc>);
 
 /// Transaction is one of the core types in Yrs. All operations that need to touch or
 /// modify a document's contents (a.k.a. block store), need to be executed in scope of a
 /// transaction.
 #[repr(transparent)]
-pub struct Transaction(yrs::Transaction<'static>);
+pub struct Transaction(yrs::Transaction<&'static mut Doc>);
 
 /// A Yrs document type. Documents are the most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
@@ -170,15 +169,15 @@ pub type Doc = yrs::Doc;
 pub struct JsonPathIter {
     query: String,
     json_path: Box<JsonPath<'static>>,
-    inner: NativeJsonPathIter<'static>,
+    inner: YrsJsonPathIter<'static, &'static mut Doc>,
 }
 
 impl Transaction {
-    fn read_only(txn: yrs::Transaction<'static>) -> Self {
+    fn read_only(txn: yrs::Transaction<&'static mut Doc>) -> Self {
         Transaction(txn)
     }
 
-    fn read_write(txn: yrs::TransactionMut<'static>) -> Self {
+    fn read_write(txn: yrs::Transaction<&'static mut Doc>) -> Self {
         Transaction(unsafe { std::mem::transmute(txn) })
     }
 
@@ -186,9 +185,9 @@ impl Transaction {
         self.0.is_dirty()
     }
 
-    fn as_mut(&mut self) -> Option<&mut yrs::TransactionMut<'static>> {
+    fn as_mut(&mut self) -> Option<&mut yrs::Transaction<&'static mut Doc>> {
         if self.0.is_dirty() {
-            let inner: &mut yrs::Transaction<'static> = &mut self.0;
+            let inner: &mut yrs::Transaction<&'static mut Doc> = &mut self.0;
             Some(unsafe { std::mem::transmute(inner) })
         } else {
             None
@@ -197,7 +196,7 @@ impl Transaction {
 }
 
 impl Deref for Transaction {
-    type Target = yrs::Transaction<'static>;
+    type Target = yrs::Transaction<&'static mut Doc>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -582,8 +581,8 @@ pub unsafe extern "C" fn ydoc_clear(doc: *mut Doc, parent_txn: *mut Transaction)
 pub unsafe extern "C" fn ydoc_read_transaction(doc: *mut Doc) -> *mut Transaction {
     assert!(!doc.is_null());
 
-    let doc = doc.as_ref().unwrap();
-    let txn = doc.transact();
+    let doc = doc.as_mut().unwrap();
+    let txn = doc.transact_mut();
     Box::into_raw(Box::new(Transaction::read_only(txn)))
 }
 
@@ -1509,7 +1508,7 @@ pub unsafe extern "C" fn yarray_get(
     let array = ArrayRef::from_raw_branch(array);
     let txn = txn.as_ref().unwrap();
 
-    if let Some(val) = array.get::<Out>(txn, index as u32) {
+    if let Some(val) = array.get::<_, Out>(txn, index) {
         Box::into_raw(Box::new(YOutput::from(val)))
     } else {
         std::ptr::null_mut()
@@ -1537,7 +1536,7 @@ pub unsafe extern "C" fn yarray_get_json(
     let array = ArrayRef::from_raw_branch(array);
     let txn = txn.as_ref().unwrap();
 
-    if let Some(val) = array.get::<Out>(txn, index) {
+    if let Some(val) = array.get::<_, Out>(txn, index) {
         let any = val.to_json(txn);
         let json = match serde_json::to_string(&any) {
             Ok(json) => json,
@@ -1824,7 +1823,7 @@ pub unsafe extern "C" fn ymap_get(
 
     let map = MapRef::from_raw_branch(map);
 
-    if let Some(value) = map.get::<Out>(txn, key) {
+    if let Some(value) = map.get::<Out, _>(txn, key) {
         let output = YOutput::from(value);
         Box::into_raw(Box::new(output))
     } else {
@@ -1855,7 +1854,7 @@ pub unsafe extern "C" fn ymap_get_json(
 
     let map = MapRef::from_raw_branch(map);
 
-    if let Some(value) = map.get::<Out>(txn, key) {
+    if let Some(value) = map.get::<Out, _>(txn, key) {
         let any = value.to_json(txn);
         match serde_json::to_string(&any) {
             Ok(json) => CString::new(json).unwrap().into_raw(),
@@ -2771,7 +2770,7 @@ impl Prelim for YInput {
 
     fn into_content<D: MutProvider<Doc>>(
         self,
-        _: &mut Transaction<D>,
+        _: &mut yrs::Transaction<D>,
     ) -> (ItemContent, Option<Self>) {
         unsafe {
             if self.tag <= 0 {
@@ -2803,7 +2802,7 @@ impl Prelim for YInput {
         }
     }
 
-    fn integrate<D: MutProvider<Doc>>(self, txn: &mut Transaction<D>, item_ptr: ItemPtr) {
+    fn integrate<D: MutProvider<Doc>>(self, txn: &mut yrs::Transaction<D>, item_ptr: ItemPtr) {
         let inner_ref = if let Some(branch) = item_ptr.as_branch() {
             branch
         } else {
@@ -3247,7 +3246,10 @@ impl From<XmlFragmentRef> for YOutput {
 
 impl From<SubDocHook> for YOutput {
     fn from(mut v: SubDocHook) -> Self {
-        let doc = v.borrow_mut().doc_mut() as *mut Doc;
+        let mut doc = v.borrow_mut();
+        let doc = doc.as_mut();
+        let mut doc = doc.get_mut();
+        let doc = doc.deref_mut();
         YOutput {
             tag: Y_DOC,
             len: 1,
@@ -3884,7 +3886,14 @@ impl YSubdocsEvent {
         fn into_ptr(v: &[SubDocHook]) -> *const *const Doc {
             let array: Vec<_> = v
                 .into_iter()
-                .map(|doc| doc.borrow().doc() as *const Doc)
+                .map(|doc| {
+                    let borrowed = doc.borrow();
+                    let doc = borrowed.as_ref();
+                    let doc = doc.get_ref();
+                    let doc = doc.deref();
+
+                    doc as *const Doc
+                })
                 .collect();
             let mut boxed = array.into_boxed_slice();
             let ptr = boxed.as_mut_ptr();
@@ -5218,7 +5227,7 @@ pub unsafe extern "C" fn ysticky_index_from_index(
     };
 
     if let Some(txn) = txn.as_mut() {
-        if let Some(pos) = StickyIndex::at(txn, branch, index, assoc) {
+        if let Some(pos) = StickyIndex::at(txn.doc(), branch, index, assoc) {
             Box::into_raw(Box::new(YStickyIndex(pos)))
         } else {
             null_mut()
@@ -5379,7 +5388,7 @@ pub unsafe extern "C" fn yweak_iter(
 
     let txn = txn.as_ref().unwrap();
     let weak: WeakRef<ArrayRef> = WeakRef::from_raw_branch(array_link);
-    let iter: NativeUnquote<'static> = std::mem::transmute(weak.unquote(txn));
+    let iter: YrsUnquote<'static> = std::mem::transmute(weak.unquote(txn));
 
     Box::into_raw(Box::new(WeakIter(iter)))
 }
@@ -5626,10 +5635,13 @@ pub unsafe extern "C" fn ybranch_get(
     let branch_id = branch_id.as_ref().unwrap();
     let client_or_len = branch_id.client_or_len;
     let ptr = if client_or_len >= 0 {
-        BranchID::get_nested(txn, &ID::new(client_or_len as u64, branch_id.variant.clock))
+        BranchID::get_nested(
+            txn.doc(),
+            &ID::new(client_or_len as u64, branch_id.variant.clock),
+        )
     } else {
         let name = std::slice::from_raw_parts(branch_id.variant.name, (-client_or_len) as usize);
-        BranchID::get_root(txn, std::str::from_utf8_unchecked(name))
+        BranchID::get_root(txn.doc(), std::str::from_utf8_unchecked(name))
     };
 
     match ptr {

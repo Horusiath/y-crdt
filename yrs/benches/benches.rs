@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use yrs::encoding::read::{Cursor, Read};
 use yrs::updates::decoder::Decode;
-use yrs::{Array, ArrayRef, Doc, Map, MapRef, Text, TextRef, Transaction, TransactionMut, Update};
+use yrs::{Array, ArrayRef, Doc, Map, MapRef, Text, TextRef, Update};
 
 const N: usize = 6000;
 const SQRT_N: usize = 77 * 20;
@@ -255,7 +255,7 @@ where
             }
         };
 
-    fn apply(txn: &mut TransactionMut, txt: &TextRef, op: &TextOp) {
+    fn apply(txn: &mut yrs::Transaction<&mut Doc>, txt: &TextRef, op: &TextOp) {
         match op {
             TextOp::Insert(idx, content) => txt.insert(txn, *idx, content),
             TextOp::Delete(idx, len) => txt.remove_range(txn, *idx, *len),
@@ -354,9 +354,9 @@ fn b2_4<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
 
 fn n_concurrent_map_benchmark<F>(c: &mut Criterion, name: &str, f: F)
 where
-    F: Fn(&MapRef, &mut TransactionMut, usize),
+    F: Fn(&MapRef, &mut yrs::Transaction<&mut Doc>, usize),
 {
-    let mut input: Vec<_> = (0..SQRT_N)
+    let input: Vec<_> = (0..SQRT_N)
         .into_iter()
         .map(|i| {
             let mut doc = Doc::new();
@@ -390,11 +390,11 @@ where
     });
 }
 
-fn b3_1(map: &MapRef, txn: &mut TransactionMut, i: usize) {
+fn b3_1(map: &MapRef, txn: &mut yrs::Transaction<&mut Doc>, i: usize) {
     map.insert(txn, "v", i as u32);
 }
 
-fn b3_2(map: &MapRef, txn: &mut TransactionMut, i: usize) {
+fn b3_2(map: &MapRef, txn: &mut yrs::Transaction<&mut Doc>, i: usize) {
     let mut o = HashMap::with_capacity(2);
     o.insert("name".to_string(), i.to_string());
     o.insert("address".to_string(), "here".to_string());
@@ -402,7 +402,7 @@ fn b3_2(map: &MapRef, txn: &mut TransactionMut, i: usize) {
     map.insert(txn, "v", o);
 }
 
-fn b3_3(map: &MapRef, txn: &mut TransactionMut, i: usize) {
+fn b3_3(map: &MapRef, txn: &mut yrs::Transaction<&mut Doc>, i: usize) {
     let mut str = String::with_capacity(i * SQRT_N);
     for _ in 0..SQRT_N {
         str.push_str(i.to_string().as_str());
@@ -447,7 +447,7 @@ fn b3_4(c: &mut Criterion, name: &str) {
 
 fn b4_1(c: &mut Criterion, name: &str) {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("text");
+    let _txt = doc.get_or_insert_text("text");
     let input = read_input("./assets/bench-input/b4-editing-trace.bin");
 
     let setup = || {
@@ -473,7 +473,7 @@ fn b4_1(c: &mut Criterion, name: &str) {
 
 fn b4_2(c: &mut Criterion, name: &str) {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("text");
+    let _txt = doc.get_or_insert_text("text");
     let mut buf = Vec::with_capacity(400 * 1024);
     let mut f = std::fs::File::open("./assets/bench-input/b4-update.bin").unwrap();
     std::io::Read::read_to_end(&mut f, &mut buf).unwrap();

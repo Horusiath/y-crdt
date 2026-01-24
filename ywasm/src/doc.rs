@@ -4,10 +4,11 @@ use crate::js::{Callback, Js};
 use crate::map::WasmMap;
 use crate::text::WasmText;
 use crate::xml_frag::WasmXmlFragment;
-use crate::Result;
+use crate::{Result, WasmTransaction};
 use serde::Deserialize;
 use std::cell::UnsafeCell;
 use std::iter::FromIterator;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -109,7 +110,8 @@ impl WasmDoc {
         let state = self.state_mut();
         match &mut state.current_transaction {
             None => {
-                state.current_transaction = Some(crate::WasmTransaction::new(self.clone(), origin));
+                state.current_transaction =
+                    Some(crate::WasmTransaction::owned(self.clone(), origin));
                 let tx = state.current_transaction.as_mut().unwrap();
                 let result = f(tx);
                 tx.commit().unwrap();
@@ -274,9 +276,13 @@ impl WasmDoc {
             "destroy" => state.doc.observe_destroy_with(abi, move |_| {
                 callback.call0(&JsValue::UNDEFINED).unwrap();
             }),
-            "afterTransaction" => state.doc.observe_after_transaction_with(abi, move |txn| {
-                callback.call0(&JsValue::UNDEFINED).unwrap();
-            }),
+            "afterTransaction" => {
+                let doc = self.clone();
+                state.doc.observe_after_transaction_with(abi, move |txn| {
+                    let tx = WasmTransaction::borrowed(doc.clone(), txn);
+                    callback.call0(&tx.into()).unwrap();
+                })
+            }
             "cleanup" => state
                 .doc
                 .observe_transaction_cleanup_with(abi, move |_, _| {
@@ -344,7 +350,7 @@ impl WasmDoc {
         let res = js_sys::Array::new();
         self.transact(None, |txn| {
             for subdoc in txn.subdoc_refs() {
-                todo!()
+                let subdoc = subdoc.deref();
             }
         });
         Ok(res)

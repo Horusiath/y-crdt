@@ -7,7 +7,7 @@ use crate::weak::WasmWeakLink;
 use crate::xml_elem::WasmXmlElement;
 use crate::xml_frag::WasmXmlFragment;
 use crate::xml_text::WasmXmlText;
-use crate::Result;
+use crate::{Result, WasmDoc};
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::Uint8Array;
 use std::ops::{Deref, DerefMut};
@@ -24,38 +24,64 @@ use yrs::{
 
 #[wasm_bindgen(js_name = "Transaction")]
 pub struct WasmTransaction {
-    inner: YTransaction<crate::WasmDoc>,
+    inner: TxState,
+}
+
+enum TxState {
+    Owned(YTransaction<WasmDoc>),
+    Borrowed {
+        tx_ref: &'static YTransaction<&'static yrs::Doc>,
+        doc: WasmDoc,
+    },
 }
 
 impl WasmTransaction {
-    pub(crate) fn new(doc: crate::WasmDoc, origin: Option<JsValue>) -> Self {
+    pub(crate) fn owned(doc: WasmDoc, origin: Option<JsValue>) -> Self {
         let origin = match origin {
             None => None,
             Some(origin) if origin.is_undefined() => None,
             Some(origin) => Some(Js::from(origin).into()),
         };
         let inner = YTransaction::new(doc, origin);
-        WasmTransaction { inner }
+        WasmTransaction {
+            inner: TxState::Owned(inner),
+        }
     }
 
-    fn doc(&self) -> crate::WasmDoc {
-        self.inner.doc().clone()
+    pub(crate) fn borrowed(doc: WasmDoc, tx: &YTransaction<&yrs::Doc>) -> Self {
+        let tx_ref: &'static YTransaction<&'static yrs::Doc> = unsafe { std::mem::transmute(tx) };
+        WasmTransaction {
+            inner: TxState::Borrowed { doc, tx_ref },
+        }
+    }
+
+    fn doc(&self) -> WasmDoc {
+        match &self.inner {
+            TxState::Owned(tx) => tx.doc().clone(),
+            TxState::Borrowed { doc, .. } => doc.clone(),
+        }
     }
 }
 
 impl Deref for WasmTransaction {
-    type Target = YTransaction<crate::WasmDoc>;
+    type Target = YTransaction<WasmDoc>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.inner
+        match &self.inner {
+            TxState::Owned(tx) => tx,
+            TxState::Borrowed { tx_ref, .. } => *tx_ref,
+        }
     }
 }
 
 impl DerefMut for WasmTransaction {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+        match &mut self.inner {
+            TxState::Owned(tx) => tx,
+            TxState::Borrowed { .. } => unreachable!("cannot modify document in observer callback"),
+        }
     }
 }
 
@@ -181,7 +207,9 @@ impl WasmTransaction {
     /// ywasm transactions are auto-committed when they are `free`d.
     #[wasm_bindgen(js_name = commit)]
     pub fn commit(&mut self) -> Result<()> {
-        self.inner.commit();
+        if let TxState::Owned(tx) = &mut self.inner {
+            tx.commit();
+        }
         Ok(())
     }
 
@@ -325,8 +353,7 @@ impl WasmTransaction {
     }
 
     fn try_apply(&mut self, update: Update) -> Result<()> {
-        self.inner
-            .apply_update(update)
+        self.apply_update(update)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -382,7 +409,7 @@ impl WasmTransaction {
     /// with `gc` option turned on or off.
     #[wasm_bindgen(js_name = gc)]
     pub fn gc(&mut self) {
-        self.inner.gc(None)
+        self.deref_mut().gc(None)
     }
 
     /// Evaluates a JSON path expression (see: https://en.wikipedia.org/wiki/JSONPath) on
@@ -405,7 +432,7 @@ impl WasmTransaction {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let result = js_sys::Array::new();
         let doc = self.doc();
-        let mut iter = self.inner.json_path(&query);
+        let mut iter = self.deref().json_path(&query);
         while let Some(value) = iter.next() {
             let value: JsValue = Js::from_value(&value, doc.clone()).into();
             result.push(&value);
@@ -431,7 +458,7 @@ impl WasmTransaction {
     #[wasm_bindgen(js_name = selectOne)]
     pub fn select_one(&self, json_path: &str) -> Result<JsValue> {
         let query = JsonPath::parse(json_path).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let mut iter = self.inner.json_path(&query);
+        let mut iter = self.deref().json_path(&query);
         match iter.next() {
             None => Ok(JsValue::UNDEFINED),
             Some(value) => Ok(Js::from_value(&value, self.doc()).into()),

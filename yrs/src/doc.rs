@@ -602,7 +602,6 @@ impl std::fmt::Display for DocId {
 pub struct SubDocRef<'tx, D: RefProvider<Doc>> {
     parent_txn: &'tx Transaction<D>,
     subdoc_ref: crate::Ref<'tx, Doc>,
-    #[allow(dead_code)]
     transient_ref: CellRef<'tx, Box<dyn DocLike>>, //TODO: remove once double boxing is no longer needed
 }
 
