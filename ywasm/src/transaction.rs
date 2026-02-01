@@ -24,15 +24,8 @@ use yrs::{
 
 #[wasm_bindgen(js_name = "Transaction")]
 pub struct WasmTransaction {
-    inner: TxState,
-}
-
-enum TxState {
-    Owned(YTransaction<WasmDoc>),
-    Borrowed {
-        tx_ref: &'static YTransaction<&'static yrs::Doc>,
-        doc: WasmDoc,
-    },
+    tx_ref: YTransaction<WasmDoc>,
+    doc: WasmDoc,
 }
 
 impl WasmTransaction {
@@ -42,24 +35,8 @@ impl WasmTransaction {
             Some(origin) if origin.is_undefined() => None,
             Some(origin) => Some(Js::from(origin).into()),
         };
-        let inner = YTransaction::new(doc, origin);
-        WasmTransaction {
-            inner: TxState::Owned(inner),
-        }
-    }
-
-    pub(crate) fn borrowed(doc: WasmDoc, tx: &YTransaction<&yrs::Doc>) -> Self {
-        let tx_ref: &'static YTransaction<&'static yrs::Doc> = unsafe { std::mem::transmute(tx) };
-        WasmTransaction {
-            inner: TxState::Borrowed { doc, tx_ref },
-        }
-    }
-
-    fn doc(&self) -> WasmDoc {
-        match &self.inner {
-            TxState::Owned(tx) => tx.doc().clone(),
-            TxState::Borrowed { doc, .. } => doc.clone(),
-        }
+        let tx_ref = YTransaction::new(doc.clone(), origin);
+        WasmTransaction { tx_ref, doc }
     }
 }
 
@@ -68,20 +45,14 @@ impl Deref for WasmTransaction {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        match &self.inner {
-            TxState::Owned(tx) => tx,
-            TxState::Borrowed { tx_ref, .. } => *tx_ref,
-        }
+        &self.tx_ref
     }
 }
 
 impl DerefMut for WasmTransaction {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match &mut self.inner {
-            TxState::Owned(tx) => tx,
-            TxState::Borrowed { .. } => unreachable!("cannot modify document in observer callback"),
-        }
+        &mut self.tx_ref
     }
 }
 
@@ -103,6 +74,11 @@ impl WasmTransaction {
         let tx = self.deref();
         let sv = tx.after_state();
         crate::js::convert::state_vector_to_js(&sv)
+    }
+
+    #[wasm_bindgen(getter, js_name = doc)]
+    pub fn doc(&self) -> crate::WasmDoc {
+        self.doc.clone()
     }
 
     #[wasm_bindgen(getter, js_name = pendingStructs)]
@@ -207,9 +183,7 @@ impl WasmTransaction {
     /// ywasm transactions are auto-committed when they are `free`d.
     #[wasm_bindgen(js_name = commit)]
     pub fn commit(&mut self) -> Result<()> {
-        if let TxState::Owned(tx) = &mut self.inner {
-            tx.commit();
-        }
+        self.tx_ref.commit();
         Ok(())
     }
 

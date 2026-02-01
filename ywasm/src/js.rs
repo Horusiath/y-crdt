@@ -588,7 +588,7 @@ pub(crate) mod convert {
     use crate::weak::WasmWeakLinkEvent;
     use crate::xml_frag::WasmXmlEvent;
     use crate::xml_text::WasmXmlTextEvent;
-    use crate::WasmText;
+    use crate::{WasmText, WasmTransaction};
     use gloo_utils::format::JsValueSerdeExt;
     use std::iter::FromIterator;
     use wasm_bindgen::convert::RefMutFromWasmAbi;
@@ -832,6 +832,21 @@ pub(crate) mod convert {
             js_sys::Reflect::set(&attrs, &JsValue::from("ychange"), &ychange)?;
         }
         Ok(js)
+    }
+
+    pub fn tx_into_js(txn: &yrs::Transaction<&yrs::Doc>) -> crate::Result<JsValue> {
+        let before_state = crate::js::convert::state_vector_to_js(&txn.before_state());
+        let after_state = crate::js::convert::state_vector_to_js(&txn.after_state());
+        let delete_set = match txn.delete_set() {
+            None => JsValue::NULL,
+            Some(ds) => crate::js::convert::delete_set_to_js(ds).into(),
+        };
+        let tx = js_sys::Object::new();
+        js_sys::Reflect::set(&tx, &JsValue::from("beforeState"), &before_state.into())?;
+        js_sys::Reflect::set(&tx, &JsValue::from("afterState"), &after_state.into())?;
+        js_sys::Reflect::set(&tx, &JsValue::from("deleteSet"), &delete_set)?;
+        js_sys::Reflect::set(&tx, &JsValue::from("origin"), &origin_into_js(txn.origin()))?;
+        Ok(tx.into())
     }
 }
 

@@ -1,11 +1,12 @@
 use crate::array::WasmArray;
 use crate::collection::SharedCollection;
+use crate::js::convert::origin_into_js;
 use crate::js::{Callback, Js};
 use crate::map::WasmMap;
 use crate::text::WasmText;
 use crate::xml_frag::WasmXmlFragment;
 use crate::{Result, WasmTransaction};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::iter::FromIterator;
 use std::ops::Deref;
@@ -16,7 +17,10 @@ use wasm_bindgen::JsValue;
 use yrs::doc::{DocLike, SubDocHook};
 use yrs::transaction::Transaction as YTransaction;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{DocId, JsonPath, JsonPathEval, Mut, MutProvider, OffsetKind, Options, Ref, RefProvider};
+use yrs::{
+    DocId, JsonPath, JsonPathEval, Mut, MutProvider, OffsetKind, Options, Ref, RefProvider,
+    StateVector,
+};
 
 /// Internal state of a ywasm document, wrapped in Rc<UnsafeCell> for sharing.
 pub struct DocState {
@@ -258,13 +262,15 @@ impl WasmDoc {
         let abi = callback.subscription_key();
         let state = self.state_mut();
         match event {
-            "update" => state.doc.observe_update_v1_with(abi, move |_, e| {
+            "update" => state.doc.observe_update_v1_with(abi, move |txn, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
-                callback.call1(&JsValue::UNDEFINED, &update).unwrap();
+                let tx = crate::js::convert::tx_into_js(txn).unwrap();
+                callback.call2(&JsValue::UNDEFINED, &update, &tx).unwrap();
             }),
-            "updateV2" => state.doc.observe_update_v2_with(abi, move |_, e| {
+            "updateV2" => state.doc.observe_update_v2_with(abi, move |txn, e| {
                 let update = js_sys::Uint8Array::from(e.update.as_slice());
-                callback.call1(&JsValue::UNDEFINED, &update).unwrap();
+                let tx = crate::js::convert::tx_into_js(txn).unwrap();
+                callback.call2(&JsValue::UNDEFINED, &update, &tx).unwrap();
             }),
             "subdocs" => {
                 let doc = self.clone();
@@ -279,14 +285,15 @@ impl WasmDoc {
             "afterTransaction" => {
                 let doc = self.clone();
                 state.doc.observe_after_transaction_with(abi, move |txn| {
-                    let tx = WasmTransaction::borrowed(doc.clone(), txn);
-                    callback.call0(&tx.into()).unwrap();
+                    let tx = crate::js::convert::tx_into_js(txn).unwrap();
+                    callback.call1(&JsValue::UNDEFINED, &tx).unwrap();
                 })
             }
             "cleanup" => state
                 .doc
-                .observe_transaction_cleanup_with(abi, move |_, _| {
-                    callback.call0(&JsValue::UNDEFINED).unwrap();
+                .observe_transaction_cleanup_with(abi, move |tx, _| {
+                    let tx = crate::js::convert::tx_into_js(tx).unwrap();
+                    callback.call1(&JsValue::UNDEFINED, &tx).unwrap();
                 }),
             other => {
                 return Err(JsValue::from_str(&format!("unknown event: '{}'", other)).into());
