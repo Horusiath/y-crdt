@@ -49,7 +49,7 @@ typedef struct YDoc {} YDoc;
  */
 typedef struct Branch {} Branch;
 
-typedef struct Transaction {} Transaction;
+typedef struct Transaction {} YTransaction;
 typedef struct TransactionMut {} TransactionMut;
 
 /**
@@ -583,17 +583,10 @@ typedef struct YSubdocsEvent {
   uint32_t added_len;
   uint32_t removed_len;
   uint32_t loaded_len;
-  const YDoc *const *added;
-  const YDoc *const *removed;
-  const YDoc *const *loaded;
+  YDoc **added;
+  YDoc **removed;
+  YDoc **loaded;
 } YSubdocsEvent;
-
-/**
- * Transaction is one of the core types in Yrs. All operations that need to touch or
- * modify a document's contents (a.k.a. block store), need to be executed in scope of a
- * transaction.
- */
-typedef YTransaction YTransaction;
 
 /**
  * Structure containing unapplied update data.

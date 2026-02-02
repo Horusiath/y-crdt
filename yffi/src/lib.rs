@@ -152,6 +152,7 @@ pub struct TreeWalker(YrsTreeWalker<'static, &'static mut Doc>);
 /// Transaction is one of the core types in Yrs. All operations that need to touch or
 /// modify a document's contents (a.k.a. block store), need to be executed in scope of a
 /// transaction.
+/// cbindgen:ignore
 #[repr(transparent)]
 pub struct Transaction(yrs::Transaction<&'static mut Doc>);
 
@@ -3876,14 +3877,14 @@ pub struct YSubdocsEvent {
     added_len: u32,
     removed_len: u32,
     loaded_len: u32,
-    added: *const *const Doc,
-    removed: *const *const Doc,
-    loaded: *const *const Doc,
+    added: *mut *mut Doc,
+    removed: *mut *mut Doc,
+    loaded: *mut *mut Doc,
 }
 
 impl YSubdocsEvent {
     unsafe fn new(e: &SubdocsEvent) -> Self {
-        fn into_ptr(v: &[SubDocHook]) -> *const *const Doc {
+        fn into_ptr(v: &[SubDocHook]) -> *mut *mut Doc {
             let array: Vec<_> = v
                 .into_iter()
                 .map(|doc| {
@@ -3892,7 +3893,7 @@ impl YSubdocsEvent {
                     let doc = doc.get_ref();
                     let doc = doc.deref();
 
-                    doc as *const Doc
+                    doc as *const Doc as *mut Doc
                 })
                 .collect();
             let mut boxed = array.into_boxed_slice();
@@ -3918,9 +3919,9 @@ impl YSubdocsEvent {
 
 impl Drop for YSubdocsEvent {
     fn drop(&mut self) {
-        fn release(len: u32, buf: *const *const Doc) {
+        fn release(len: u32, buf: *mut *mut Doc) {
             let docs =
-                unsafe { Vec::from_raw_parts(buf as *mut *const Doc, len as usize, len as usize) };
+                unsafe { Vec::from_raw_parts(buf as *mut *mut Doc, len as usize, len as usize) };
             drop(docs);
         }
 

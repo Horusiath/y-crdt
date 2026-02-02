@@ -1,3 +1,4 @@
+// ReSharper disable All
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
 #include <stdio.h>
@@ -206,17 +207,17 @@ TEST_CASE("YMap basic") {
     REQUIRE_EQ(ymap_len(map, txn), 2);
 
     // iterate over entries
-    YMapIter *i = ymap_iter(map, txn);
+    YMapIter *iter = ymap_iter(map, txn);
     YMapEntry *curr;
 
     YMapEntry **acc = (YMapEntry **) malloc(2 * sizeof(YMapEntry *));
-    acc[0] = ymap_iter_next(i);
-    acc[1] = ymap_iter_next(i);
+    acc[0] = ymap_iter_next(iter);
+    acc[1] = ymap_iter_next(iter);
 
-    curr = ymap_iter_next(i);
+    curr = ymap_iter_next(iter);
     REQUIRE(curr == NULL);
 
-    ymap_iter_destroy(i);
+    ymap_iter_destroy(iter);
 
     for (int i = 0; i < 2; i++) {
         curr = acc[i];
@@ -247,7 +248,7 @@ TEST_CASE("YMap basic") {
     free(acc);
 
     // remove 'a' twice - second attempt should return null
-    char removed = ymap_remove(map, txn, "a");
+    uint8_t removed = ymap_remove(map, txn, "a");
     REQUIRE_EQ(removed, 1);
 
     removed = ymap_remove(map, txn, "a");
@@ -579,10 +580,10 @@ TEST_CASE("YText formatting") {
     Branch *txt = ytext(doc, "test");
     YTransaction *txn = ydoc_write_transaction(doc, 0, NULL);
 
-    char i[] = "i";
-    char *keysi[] = {i};
-    char b[] = "b";
-    char *keysb[] = {b};
+    char *italic_key = "i";
+    char *keysi[] = {italic_key};
+    char *cold_key = "b";
+    char *keysb[] = {cold_key};
     YInput yes = yinput_bool(Y_TRUE);
     YInput italic = yinput_json_map(keysi, &yes, 1);
     YInput bold = yinput_json_map(keysb, &yes, 1);
@@ -600,7 +601,7 @@ TEST_CASE("YText formatting") {
     YChunk chunk = chunks[0];
     REQUIRE(strcmp(youtput_read_string(&chunk.data), "hello ") == 0);
     REQUIRE_EQ(chunk.fmt_len, 1);
-    REQUIRE(strcmp(chunk.fmt[0].key, i) == 0);
+    REQUIRE(strcmp(chunk.fmt[0].key, italic_key) == 0);
     REQUIRE_EQ(*youtput_read_bool(chunk.fmt[0].value), Y_TRUE);
 
     chunk = chunks[1];
@@ -617,7 +618,7 @@ TEST_CASE("YText formatting") {
     chunk = chunks[2];
     REQUIRE(strcmp(youtput_read_string(&chunk.data), "!") == 0);
     REQUIRE_EQ(chunk.fmt_len, 1);
-    REQUIRE(strcmp(chunk.fmt[0].key, i) == 0);
+    REQUIRE(strcmp(chunk.fmt[0].key, italic_key) == 0);
     REQUIRE_EQ(*youtput_read_bool(chunk.fmt[0].value), Y_TRUE);
 
     ychunks_destroy(chunks, chunks_len);
@@ -1132,20 +1133,20 @@ void ydeepobserve_test(void *state, uint32_t event_count, const YEvent *events) 
         uint32_t path_len = 0;
         switch (e.tag) {
             case Y_ARRAY: {
-                YArrayEvent nested = e.content.array;
-                test->path[i] = yarray_event_path(&nested, &path_len);
+                YArrayEvent *nested = (YArrayEvent *) e.content;
+                test->path[i] = yarray_event_path(nested, &path_len);
                 test->path_lens[i] = path_len;
                 test->count++;
                 break;
             }
             case Y_MAP: {
-                YMapEvent nested = e.content.map;
-                test->path[i] = ymap_event_path(&nested, &path_len);
+                YMapEvent *nested = (YMapEvent *) e.content;
+                test->path[i] = ymap_event_path(nested, &path_len);
                 test->path_lens[i] = path_len;
                 test->count++;
                 break;
             }
-            // we don't use other Y types in this test
+                // we don't use other Y types in this test
         }
     }
 }
@@ -1174,7 +1175,7 @@ TEST_CASE("YArray deep observe") {
     ytransaction_commit(txn);
 
     REQUIRE(state->count == 2);
-    int path_len = state->path_lens[0];
+    uint32_t path_len = state->path_lens[0];
     YPathSegment *path = state->path[0];
     REQUIRE(path_len == 0);
     path_len = state->path_lens[1];
@@ -1206,7 +1207,7 @@ TEST_CASE("YMap deep observe") {
 
     // path: []
     REQUIRE(state->count == 1);
-    int path_len = state->path_lens[0];
+    uint32_t path_len = state->path_lens[0];
     YPathSegment *path = state->path[0];
     REQUIRE(path_len == 0);
 
@@ -1370,13 +1371,13 @@ int ystate_vector_eq(YStateVector *a, YStateVector *b) {
         return 0;
 
     for (int i = 0; i < a->entries_count; i++) {
-        long ida = a->client_ids[i];
-        long idb = b->client_ids[i];
+        uint64_t ida = a->client_ids[i];
+        uint64_t idb = b->client_ids[i];
         if (ida != idb)
             return 0;
 
-        int clocka = a->clocks[i];
-        int clockb = b->clocks[i];
+        uint32_t clocka = a->clocks[i];
+        uint32_t clockb = b->clocks[i];
         if (clocka != clockb)
             return 0;
     }
@@ -1389,8 +1390,8 @@ int ydelete_set_eq(YDeleteSet *a, YDeleteSet *b) {
         return 0;
 
     for (int i = 0; i < a->entries_count; i++) {
-        long ida = a->client_ids[i];
-        long idb = b->client_ids[i];
+        uint64_t ida = a->client_ids[i];
+        uint64_t idb = b->client_ids[i];
         if (ida != idb)
             return 0;
 
@@ -1456,7 +1457,7 @@ TEST_CASE("YDoc observe after transaction") {
 
     t.delete_set.entries_count = 1;
     t.delete_set.client_ids = &CLIENT_ID;
-    t.delete_set.ranges = (YIdRangeSeq *) malloc(sizeof(YIdRangeSeq *) * 1);
+    t.delete_set.ranges = (YIdRangeSeq *) malloc(sizeof(YIdRangeSeq));
     t.delete_set.ranges[0].len = 1;
     YIdRange range;
     range.start = 2;
@@ -1521,7 +1522,7 @@ typedef struct {
     char total[20]; // for tests it's more than enough to have 20 char string
 } SubdocsTest;
 
-void concat_guids(char *dst, int len, YDoc **refs) {
+void concat_guids(char *dst, uint32_t len, YDoc **refs) {
     for (int i = 0; i < len; i++) {
         YDoc *d = refs[i];
         char *guid = ydoc_guid(d);
@@ -1531,7 +1532,7 @@ void concat_guids(char *dst, int len, YDoc **refs) {
 }
 
 void sort(char *input) {
-    int len = strlen(input);
+    size_t len = strlen(input);
     for (int i = 0; i < len - 1; i++) {
         for (int j = i + 1; j < len; j++) {
             if (input[i] > input[j]) {
@@ -1739,7 +1740,7 @@ TEST_CASE("YUndoManager undo redo") {
     txn = ydoc_write_transaction(d1, 0, NULL);
     ytext_remove_range(txt1, txn, 0, 4);
     ytransaction_commit(txn);
-    yundo_manager_undo(mgr);
+    yundo_manager_undo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     char *actual = ytext_string(txt1, txn);
@@ -1759,7 +1760,7 @@ TEST_CASE("YUndoManager undo redo") {
     ytransaction_commit(txn);
 
     yundo_manager_stop(mgr);
-    yundo_manager_undo(mgr);
+    yundo_manager_undo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     actual = ytext_string(txt1, txn);
@@ -1767,7 +1768,7 @@ TEST_CASE("YUndoManager undo redo") {
     REQUIRE(!strcmp(actual, "a"));
     ystring_destroy(actual);
 
-    yundo_manager_undo(mgr);
+    yundo_manager_undo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     actual = ytext_string(txt1, txn);
@@ -1784,7 +1785,7 @@ TEST_CASE("YUndoManager undo redo") {
     ytransaction_commit(txn);
 
     exchange_updates(2, d1, d2);
-    yundo_manager_undo(mgr);
+    yundo_manager_undo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     actual = ytext_string(txt1, txn);
@@ -1792,7 +1793,7 @@ TEST_CASE("YUndoManager undo redo") {
     REQUIRE(!strcmp(actual, "xyz"));
     ystring_destroy(actual);
 
-    yundo_manager_redo(mgr);
+    yundo_manager_redo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     actual = ytext_string(txt1, txn);
@@ -1807,7 +1808,7 @@ TEST_CASE("YUndoManager undo redo") {
     ytransaction_commit(txn);
 
     exchange_updates(2, d1, d2);
-    yundo_manager_undo(mgr);
+    yundo_manager_undo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     actual = ytext_string(txt1, txn);
@@ -1815,7 +1816,7 @@ TEST_CASE("YUndoManager undo redo") {
     REQUIRE(!strcmp(actual, "xyz"));
     ystring_destroy(actual);
 
-    yundo_manager_redo(mgr);
+    yundo_manager_redo(mgr, d1);
 
     txn = ydoc_read_transaction(d1);
     actual = ytext_string(txt1, txn);
@@ -1839,9 +1840,9 @@ TEST_CASE("Relative position") {
     ytext_insert(txt, txn, 0, "y", NULL);
     ytext_insert(txt, txn, 0, "x", NULL);
 
-    int length = ytext_len(txt, txn);
+    uint32_t length = ytext_len(txt, txn);
     for (int i = 0; i < length; ++i) {
-        for (int assoc = -1; assoc <= 0; ++assoc) {
+        for (int8_t assoc = -1; assoc <= 0; ++assoc) {
             YStickyIndex *pos = ysticky_index_from_index(txt, txn, i, assoc);
             uint32_t bin_len = 0;
             char *bin = ysticky_index_encode(pos, &bin_len);
@@ -2042,7 +2043,7 @@ TEST_CASE("YMap multiple nested maps") {
     YInput outerMap = yinput_ymap(&key2, &innerMap, 1);
 
     ymap_insert(map, txn, "outerMap", &outerMap);
-    int length = ymap_len(map, txn);
+    uint32_t length = ymap_len(map, txn);
     ytransaction_commit(txn);
     REQUIRE(length == 1);
 
@@ -2414,7 +2415,7 @@ TEST_CASE("JSONPath queries") {
         }
      */
 
-    char* book_keys[] = {"author", "title", "price"};
+    char *book_keys[] = {"author", "title", "price"};
     YInput book1_values[] = {
         yinput_string("Nigel Rees"),
         yinput_string("Sayings of the Century"),
@@ -2434,9 +2435,9 @@ TEST_CASE("JSONPath queries") {
     const YInput bicycle = yinput_json("{\"color\":\"red\", \"price\": 399}");
     ymap_insert(store, txn, "bicycle", &bicycle);
 
-    YJsonPathIter* i = ytransaction_json_path(txn, "$.store.book[*].price");
+    YJsonPathIter *i = ytransaction_json_path(txn, "$.store.book[*].price");
 
-    YOutput* current = yjson_path_iter_next(i);
+    YOutput *current = yjson_path_iter_next(i);
     REQUIRE_EQ(*youtput_read_float(current), 8.95);
     youtput_destroy(current);
 

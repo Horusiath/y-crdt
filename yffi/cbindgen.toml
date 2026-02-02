@@ -53,7 +53,7 @@ typedef struct YDoc {} YDoc;
  */
 typedef struct Branch {} Branch;
 
-typedef struct Transaction {} Transaction;
+typedef struct Transaction {} YTransaction;
 typedef struct TransactionMut {} TransactionMut;
 
 /**
@@ -115,15 +115,15 @@ parse_deps = false
 
 [export]
 exclude = [
-    "LinkSource",
-    "WeakIter",
-    "ArrayIter",
-    "MapIter",
-    "JsonPathIter",
-    "Attributes",
-    "TreeWalker",
-    "YUndoManager",
-    "YSubscription"
+  "LinkSource",
+  "WeakIter",
+  "ArrayIter",
+  "MapIter",
+  "JsonPathIter",
+  "Attributes",
+  "TreeWalker",
+  "YUndoManager",
+  "YSubscription"
 ]
 
 [export.rename]
