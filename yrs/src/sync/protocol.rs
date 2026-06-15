@@ -5,8 +5,11 @@ use crate::sync::{awareness, Awareness, AwarenessUpdate};
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::{ReadTxn, StateVector, Update};
+#[cfg(feature = "sync")]
 use async_trait::async_trait;
-use smallvec::{smallvec, SmallVec};
+#[cfg(feature = "sync")]
+use smallvec::smallvec;
+use smallvec::SmallVec;
 use thiserror::Error;
 /*
  Core Yjs defines two message types:
@@ -39,8 +42,8 @@ pub struct DefaultProtocol;
 
 impl Protocol for DefaultProtocol {}
 
-#[cfg_attr(not(feature = "sync"), async_trait(?Send))]
-#[cfg_attr(feature = "sync", async_trait)]
+#[cfg(feature = "sync")]
+#[async_trait]
 impl AsyncProtocol for DefaultProtocol {}
 
 /// Trait implementing a y-sync protocol. The default implementation can be found in
@@ -54,7 +57,6 @@ pub trait Protocol {
     where
         E: Encoder,
     {
-        use crate::Transact;
         let (sv, update) = {
             let sv = awareness.doc().transact().state_vector();
             let update = awareness.update()?;
@@ -116,7 +118,6 @@ pub trait Protocol {
         awareness: &mut Awareness,
         sv: StateVector,
     ) -> Result<Option<Message>, Error> {
-        use crate::Transact;
         let update = awareness.doc().transact().encode_state_as_update_v1(&sv);
         Ok(Some(Message::Sync(SyncMessage::SyncStep2(update))))
     }
@@ -128,8 +129,7 @@ pub trait Protocol {
         awareness: &mut Awareness,
         update: Update,
     ) -> Result<Option<Message>, Error> {
-        use crate::Transact;
-        let mut txn = awareness.doc().transact_mut();
+        let mut txn = awareness.doc_mut().transact_mut();
         txn.apply_update(update)?;
         Ok(None)
     }
@@ -194,8 +194,10 @@ pub trait Protocol {
 /// Trait implementing a y-sync protocol using awaitable transaction API. The default implementation
 /// can be found in [DefaultProtocol], but its implementation steps can be potentially changed by
 /// the user if necessary.
-#[cfg_attr(not(feature = "sync"), async_trait(?Send))]
-#[cfg_attr(feature = "sync", async_trait)]
+///
+/// Only available with the `sync` feature enabled.
+#[cfg(feature = "sync")]
+#[async_trait]
 pub trait AsyncProtocol {
     /// To be called whenever a new connection has been accepted. Returns a list of
     /// messages to be sent back to initiator.
@@ -203,11 +205,9 @@ pub trait AsyncProtocol {
     where
         E: Encoder,
     {
-        use crate::AsyncTransact;
         let (sv, update) = {
             let update = awareness.update()?;
-            let txn = awareness.doc().transact().await;
-            let sv = txn.state_vector();
+            let sv = awareness.doc().transact().state_vector();
             (sv, update)
         };
         Ok(smallvec![
@@ -267,9 +267,7 @@ pub trait AsyncProtocol {
         awareness: &mut Awareness,
         sv: StateVector,
     ) -> Result<Option<Message>, Error> {
-        use crate::AsyncTransact;
-        let txn = awareness.doc().transact().await;
-        let update = txn.encode_state_as_update_v1(&sv);
+        let update = awareness.doc().transact().encode_state_as_update_v1(&sv);
         Ok(Some(Message::Sync(SyncMessage::SyncStep2(update))))
     }
 
@@ -280,8 +278,7 @@ pub trait AsyncProtocol {
         awareness: &mut Awareness,
         update: Update,
     ) -> Result<Option<Message>, Error> {
-        use crate::AsyncTransact;
-        let mut txn = awareness.doc().transact_mut().await;
+        let mut txn = awareness.doc_mut().transact_mut();
         txn.apply_update(update)?;
         Ok(None)
     }
@@ -542,13 +539,13 @@ mod test {
     use crate::sync::{Awareness, Protocol};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-    use crate::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
+    use crate::{Doc, GetString, ReadTxn, StateVector, Text, Update};
     use serde_json::json;
     use std::collections::HashMap;
 
     #[test]
     fn message_encoding() {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let txt = doc.get_or_insert_text("text");
         txt.push(&mut doc.transact_mut(), "hello world");
         let mut awareness = Awareness::new(doc);

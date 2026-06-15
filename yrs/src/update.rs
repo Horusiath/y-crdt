@@ -337,14 +337,14 @@ impl Update {
                     let len = stack_head.len();
                     let local_clock = state
                         .entry(id.client)
-                        .or_insert_with(|| txn.store.blocks.get_clock(&id.client));
+                        .or_insert_with(|| txn.doc.store.blocks.get_clock(&id.client));
                     let offset = (*local_clock as i32) - (id.clock as i32);
 
                     if let Some(missing) =
-                        Self::missing_dependency(&mut stack_head, &mut txn.store)?
+                        Self::missing_dependency(&mut stack_head, &mut txn.doc.store)?
                     {
                         next =
-                            picker.switch(stack_head, &missing, |c| txn.store.blocks.get_clock(c));
+                            picker.switch(stack_head, &missing, |c| txn.doc.store.blocks.get_clock(c));
                         continue;
                     } else {
                         // block has no missing dependencies, therefore we can integrate it right away
@@ -1079,7 +1079,7 @@ mod test {
     use crate::updates::encoder::Encode;
     use crate::{
         merge_updates_v1, Any, Doc, GetString, IdSet, Options, ReadTxn, StateVector, Text,
-        Transact, WriteTxn, XmlFragment, XmlOut, ID,
+        WriteTxn, XmlFragment, XmlOut, ID,
     };
 
     #[test]
@@ -1126,11 +1126,11 @@ mod test {
 
     #[test]
     fn update_merge() {
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         let txt1 = d1.get_or_insert_text("test");
         let mut t1 = d1.transact_mut();
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         let txt2 = d2.get_or_insert_text("test");
         let mut t2 = d2.transact_mut();
 
@@ -1155,7 +1155,7 @@ mod test {
         // the same output as sequence of updates applied individually
         let u12 = Update::merge_updates(vec![u1, u2]);
 
-        let d3 = Doc::with_client_id(3);
+        let mut d3 = Doc::with_client_id(3);
         let txt3 = d3.get_or_insert_text("test");
         let mut t3 = d3.transact_mut();
         t3.apply_update(u12).unwrap();
@@ -1170,7 +1170,7 @@ mod test {
 
     #[test]
     fn test_duplicate_updates() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         let mut tr = doc.transact_mut();
         txt.insert(&mut tr, 0, "aaa");
@@ -1187,14 +1187,14 @@ mod test {
     #[test]
     fn test_multiple_clients_in_one_update() {
         let binary1 = {
-            let doc = Doc::with_client_id(1);
+            let mut doc = Doc::with_client_id(1);
             let txt = doc.get_or_insert_text("test");
             let mut tr = doc.transact_mut();
             txt.insert(&mut tr, 0, "aaa");
             tr.encode_update_v1()
         };
         let binary2 = {
-            let doc = Doc::with_client_id(2);
+            let mut doc = Doc::with_client_id(2);
             let txt = doc.get_or_insert_text("test");
             let mut tr = doc.transact_mut();
             txt.insert(&mut tr, 0, "bbb");
@@ -1239,7 +1239,7 @@ mod test {
         let update = vec![
             0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 198, 182, 140, 174, 4, 1, 2, 0, 0, 5,
         ];
-        let doc = Doc::with_options(Options {
+        let mut doc = Doc::with_options(Options {
             skip_gc: true,
             client_id: ClientID::new(1),
             ..Default::default()
@@ -1272,7 +1272,7 @@ mod test {
 
     #[test]
     fn merge_pending_updates() {
-        let d0 = Doc::with_client_id(0);
+        let mut d0 = Doc::with_client_id(0);
         let server_updates = Arc::new(Mutex::new(vec![]));
         let sub = {
             let server_updates = server_updates.clone();
@@ -1280,7 +1280,6 @@ mod test {
                 let mut lock = server_updates.lock().unwrap();
                 lock.push(update.update.clone());
             })
-            .unwrap()
         };
         let txt = d0.get_or_insert_text("textBlock");
         txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("r")]);
@@ -1294,7 +1293,7 @@ mod test {
         let updates = Arc::into_inner(server_updates).unwrap();
         let updates = updates.into_inner().unwrap();
 
-        let d1 = Doc::with_client_id(1);
+        let mut d1 = Doc::with_client_id(1);
         d1.transact_mut()
             .apply_update(Update::decode_v1(&updates[0]).unwrap())
             .unwrap();
@@ -1302,7 +1301,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d2 = Doc::with_client_id(2);
+        let mut d2 = Doc::with_client_id(2);
         d2.transact_mut()
             .apply_update(Update::decode_v1(&u1).unwrap())
             .unwrap();
@@ -1313,7 +1312,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d3 = Doc::with_client_id(3);
+        let mut d3 = Doc::with_client_id(3);
         d3.transact_mut()
             .apply_update(Update::decode_v1(&u2).unwrap())
             .unwrap();
@@ -1324,7 +1323,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d4 = Doc::with_client_id(4);
+        let mut d4 = Doc::with_client_id(4);
         d4.transact_mut()
             .apply_update(Update::decode_v1(&u3).unwrap())
             .unwrap();
@@ -1335,7 +1334,7 @@ mod test {
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
-        let d5 = Doc::with_client_id(5);
+        let mut d5 = Doc::with_client_id(5);
         d5.transact_mut()
             .apply_update(Update::decode_v1(&u4).unwrap())
             .unwrap();
@@ -1373,7 +1372,7 @@ mod test {
             ],
         ];
 
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         {
             let mut txn = doc.transact_mut();
             for u in &updates {
@@ -1388,7 +1387,7 @@ mod test {
     #[test]
     fn apply_update_filling_middle_of_skip() {
         // Anchor client D builds "PQ".
-        let d = Doc::with_client_id(100);
+        let mut d = Doc::with_client_id(100);
         {
             let txt = d.get_or_insert_text("t");
             let mut txn = d.transact_mut();
@@ -1405,7 +1404,7 @@ mod test {
         //     C:1/C:2 are missing, creating a Skip over clocks [1,3).
         //   - C:2 anchors to present blocks outside the Skip (left D:0, right C:0) => when it
         //     arrives after C:3 it lands in the MIDDLE of the Skip (diff_start > 0).
-        let c = Doc::with_client_id(1);
+        let mut c = Doc::with_client_id(1);
         c.transact_mut()
             .apply_update(Update::decode_v1(&d_state).unwrap())
             .unwrap();
@@ -1413,7 +1412,6 @@ mod test {
         let sub = {
             let updates = updates.clone();
             c.observe_update_v1(move |_, e| updates.lock().unwrap().push(e.update.clone()))
-                .unwrap()
         };
         let txt = c.get_or_insert_text("t");
         txt.insert(&mut c.transact_mut(), 1, "a"); // C:0  "PaQ"    left D:0, right D:1
@@ -1427,7 +1425,7 @@ mod test {
         // msgs: [D state, C:0, C:1, C:2, C:3]
 
         let apply = |order: &[usize]| -> String {
-            let doc = Doc::new();
+            let mut doc = Doc::new();
             {
                 let mut txn = doc.transact_mut();
                 for &i in order {
@@ -1460,7 +1458,7 @@ mod test {
                 skip_gc: true,
                 ..Default::default()
             };
-            let doc = Doc::with_options(opts);
+            let mut doc = Doc::with_options(opts);
             {
                 let mut txn = doc.transact_mut();
                 for u in updates {
@@ -1563,7 +1561,7 @@ mod test {
     fn pending_update_check() {
         let update = update_with_skips();
         let expected = update.encode_v1();
-        let doc = Doc::with_client_id(2);
+        let mut doc = Doc::with_client_id(2);
         let mut txn = doc.transact_mut();
         let txt = txn.get_or_insert_text("test");
         txn.apply_update(update).unwrap();

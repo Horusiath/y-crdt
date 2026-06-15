@@ -11,7 +11,7 @@ use crate::{
 /// shared collections. If [In] contains a shared type, it will be inserted as a deep
 /// copy of the original type: therefore none of the changes applied to the original type will
 /// affect the deep copy.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum In {
     Any(Any),
     Text(DeltaPrelim),
@@ -28,9 +28,13 @@ pub enum In {
 impl Prelim for In {
     type Return = Out;
 
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
+    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         match self {
             In::Any(any) => (ItemContent::Any(vec![any]), None),
+            In::Doc(doc) => {
+                let (content, remainder) = doc.into_content(txn);
+                (content, remainder.map(In::Doc))
+            }
             other => {
                 let type_ref = match &other {
                     In::Text(_) => TypeRef::Text,
@@ -39,7 +43,6 @@ impl Prelim for In {
                     In::XmlElement(v) => TypeRef::XmlElement(v.tag.clone()),
                     In::XmlFragment(_) => TypeRef::XmlFragment,
                     In::XmlText(_) => TypeRef::XmlText,
-                    In::Doc(_) => TypeRef::SubDoc,
                     #[cfg(feature = "weak")]
                     In::WeakLink(v) => TypeRef::WeakLink(v.source().clone()),
                     _ => unreachable!(),

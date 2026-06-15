@@ -1,7 +1,6 @@
-use crate::doc::DocAddr;
 use crate::transaction::Subdocs;
-use crate::{Doc, IdSet, StateVector, TransactionMut};
-use std::collections::HashMap;
+use crate::{IdSet, StateVector, TransactionMut, Uuid};
+use std::collections::HashSet;
 
 /// An update event passed to a callback subscribed with [Doc::observe_update_v1]/[Doc::observe_update_v2].
 pub struct UpdateEvent {
@@ -44,9 +43,9 @@ impl TransactionCleanupEvent {
 /// Event used to communicate load requests from the underlying subdocuments.
 #[derive(Debug, Clone)]
 pub struct SubdocsEvent {
-    pub(crate) added: HashMap<DocAddr, Doc>,
-    pub(crate) removed: HashMap<DocAddr, Doc>,
-    pub(crate) loaded: HashMap<DocAddr, Doc>,
+    pub(crate) added: HashSet<Uuid>,
+    pub(crate) removed: HashSet<Uuid>,
+    pub(crate) loaded: HashSet<Uuid>,
 }
 
 impl SubdocsEvent {
@@ -58,30 +57,30 @@ impl SubdocsEvent {
         }
     }
 
-    /// Returns an iterator over all sub-documents added to a current document within a scope of
-    /// committed transaction.
+    /// Returns an iterator over globally unique identifiers of all sub-documents added to a
+    /// current document within a scope of committed transaction.
     pub fn added(&self) -> SubdocsEventIter {
-        SubdocsEventIter(self.added.values())
+        SubdocsEventIter(self.added.iter())
     }
 
-    /// Returns an iterator over all sub-documents removed from a current document within a scope of
-    /// committed transaction.
+    /// Returns an iterator over globally unique identifiers of all sub-documents removed from a
+    /// current document within a scope of committed transaction.
     pub fn removed(&self) -> SubdocsEventIter {
-        SubdocsEventIter(self.removed.values())
+        SubdocsEventIter(self.removed.iter())
     }
 
-    /// Returns an iterator over all sub-documents living in a parent document, that have requested
-    /// to be loaded within a scope of committed transaction.
+    /// Returns an iterator over globally unique identifiers of all sub-documents living in a
+    /// parent document, that have requested to be loaded within a scope of committed transaction.
     pub fn loaded(&self) -> SubdocsEventIter {
-        SubdocsEventIter(self.loaded.values())
+        SubdocsEventIter(self.loaded.iter())
     }
 }
 
 #[repr(transparent)]
-pub struct SubdocsEventIter<'a>(std::collections::hash_map::Values<'a, DocAddr, Doc>);
+pub struct SubdocsEventIter<'a>(std::collections::hash_set::Iter<'a, Uuid>);
 
 impl<'a> Iterator for SubdocsEventIter<'a> {
-    type Item = &'a Doc;
+    type Item = &'a Uuid;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()

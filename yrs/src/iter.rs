@@ -314,12 +314,11 @@ where
 mod test {
     use crate::block::ClientID;
     use crate::iter::{BlockIterator, BlockSliceIterator, IntoBlockIter, TxnIterator};
-    use crate::test_utils::exchange_updates;
-    use crate::{Array, Assoc, Doc, StickyIndex, Transact, ID};
+    use crate::{Array, Assoc, Doc, StickyIndex, ID};
 
     #[test]
     fn range_bounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -341,7 +340,7 @@ mod test {
 
     #[test]
     fn range_left_exclusive() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -363,7 +362,7 @@ mod test {
 
     #[test]
     fn range_left_exclusive_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -385,7 +384,7 @@ mod test {
 
     #[test]
     fn range_right_exclusive() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -407,7 +406,7 @@ mod test {
 
     #[test]
     fn range_right_exclusive_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -429,7 +428,7 @@ mod test {
 
     #[test]
     fn range_unbounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -454,7 +453,7 @@ mod test {
 
     #[test]
     fn range_left_unbounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -476,7 +475,7 @@ mod test {
 
     #[test]
     fn range_right_unbounded() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
@@ -498,7 +497,7 @@ mod test {
 
     #[test]
     fn range_single_slice() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let array = doc.get_or_insert_array("array");
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);

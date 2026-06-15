@@ -1,7 +1,7 @@
 use crate::block::{Block, ClientID, ItemContent, ItemPtr};
 use crate::block_store::BlockStore;
 use crate::branch::{Branch, BranchPtr};
-use crate::doc::{DocAddr, Options};
+use crate::doc::Options;
 use crate::error::Error;
 use crate::event::SubdocsEvent;
 use crate::id_set::DeleteSet;
@@ -14,23 +14,16 @@ use crate::{
     Uuid, ID,
 };
 use crate::{IdSet, StateVector};
-use arc_swap::{ArcSwap, DefaultStrategy, Guard};
-use async_lock::futures::{Read, Write};
-use async_lock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
 use std::sync::Arc;
 
 /// Store is a core element of a document. It contains all of the information, like block store
 /// map of root types, pending updates waiting to be applied once a missing update information
 /// arrives and all subscribed callbacks.
 pub struct Store {
-    pub(crate) client_id: ClientID,
-    pub(crate) offset_kind: OffsetKind,
-    pub(crate) skip_gc: bool,
-    pub(crate) cleanup_formatting: bool,
+    pub(crate) options: Options,
 
     /// Root types (a.k.a. top-level types). These types are defined by users at the document level,
     /// they have their own unique names and represent core shared types that expose operations
@@ -51,7 +44,9 @@ pub struct Store {
     /// into `blocks`.
     pub(crate) pending_ds: Option<IdSet>,
 
-    pub(crate) subdocs: HashMap<DocAddr, Doc>,
+    /// Index of subdocs: maps guid to the ItemPtr containing the subdoc.
+    /// The actual Doc lives inside ItemContent::Doc of the pointed-to item.
+    pub(crate) subdocs: HashMap<Uuid, ItemPtr>,
 
     pub(crate) events: Option<Box<StoreEvents>>,
 
@@ -65,12 +60,9 @@ pub struct Store {
 
 impl Store {
     /// Create a new empty store in context of a given `client_id`.
-    pub(crate) fn new(options: &Options) -> Self {
+    pub(crate) fn new(options: Options) -> Self {
         Store {
-            client_id: options.client_id,
-            offset_kind: options.offset_kind,
-            skip_gc: options.skip_gc,
-            cleanup_formatting: options.cleanup_formatting,
+            options,
             types: HashMap::default(),
             blocks: BlockStore::default(),
             subdocs: HashMap::default(),
@@ -113,7 +105,7 @@ impl Store {
     /// block that's about to be inserted. You cannot use that clock value to find any existing
     /// block content.
     pub fn get_local_state(&self) -> u32 {
-        self.blocks.get_clock(&self.client_id)
+        self.blocks.get_clock(&self.options.client_id)
     }
 
     /// Returns a branch reference to a complex type identified by its pointer. Returns `None` if
@@ -154,7 +146,7 @@ impl Store {
         snapshot: &Snapshot,
         encoder: &mut E,
     ) -> Result<(), Error> {
-        if !self.skip_gc {
+        if !self.options.skip_gc {
             return Err(Error::Gc);
         }
         self.write_blocks_to(&snapshot.state_map, encoder);
@@ -303,7 +295,7 @@ impl Store {
         let id = slice.id().clone();
         let blocks = self.blocks.get_client_mut(&id.client).unwrap();
         let mut links = None;
-        let item = slice.ptr.deref();
+        let item = &*slice.ptr;
         if item.info.is_linked() {
             links = self.linked_by.get(&slice.ptr).cloned();
         }
@@ -355,14 +347,29 @@ impl Store {
     }
 
     /// Returns a collection of sub documents linked within the structures of this document store.
-    pub fn subdocs(&self) -> SubdocsIter {
-        SubdocsIter(self.subdocs.values())
+    pub fn subdocs(&self) -> impl Iterator<Item = &Doc> {
+        self.subdocs.values().filter_map(|item_ptr| item_ptr.content.as_subdoc())
+    }
+
+    /// Returns a collection of sub documents linked within the structures of this document store.
+    pub fn subdocs_mut(&mut self) -> impl Iterator<Item = &mut Doc> {
+        self.subdocs.values_mut().filter_map(|item_ptr| item_ptr.content.as_subdoc_mut())
     }
 
     /// Returns a collection of globally unique identifiers of sub documents linked within
     /// the structures of this document store.
-    pub fn subdoc_guids(&self) -> SubdocGuids {
-        SubdocGuids(self.subdocs.values())
+    pub fn subdoc_guids(&self) -> impl Iterator<Item = &Uuid> {
+        self.subdocs.keys()
+    }
+
+    /// Returns a mutable reference to a subdoc by guid.
+    pub(crate) fn subdoc_mut(&mut self, guid: &Uuid) -> Option<&mut Doc> {
+        self.subdocs.get_mut(guid)?.content.as_subdoc_mut()
+    }
+
+    /// Returns a reference to a subdoc by guid.
+    pub(crate) fn subdoc(&self, guid: &Uuid) -> Option<&Doc> {
+        self.subdocs.get(guid)?.content.as_subdoc()
     }
 
     pub(crate) fn follow_redone(&self, id: &ID) -> Option<ItemSlice> {
@@ -402,7 +409,7 @@ impl std::fmt::Debug for Store {
 
 impl std::fmt::Display for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct(&self.client_id.to_string());
+        let mut s = f.debug_struct(&self.options.client_id.to_string());
         if !self.types.is_empty() {
             s.field("root types", &self.types);
         }
@@ -426,113 +433,7 @@ impl std::fmt::Display for Store {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Clone)]
-pub(crate) struct DocStore(pub(crate) Arc<StoreInner>);
-
-impl DocStore {
-    pub fn new(options: Options, parent: Option<ItemPtr>) -> Self {
-        let mut store = Store::new(&options);
-        let options = ArcSwap::new(options.into());
-        store.parent = parent;
-        DocStore(Arc::new(StoreInner {
-            options,
-            store: RwLock::new(store),
-        }))
-    }
-
-    pub(crate) fn try_read(&self) -> Option<RwLockReadGuard<Store>> {
-        self.0.store.try_read()
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn read_blocking(&self) -> RwLockReadGuard<Store> {
-        self.0.store.read_blocking()
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn read_blocking(&self) -> RwLockReadGuard<Store> {
-        self.0.store.try_read().unwrap()
-    }
-
-    pub(crate) fn read_async(&self) -> Read<Store> {
-        self.0.store.read()
-    }
-
-    pub(crate) fn try_write(&self) -> Option<RwLockWriteGuard<Store>> {
-        self.0.store.try_write()
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn write_blocking(&self) -> RwLockWriteGuard<Store> {
-        self.0.store.write_blocking()
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn write_blocking(&self) -> RwLockWriteGuard<Store> {
-        self.0.store.try_write().unwrap()
-    }
-
-    pub(crate) fn write_async(&self) -> Write<Store> {
-        self.0.store.write()
-    }
-
-    pub(crate) fn options(&self) -> Guard<Arc<Options>, DefaultStrategy> {
-        self.0.options.load()
-    }
-
-    /// Sets [Doc::should_load] flag, returning previous value.
-    pub(crate) fn set_should_load(&self, should_load: bool) -> bool {
-        self.0
-            .options
-            .rcu(|options| {
-                let mut options = options.deref().clone();
-                options.should_load = should_load;
-                options
-            })
-            .should_load
-    }
-
-    pub(crate) fn set_subdoc_data(&self, client_id: ClientID, collection_id: Option<Arc<str>>) {
-        self.0.options.rcu(|options| {
-            let mut options = options.deref().clone();
-            options.client_id = client_id;
-            if options.collection_id.is_none() {
-                options.collection_id = collection_id.clone();
-            }
-            options
-        });
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct StoreInner {
-    options: ArcSwap<Options>,
-    store: RwLock<Store>,
-}
-
-#[repr(transparent)]
-pub struct SubdocsIter<'doc>(std::collections::hash_map::Values<'doc, DocAddr, Doc>);
-
-impl<'doc> Iterator for SubdocsIter<'doc> {
-    type Item = &'doc Doc;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
-    }
-}
-
-#[repr(transparent)]
-pub struct SubdocGuids<'doc>(std::collections::hash_map::Values<'doc, DocAddr, Doc>);
-
-impl<'doc> Iterator for SubdocGuids<'doc> {
-    type Item = Uuid;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let d = self.0.next()?;
-        Some(d.guid())
-    }
-}
+// DocStore and StoreInner removed — Doc now owns Store directly
 
 macro_rules! define_event_type {
     ($name:ident ($($args:tt)*)) => {

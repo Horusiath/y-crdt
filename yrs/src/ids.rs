@@ -1206,7 +1206,7 @@ mod test {
     }
 
     use crate::test_utils::exchange_updates;
-    use crate::{Doc, IdSet, Options, ReadTxn, Text, Transact};
+    use crate::{Doc, IdSet, Options, ReadTxn, Text};
 
     /// Helper: collect (clock_start, len) tuples from iter_blocks.
     fn collect_slices(id_set: &IdSet, store: &BlockStore) -> Vec<(u32, u32)> {
@@ -1221,7 +1221,7 @@ mod test {
         // Single client, range exactly covers the block.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let doc = Doc::with_options(o);
+        let mut doc = Doc::with_options(o);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abcde"); // block: client=1, clock=0..5
 
@@ -1237,7 +1237,7 @@ mod test {
         // Range covers the middle of a block — should trim both start and end.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let doc = Doc::with_options(o);
+        let mut doc = Doc::with_options(o);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abcdefghij"); // block: client=1, clock=0..10
 
@@ -1253,7 +1253,7 @@ mod test {
         // Range starts in the middle of the block but extends to the end.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let doc = Doc::with_options(o);
+        let mut doc = Doc::with_options(o);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abcde"); // block: client=1, clock=0..5
 
@@ -1269,7 +1269,7 @@ mod test {
         // Range starts at the beginning of the block but ends before it.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let doc = Doc::with_options(o);
+        let mut doc = Doc::with_options(o);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abcde"); // block: client=1, clock=0..5
 
@@ -1285,7 +1285,7 @@ mod test {
         // Two disjoint ranges within the same client's blocks.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let doc = Doc::with_options(o);
+        let mut doc = Doc::with_options(o);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abcdefghij"); // block: client=1, clock=0..10
 
@@ -1301,18 +1301,18 @@ mod test {
         // Two clients, each with their own blocks and ranges.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let d1 = Doc::with_options(o.clone());
+        let mut d1 = Doc::with_options(o.clone());
         let t1 = d1.get_or_insert_text("test");
 
         o.client_id = ClientID::new(2);
-        let d2 = Doc::with_options(o);
+        let mut d2 = Doc::with_options(o);
         let t2 = d2.get_or_insert_text("test");
 
         t1.push(&mut d1.transact_mut(), "aaaaa"); // client=1, clock=0..5
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         t2.push(&mut d2.transact_mut(), "bbb"); // client=2, clock=0..3
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         let txn = d1.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [1..4]), (ClientID::new(2), [0..2])]);
@@ -1326,19 +1326,19 @@ mod test {
         // A single range that spans across two separate blocks for the same client.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let d1 = Doc::with_options(o.clone());
+        let mut d1 = Doc::with_options(o.clone());
         let t1 = d1.get_or_insert_text("test");
 
         o.client_id = ClientID::new(2);
-        let d2 = Doc::with_options(o);
+        let mut d2 = Doc::with_options(o);
         let t2 = d2.get_or_insert_text("test");
 
         t1.push(&mut d1.transact_mut(), "aaa"); // client=1, clock=0..3
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         // d2 inserts in the middle, which will cause block split on integration
         t2.insert(&mut d2.transact_mut(), 1, "bb"); // client=2, clock=0..2
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         // Append more to client=1
         t1.push(&mut d1.transact_mut(), "cc"); // client=1, clock=3..5
@@ -1361,7 +1361,7 @@ mod test {
         // Range extends beyond what the client has — should only yield existing blocks.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let doc = Doc::with_options(o);
+        let mut doc = Doc::with_options(o);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abc"); // block: client=1, clock=0..3
 
@@ -1375,7 +1375,7 @@ mod test {
     #[test]
     fn iter_blocks_unknown_client() {
         // Range for a client that has no blocks in the store — yields nothing.
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abc");
 
@@ -1389,7 +1389,7 @@ mod test {
     #[test]
     fn iter_blocks_empty_map() {
         // Empty IdMapInner — yields nothing.
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         txt.push(&mut doc.transact_mut(), "abc");
 
@@ -1405,18 +1405,18 @@ mod test {
         // Multiple clients with multiple ranges, partial overlap on both.
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
-        let d1 = Doc::with_options(o.clone());
+        let mut d1 = Doc::with_options(o.clone());
         let t1 = d1.get_or_insert_text("test");
 
         o.client_id = ClientID::new(2);
-        let d2 = Doc::with_options(o);
+        let mut d2 = Doc::with_options(o);
         let t2 = d2.get_or_insert_text("test");
 
         t1.push(&mut d1.transact_mut(), "abcdefghij"); // client=1, clock=0..10
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         t2.push(&mut d2.transact_mut(), "ABCDEFGH"); // client=2, clock=0..8
-        exchange_updates(&[&d1, &d2]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         let txn = d1.transact();
         let mut map = IdSet::from_iter([

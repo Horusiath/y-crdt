@@ -1,6 +1,6 @@
 use crate::block_store::BlockStore;
 use crate::branch::{Branch, BranchPtr};
-use crate::doc::{DocAddr, OffsetKind};
+use crate::doc::OffsetKind;
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
 use crate::slice::{BlockSlice, ItemSlice};
@@ -12,7 +12,7 @@ use crate::undo::UndoStack;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
-use crate::{Any, Doc, IdSet, Options, Out, Transact};
+use crate::{Any, Doc, IdSet, Options, Out, Uuid};
 use serde::{Deserialize, Serialize};
 use smallstr::SmallString;
 use std::cell::UnsafeCell;
@@ -442,6 +442,11 @@ unsafe impl Send for ItemPtr {}
 unsafe impl Sync for ItemPtr {}
 
 impl ItemPtr {
+    /// Returns a raw mutable pointer to the underlying Item.
+    pub(crate) fn as_ptr(self) -> *mut Item {
+        self.0.as_ptr()
+    }
+
     pub(crate) fn redo<M>(
         &mut self,
         txn: &mut TransactionMut,
@@ -453,8 +458,8 @@ impl ItemPtr {
         let self_ptr = self.clone();
         let item = self.deref_mut();
         if let Some(redone) = item.redone.as_ref() {
-            let slice = txn.store.blocks.get_item_clean_start(redone)?;
-            return Some(txn.store.materialize(slice));
+            let slice = txn.doc.store.blocks.get_item_clean_start(redone)?;
+            return Some(txn.doc.store.materialize(slice));
         }
 
         let mut parent_block = item.parent.as_branch().and_then(|b| b.item);
@@ -473,10 +478,11 @@ impl ItemPtr {
                 let mut redone = parent.redone;
                 while let Some(id) = redone.as_ref() {
                     parent_block = txn
+                        .doc
                         .store
                         .blocks
                         .get_item_clean_start(id)
-                        .map(|slice| txn.store.materialize(slice));
+                        .map(|slice| txn.doc.store.materialize(slice));
                     redone = parent_block.and_then(|ptr| ptr.redone);
                 }
             }
@@ -511,10 +517,10 @@ impl ItemPtr {
                             left = Some(left_right);
                             while let Some(item) = left.as_deref() {
                                 if let Some(id) = item.redone.as_ref() {
-                                    left = match txn.store.blocks.get_item_clean_start(id) {
+                                    left = match txn.doc.store.blocks.get_item_clean_start(id) {
                                         None => break,
                                         Some(slice) => {
-                                            let ptr = txn.store.materialize(slice);
+                                            let ptr = txn.doc.store.materialize(slice);
                                             txn.merge_blocks.push(ptr.id().clone());
                                             Some(ptr)
                                         }
@@ -550,8 +556,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         left_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.store.materialize(s))
+                            let slice = txn.doc.store.blocks.get_item_clean_start(redone);
+                            slice.map(|s| txn.doc.store.materialize(s))
                         } else {
                             None
                         };
@@ -576,8 +582,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         right_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.store.materialize(s))
+                            let slice = txn.doc.store.blocks.get_item_clean_start(redone);
+                            slice.map(|s| txn.doc.store.materialize(s))
                         } else {
                             None
                         };
@@ -596,8 +602,8 @@ impl ItemPtr {
             }
         }
 
-        let next_clock = txn.store.get_local_state();
-        let next_id = ID::new(txn.store.client_id, next_clock);
+        let next_clock = txn.doc.store.get_local_state();
+        let next_id = ID::new(txn.doc.store.options.client_id, next_clock);
         let mut redone_item = Item::new(
             next_id,
             left,
@@ -865,15 +871,16 @@ impl Item {
                 self.mark_as_deleted();
             }
             ItemContent::Doc(parent_doc, doc) => {
-                *parent_doc = Some(txn.doc().clone());
-                {
-                    let mut child_txn = doc.transact_mut();
-                    child_txn.store.parent = Some(self_ptr);
-                }
+                *parent_doc = Some(txn.doc().guid().clone());
+                doc.store.parent = Some(self_ptr);
+                let doc_guid = doc.store.options.guid.clone();
+                // Add to subdocs index — the Doc lives inside ItemContent,
+                // the index just stores the ItemPtr for lookup.
+                txn.doc.store.subdocs.insert(doc_guid.clone(), self_ptr);
                 let subdocs = txn.subdocs.get_or_init();
-                subdocs.added.insert(DocAddr::new(doc), doc.clone());
-                if doc.should_load() {
-                    subdocs.loaded.insert(doc.addr(), doc.clone());
+                subdocs.added.insert(doc_guid.clone());
+                if doc.store.options.should_load {
+                    subdocs.loaded.insert(doc_guid);
                 }
             }
             ItemContent::Format(_, _) => {
@@ -899,7 +906,7 @@ impl Item {
     fn inherit_links(mut curr: ItemPtr, mut left: ItemPtr, txn: &mut TransactionMut) {
         left.info.clear_linked();
         curr.info.set_linked();
-        let all_links = &mut txn.store.linked_by;
+        let all_links = &mut txn.doc.store.linked_by;
         if let Some(linked_by) = all_links.remove(&left) {
             all_links.insert(curr, linked_by);
         }
@@ -994,8 +1001,8 @@ impl<'doc> TransactionMut<'doc> {
     /// If it returns true, it means that the block should be deleted after being added to a block store.
     pub(crate) fn integrate_item(&mut self, mut item: Box<Item>, offset: u32) -> Option<ItemPtr> {
         let mut item_ptr = ItemPtr::from(&*item);
-        let store = &mut *self.store;
-        let encoding = store.offset_kind;
+        let store = &mut self.doc.store;
+        let encoding = store.options.offset_kind;
         if offset > 0 {
             item.trim(offset, store);
         }
@@ -1083,7 +1090,7 @@ impl<'doc> TransactionMut<'doc> {
             }
         }
         self.insert_set.insert(item.id, item.len);
-        self.store.blocks.push(Block::Item(item));
+        self.doc.store.blocks.push(Block::Item(item));
         let item = &mut *item_ptr;
 
         item.integrate_content(self);
@@ -1091,7 +1098,13 @@ impl<'doc> TransactionMut<'doc> {
 
         #[cfg(feature = "weak")]
         if item.info.is_linked() {
-            if let Some(links) = self.store.linked_by.get(&ItemPtr::from(&*item)).cloned() {
+            if let Some(links) = self
+                .doc
+                .store
+                .linked_by
+                .get(&ItemPtr::from(&*item))
+                .cloned()
+            {
                 // notify links about changes
                 for link in links.iter() {
                     self.add_changed_type(*link, item.parent_sub.clone());
@@ -1113,7 +1126,7 @@ impl<'doc> TransactionMut<'doc> {
         }
         self.delete_set.insert(gc.id(), gc.len);
         self.insert_set.insert(gc.id(), gc.len);
-        self.store.blocks.push(Block::GC(gc));
+        self.doc.store.blocks.push(Block::GC(gc));
     }
 
     pub(crate) fn integrate_skip(&mut self, mut skip: BlockRange, offset: u32) {
@@ -1121,7 +1134,7 @@ impl<'doc> TransactionMut<'doc> {
             skip.clock += offset;
             skip.len -= offset;
         }
-        let blocks = &mut self.store.blocks;
+        let blocks = &mut self.doc.store.blocks;
         blocks.skips.insert(skip.id(), skip.len);
         blocks.push(Block::Skip(skip));
     }
@@ -1700,8 +1713,8 @@ pub enum ItemContent {
     /// Deleted elements also don't contribute to an overall length of containing collection type.
     Deleted(u32),
 
-    /// Sub-document container. Contains weak reference to a parent document and a child document.
-    Doc(Option<Doc>, Doc),
+    /// Sub-document container. Contains the parent document's guid and a child document.
+    Doc(Option<Uuid>, Doc),
 
     /// Obsolete: collection of consecutively inserted stringified JSON values.
     JSON(Vec<String>),
@@ -1820,7 +1833,7 @@ impl ItemContent {
                     1
                 }
                 ItemContent::Doc(_, doc) => {
-                    buf[0] = Out::YDoc(doc.clone());
+                    buf[0] = Out::YDoc(doc.store.options.guid.clone());
                     1
                 }
                 ItemContent::Type(c) => {
@@ -1851,13 +1864,31 @@ impl ItemContent {
         }
     }
 
+    /// Returns a reference to the subdoc if this content is a `Doc` variant.
+    pub fn as_subdoc(&self) -> Option<&Doc> {
+        if let ItemContent::Doc(_, doc) = self {
+            Some(doc)
+        } else {
+            None
+        }
+    }
+
+    /// Returns a mutable reference to the subdoc if this content is a `Doc` variant.
+    pub fn as_subdoc_mut(&mut self) -> Option<&mut Doc> {
+        if let ItemContent::Doc(_, doc) = self {
+            Some(doc)
+        } else {
+            None
+        }
+    }
+
     /// Returns a first value stored in a corresponding item.
     pub fn get_first(&self) -> Option<Out> {
         match self {
             ItemContent::Any(v) => v.first().map(|a| Out::Any(a.clone())),
             ItemContent::Binary(v) => Some(Out::Any(Any::from(v.deref()))),
             ItemContent::Deleted(_) => None,
-            ItemContent::Doc(_, v) => Some(Out::YDoc(v.clone())),
+            ItemContent::Doc(_, v) => Some(Out::YDoc(v.store.options.guid.clone())),
             ItemContent::JSON(v) => v.first().map(|v| Out::Any(Any::from(v.deref()))),
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
@@ -1872,7 +1903,7 @@ impl ItemContent {
             ItemContent::Any(v) => v.last().map(|a| Out::Any(a.clone())),
             ItemContent::Binary(v) => Some(Out::Any(Any::from(v.deref()))),
             ItemContent::Deleted(_) => None,
-            ItemContent::Doc(_, v) => Some(Out::YDoc(v.clone())),
+            ItemContent::Doc(_, v) => Some(Out::YDoc(v.store.options.guid.clone())),
             ItemContent::JSON(v) => v.last().map(|v| Out::Any(Any::from(v.as_str()))),
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
@@ -1923,7 +1954,7 @@ impl ItemContent {
                     encoder.write_any(&any[i as usize]);
                 }
             }
-            ItemContent::Doc(_, doc) => doc.store().options().encode(encoder),
+            ItemContent::Doc(_, doc) => doc.options().encode(encoder),
         }
     }
 
@@ -1952,7 +1983,7 @@ impl ItemContent {
                     encoder.write_any(a);
                 }
             }
-            ItemContent::Doc(_, doc) => doc.store().options().encode(encoder),
+            ItemContent::Doc(_, doc) => doc.options().encode(encoder),
         }
     }
 
@@ -2102,7 +2133,7 @@ impl Clone for ItemContent {
             ItemContent::Any(array) => ItemContent::Any(array.clone()),
             ItemContent::Binary(bytes) => ItemContent::Binary(bytes.clone()),
             ItemContent::Deleted(len) => ItemContent::Deleted(*len),
-            ItemContent::Doc(store, doc) => ItemContent::Doc(store.clone(), doc.clone()),
+            ItemContent::Doc(parent, subdoc) => todo!("subdoc clone"),
             ItemContent::JSON(array) => ItemContent::JSON(array.clone()),
             ItemContent::Embed(json) => ItemContent::Embed(json.clone()),
             ItemContent::Format(key, value) => ItemContent::Format(key.clone(), value.clone()),

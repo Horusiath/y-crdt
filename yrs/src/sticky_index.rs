@@ -23,9 +23,9 @@ use std::sync::Arc;
 /// Example:
 ///
 /// ```rust
-/// use yrs::{Assoc, Doc, IndexedSequence, Text, Transact};
+/// use yrs::{Assoc, Doc, IndexedSequence, Text};
 ///
-/// let doc = Doc::new();
+/// let mut doc = Doc::new();
 /// let txt = doc.get_or_insert_text("text");
 /// let mut txn = doc.transact_mut();
 /// txt.insert(&mut txn, 0, "abc"); // => 'abc'
@@ -641,10 +641,7 @@ mod test {
     use crate::sticky_index::Assoc;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{
-        Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, Transact, XmlElementPrelim,
-        XmlFragment, XmlTextPrelim, ID,
-    };
+    use crate::{Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, Transact, ID};
     use serde::{Deserialize, Serialize};
 
     fn check_sticky_indexes(doc: &Doc, text: &TextRef) {

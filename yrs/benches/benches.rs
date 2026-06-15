@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use yrs::encoding::read::{Cursor, Read};
 use yrs::updates::decoder::Decode;
-use yrs::{Array, Doc, Map, MapRef, Text, TextRef, Transact, TransactionMut, Update};
+use yrs::{Array, Doc, Map, MapRef, Text, TextRef, TransactionMut, Update};
 
 const N: usize = 6000;
 const SQRT_N: usize = 77 * 20;
@@ -168,77 +168,54 @@ fn text_benchmark<F>(c: &mut Criterion, name: &str, gen: F)
 where
     F: FnOnce(&mut StdRng, usize) -> Vec<TextOp>,
 {
-    let input = {
-        let doc = Doc::new();
-        let txt = doc.get_or_insert_text("text");
-        let mut rng = StdRng::seed_from_u64(SEED);
-        let ops = gen(&mut rng, N);
-        (doc, txt, ops)
-    };
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let ops = gen(&mut rng, N);
 
-    c.bench_with_input(
-        BenchmarkId::new(name, input.2.len()),
-        &input,
-        |b, (doc, text, ops)| {
-            b.iter(|| {
-                for op in ops.iter() {
-                    let mut txn = doc.transact_mut();
-                    match op {
-                        TextOp::Insert(idx, txt) => text.insert(&mut txn, *idx, txt),
-                        TextOp::Delete(idx, len) => text.remove_range(&mut txn, *idx, *len),
-                    }
+    c.bench_with_input(BenchmarkId::new(name, ops.len()), &ops, |b, ops| {
+        b.iter(|| {
+            let mut doc = Doc::new();
+            let text = doc.get_or_insert_text("text");
+            for op in ops.iter() {
+                let mut txn = doc.transact_mut();
+                match op {
+                    TextOp::Insert(idx, txt) => text.insert(&mut txn, *idx, txt),
+                    TextOp::Delete(idx, len) => text.remove_range(&mut txn, *idx, *len),
                 }
-            });
-        },
-    );
+            }
+        });
+    });
 }
 
 fn array_benchmark<F>(c: &mut Criterion, name: &str, gen: F)
 where
     F: FnOnce(&mut StdRng, usize) -> Vec<ArrayOp>,
 {
-    let input = {
-        let doc = Doc::new();
-        let array = doc.get_or_insert_array("text");
-        let mut rng = StdRng::seed_from_u64(SEED);
-        let ops = gen(&mut rng, N);
-        (doc, array, ops)
-    };
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let ops = gen(&mut rng, N);
 
-    c.bench_with_input(
-        BenchmarkId::new(name, input.2.len()),
-        &input,
-        |b, (doc, array, ops)| {
-            b.iter(|| {
-                for op in ops.iter() {
-                    let mut txn = doc.transact_mut();
-                    match op {
-                        ArrayOp::Insert(idx, values) => {
-                            array.insert_range(&mut txn, *idx, values.clone())
-                        }
-                        ArrayOp::Delete(idx, len) => array.remove_range(&mut txn, *idx, *len),
+    c.bench_with_input(BenchmarkId::new(name, ops.len()), &ops, |b, ops| {
+        b.iter(|| {
+            let mut doc = Doc::new();
+            let array = doc.get_or_insert_array("array");
+            for op in ops.iter() {
+                let mut txn = doc.transact_mut();
+                match op {
+                    ArrayOp::Insert(idx, values) => {
+                        array.insert_range(&mut txn, *idx, values.clone())
                     }
+                    ArrayOp::Delete(idx, len) => array.remove_range(&mut txn, *idx, *len),
                 }
-            });
-        },
-    );
+            }
+        });
+    });
 }
 
 fn concurrent_text_benchmark<F>(c: &mut Criterion, name: &str, gen: F)
 where
     F: FnOnce(&mut StdRng, usize) -> Vec<(TextOp, TextOp)>,
 {
-    let input = {
-        let d1 = Doc::new();
-        let t1 = d1.get_or_insert_text("text");
-
-        let d2 = Doc::new();
-        let t2 = d2.get_or_insert_text("text");
-
-        let mut rng = StdRng::seed_from_u64(SEED);
-        let ops = gen(&mut rng, N);
-        (d1, t1, d2, t2, ops)
-    };
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let ops = gen(&mut rng, N);
 
     fn apply(txn: &mut TransactionMut, txt: &TextRef, op: &TextOp) {
         match op {
@@ -247,26 +224,31 @@ where
         }
     }
 
-    c.bench_with_input(
-        BenchmarkId::new(name, N),
-        &input,
-        |b, (d1, t1, d2, t2, ops)| {
-            b.iter(|| {
-                for (o1, o2) in ops {
-                    let mut txn1 = d1.transact_mut();
-                    apply(&mut txn1, t1, o1);
-                    let u1 = txn1.encode_update_v1();
+    c.bench_with_input(BenchmarkId::new(name, N), &ops, |b, ops| {
+        b.iter(|| {
+            let mut d1 = Doc::new();
+            let t1 = d1.get_or_insert_text("text");
+            let mut d2 = Doc::new();
+            let t2 = d2.get_or_insert_text("text");
 
-                    let mut txn2 = d2.transact_mut();
-                    apply(&mut txn2, t2, o2);
-                    let u2 = txn2.encode_update_v1();
+            for (o1, o2) in ops {
+                let mut txn1 = d1.transact_mut();
+                apply(&mut txn1, &t1, o1);
+                let u1 = txn1.encode_update_v1();
+                drop(txn1);
 
-                    txn1.apply_update(Update::decode_v1(u2.as_slice()).unwrap());
-                    txn2.apply_update(Update::decode_v1(u1.as_slice()).unwrap());
-                }
-            });
-        },
-    );
+                let mut txn2 = d2.transact_mut();
+                apply(&mut txn2, &t2, o2);
+                let u2 = txn2.encode_update_v1();
+                drop(txn2);
+
+                d1.transact_mut()
+                    .apply_update(Update::decode_v1(u2.as_slice()).unwrap());
+                d2.transact_mut()
+                    .apply_update(Update::decode_v1(u1.as_slice()).unwrap());
+            }
+        });
+    });
 }
 
 fn b2_1<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
@@ -358,27 +340,25 @@ fn n_concurrent_map_benchmark<F>(c: &mut Criterion, name: &str, f: F)
 where
     F: Fn(&MapRef, &mut TransactionMut, usize),
 {
-    let input: Vec<_> = (0..SQRT_N)
+    let updates: Vec<_> = (0..SQRT_N)
         .into_iter()
         .map(|i| {
-            let doc = Doc::new();
+            let mut doc = Doc::new();
             let map = doc.get_or_insert_map("map");
-            let update = {
-                let mut txn = doc.transact_mut();
-                f(&map, &mut txn, i);
-                txn.encode_update_v1()
-            };
-            (doc, update)
+            let mut txn = doc.transact_mut();
+            f(&map, &mut txn, i);
+            txn.encode_update_v1()
         })
         .collect();
 
-    c.bench_with_input(BenchmarkId::new(name, SQRT_N), &input, |b, input| {
+    c.bench_with_input(BenchmarkId::new(name, SQRT_N), &updates, |b, updates| {
         b.iter(|| {
-            let mut iter = input.into_iter();
-            let (doc, _) = iter.next().unwrap();
+            let mut doc = Doc::new();
+            let _map = doc.get_or_insert_map("map");
             let mut txn = doc.transact_mut();
-            while let Some((_, update)) = iter.next() {
-                txn.apply_update(Update::decode_v1(update.as_slice()).unwrap());
+            for update in updates {
+                txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
+                    .unwrap();
             }
         });
     });
@@ -405,26 +385,23 @@ fn b3_3(map: &MapRef, txn: &mut TransactionMut, i: usize) {
 }
 
 fn b3_4(c: &mut Criterion, name: &str) {
-    let input: Vec<_> = (0..SQRT_N)
+    let updates: Vec<_> = (0..SQRT_N)
         .into_iter()
         .map(|i| {
-            let doc = Doc::new();
+            let mut doc = Doc::new();
             let array = doc.get_or_insert_array("array");
-            let update = {
-                let mut txn = doc.transact_mut();
-                array.insert(&mut txn, 0, i.to_string());
-                txn.encode_update_v1()
-            };
-            (doc, update)
+            let mut txn = doc.transact_mut();
+            array.insert(&mut txn, 0, i.to_string());
+            txn.encode_update_v1()
         })
         .collect();
 
-    c.bench_with_input(BenchmarkId::new(name, SQRT_N), &input, |b, input| {
+    c.bench_with_input(BenchmarkId::new(name, SQRT_N), &updates, |b, updates| {
         b.iter(|| {
-            let mut iter = input.into_iter();
-            let (doc, _) = iter.next().unwrap();
+            let mut doc = Doc::new();
+            let _array = doc.get_or_insert_array("array");
             let mut txn = doc.transact_mut();
-            while let Some((_, update)) = iter.next() {
+            for update in updates {
                 txn.apply_update(Update::decode_v1(update.as_slice()).unwrap());
             }
         });
@@ -432,44 +409,36 @@ fn b3_4(c: &mut Criterion, name: &str) {
 }
 
 fn b4_1(c: &mut Criterion, name: &str) {
-    let doc = Doc::new();
-    let txt = doc.get_or_insert_text("text");
     let input = read_input("./assets/bench-input/b4-editing-trace.bin");
 
-    c.bench_with_input(
-        BenchmarkId::new(name, input.len()),
-        &(doc, txt, input),
-        |b, (doc, txt, input)| {
-            b.iter(|| {
-                for i in input {
-                    let mut txn = doc.transact_mut();
-                    match i {
-                        TextOp::Insert(idx, chunk) => txt.insert(&mut txn, *idx, chunk),
-                        TextOp::Delete(idx, len) => txt.remove_range(&mut txn, *idx, *len),
-                    }
+    c.bench_with_input(BenchmarkId::new(name, input.len()), &input, |b, input| {
+        b.iter(|| {
+            let mut doc = Doc::new();
+            let txt = doc.get_or_insert_text("text");
+            let mut txn = doc.transact_mut();
+            for i in input {
+                match i {
+                    TextOp::Insert(idx, chunk) => txt.insert(&mut txn, *idx, chunk),
+                    TextOp::Delete(idx, len) => txt.remove_range(&mut txn, *idx, *len),
                 }
-            });
-        },
-    );
+            }
+        });
+    });
 }
 
 fn b4_2(c: &mut Criterion, name: &str) {
-    let doc = Doc::new();
-    let txt = doc.get_or_insert_text("text");
     let mut buf = Vec::with_capacity(400 * 1024);
     let mut f = std::fs::File::open("./assets/bench-input/b4-update.bin").unwrap();
     std::io::Read::read_to_end(&mut f, &mut buf).unwrap();
 
-    c.bench_with_input(
-        BenchmarkId::new(name, buf.len()),
-        &(doc, txt, buf),
-        |b, (doc, _txt, buf)| {
-            b.iter(|| {
-                let mut txn = doc.transact_mut();
-                txn.apply_update(Update::decode_v1(buf.as_slice()).unwrap());
-            });
-        },
-    );
+    c.bench_with_input(BenchmarkId::new(name, buf.len()), &buf, |b, buf| {
+        b.iter(|| {
+            let mut doc = Doc::new();
+            let _txt = doc.get_or_insert_text("text");
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(buf.as_slice()).unwrap());
+        });
+    });
 }
 
 fn read_input(fpath: &str) -> Vec<TextOp> {
@@ -483,79 +452,116 @@ fn read_input(fpath: &str) -> Vec<TextOp> {
     let len: usize = decoder.read_var().unwrap();
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
-        let op = {
-            match decoder.read_var().unwrap() {
-                1u32 => {
-                    let idx = decoder.read_var().unwrap();
-                    let chunk = decoder.read_string().unwrap();
-                    TextOp::Insert(idx, chunk.to_string())
-                }
-                2u32 => {
-                    let idx = decoder.read_var().unwrap();
-                    let len = decoder.read_var().unwrap();
-                    TextOp::Delete(idx, len)
-                }
-                other => panic!("unrecognized TextOp tag type: {}", other),
+        let op: usize = decoder.read_var().unwrap();
+        match op {
+            1 => {
+                let idx: u32 = decoder.read_var().unwrap();
+                let chunk = decoder.read_string().unwrap();
+                result.push(TextOp::Insert(idx, chunk.to_string()));
             }
-        };
-        result.push(op);
+            2 => {
+                let idx: u32 = decoder.read_var().unwrap();
+                let len: u32 = decoder.read_var().unwrap();
+                result.push(TextOp::Delete(idx, len));
+            }
+            _ => panic!("unrecognized TextOp: {}", op),
+        }
     }
     result
 }
 
-fn bench(c: &mut Criterion) {
-    text_benchmark(c, "[B1.1] Append N characters", b1_1);
-    text_benchmark(c, "[B1.2] Insert string of length N", b1_2);
-    text_benchmark(c, "[B1.3] Prepend N characters", b1_3);
-    text_benchmark(c, "[B1.4] Insert N characters at random positions", b1_4);
-    text_benchmark(c, "[B1.5] Insert N words at random positions", b1_5);
-    //text_benchmark(c, "[B1.6] Insert string, then delete it", b1_6);
-    text_benchmark(c, "[B1.7] Insert/Delete strings at random positions", b1_7);
-    array_benchmark(c, "[B1.8] Append N numbers", b1_8);
-    array_benchmark(c, "[B1.9] Insert Array of N numbers", b1_9);
-    array_benchmark(c, "[B1.10] Prepend N numbers", b1_10);
-    array_benchmark(c, "[B1.11] Insert N numbers at random positions", b1_11);
-
-    concurrent_text_benchmark(
-        c,
-        "[B2.1] Concurrently insert string of length N at index 0",
-        b2_1,
-    );
-    concurrent_text_benchmark(
-        c,
-        "[B2.2] Concurrently insert N characters at random positions",
-        b2_2,
-    );
-    concurrent_text_benchmark(
-        c,
-        "[B2.3] Concurrently insert N words at random positions",
-        b2_3,
-    );
-    concurrent_text_benchmark(c, "[B2.4] Concurrently insert & delete", b2_4);
-
-    n_concurrent_map_benchmark(
-        c,
-        "[B3.1] 20√N clients concurrently set number in Map",
-        b3_1,
-    );
-    n_concurrent_map_benchmark(
-        c,
-        "[B3.2] 20√N clients concurrently set Object in Map",
-        b3_2,
-    );
-    n_concurrent_map_benchmark(
-        c,
-        "[B3.3] 20√N clients concurrently set String in Map",
-        b3_3,
-    );
-    b3_4(c, "[B3.4] 20√N clients concurrently insert text in Array");
-    b4_2(c, "[B4.2] Apply real-world document snapshot of size");
-    b4_1(c, "[B4.1] Apply real-world editing dataset");
+fn bench_b1_1(c: &mut Criterion) {
+    text_benchmark(c, "B1.1", b1_1)
+}
+fn bench_b1_2(c: &mut Criterion) {
+    text_benchmark(c, "B1.2", b1_2)
+}
+fn bench_b1_3(c: &mut Criterion) {
+    text_benchmark(c, "B1.3", b1_3)
+}
+fn bench_b1_4(c: &mut Criterion) {
+    text_benchmark(c, "B1.4", b1_4)
+}
+fn bench_b1_5(c: &mut Criterion) {
+    text_benchmark(c, "B1.5", b1_5)
+}
+fn bench_b1_6(c: &mut Criterion) {
+    text_benchmark(c, "B1.6", b1_6)
+}
+fn bench_b1_7(c: &mut Criterion) {
+    text_benchmark(c, "B1.7", b1_7)
+}
+fn bench_b1_8(c: &mut Criterion) {
+    array_benchmark(c, "B1.8", b1_8)
+}
+fn bench_b1_9(c: &mut Criterion) {
+    array_benchmark(c, "B1.9", b1_9)
+}
+fn bench_b1_10(c: &mut Criterion) {
+    array_benchmark(c, "B1.10", b1_10)
+}
+fn bench_b1_11(c: &mut Criterion) {
+    array_benchmark(c, "B1.11", b1_11)
+}
+fn bench_b2_1(c: &mut Criterion) {
+    concurrent_text_benchmark(c, "B2.1", b2_1)
+}
+fn bench_b2_2(c: &mut Criterion) {
+    concurrent_text_benchmark(c, "B2.2", b2_2)
+}
+fn bench_b2_3(c: &mut Criterion) {
+    concurrent_text_benchmark(c, "B2.3", b2_3)
+}
+fn bench_b2_4(c: &mut Criterion) {
+    concurrent_text_benchmark(c, "B2.4", b2_4)
+}
+fn bench_b3_1(c: &mut Criterion) {
+    n_concurrent_map_benchmark(c, "B3.1", b3_1)
+}
+fn bench_b3_2(c: &mut Criterion) {
+    n_concurrent_map_benchmark(c, "B3.2", b3_2)
+}
+fn bench_b3_3(c: &mut Criterion) {
+    n_concurrent_map_benchmark(c, "B3.3", b3_3)
+}
+fn bench_b3_4(c: &mut Criterion) {
+    b3_4(c, "B3.4")
+}
+fn bench_b4_1(c: &mut Criterion) {
+    b4_1(c, "B4.1")
+}
+fn bench_b4_2(c: &mut Criterion) {
+    b4_2(c, "B4.2")
 }
 
 criterion_group! {
-    name = benches;
+    name = text;
     config = Criterion::default().sample_size(10);
-    targets = bench,
+    targets = bench_b1_1, bench_b1_2, bench_b1_3, bench_b1_4, bench_b1_5, bench_b1_6, bench_b1_7,
 }
-criterion_main!(benches);
+
+criterion_group! {
+    name = arrays;
+    config = Criterion::default().sample_size(10);
+    targets = bench_b1_8, bench_b1_9, bench_b1_10, bench_b1_11,
+}
+
+criterion_group! {
+    name = concurrent;
+    config = Criterion::default().sample_size(10);
+    targets = bench_b2_1, bench_b2_2, bench_b2_3, bench_b2_4,
+}
+
+criterion_group! {
+    name = n_concurrent;
+    config = Criterion::default().sample_size(10);
+    targets = bench_b3_1, bench_b3_2, bench_b3_3, bench_b3_4,
+}
+
+criterion_group! {
+    name = real_world;
+    config = Criterion::default().sample_size(10);
+    targets = bench_b4_1, bench_b4_2,
+}
+
+criterion_main!(text, arrays, concurrent, n_concurrent, real_world);

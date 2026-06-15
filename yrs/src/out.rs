@@ -1,9 +1,10 @@
 use crate::block::{ItemContent, ItemPtr};
 use crate::branch::{Branch, BranchPtr};
 use crate::types::{AsPrelim, ToJson};
+use crate::updates::decoder::Decode;
 use crate::{
-    any, Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, ReadTxn, TextRef, XmlElementRef,
-    XmlFragmentRef, XmlTextRef,
+    any, Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, ReadTxn, StateVector, TextRef,
+    Update, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 use std::convert::TryFrom;
 use std::fmt::Formatter;
@@ -27,8 +28,8 @@ pub enum Out {
     YXmlFragment(XmlFragmentRef),
     /// Instance of a [XmlTextRef].
     YXmlText(XmlTextRef),
-    /// Subdocument.
-    YDoc(Doc),
+    /// Subdocument identifier.
+    YDoc(Uuid),
     /// Instance of a [WeakRef] or unspecified type (requires manual casting).
     #[cfg(feature = "weak")]
     YWeakLink(crate::WeakRef<BranchPtr>),
@@ -65,7 +66,7 @@ impl Out {
             Out::YXmlElement(v) => v.get_string(txn),
             Out::YXmlFragment(v) => v.get_string(txn),
             Out::YXmlText(v) => v.get_string(txn),
-            Out::YDoc(v) => v.to_string(),
+            Out::YDoc(v) => v.as_ref().to_string(),
             #[cfg(feature = "weak")]
             Out::YWeakLink(v) => {
                 let text_ref: crate::WeakRef<TextRef> = crate::WeakRef::from(v);
@@ -115,10 +116,23 @@ impl AsPrelim for Out {
             Out::YXmlElement(v) => In::XmlElement(v.as_prelim(txn)),
             Out::YXmlFragment(v) => In::XmlFragment(v.as_prelim(txn)),
             Out::YXmlText(v) => In::XmlText(v.as_prelim(txn)),
-            Out::YDoc(v) => In::Doc(v.clone()),
             #[cfg(feature = "weak")]
             Out::YWeakLink(v) => In::WeakLink(v.as_prelim(txn)),
             Out::UndefinedRef(v) => infer_type_from_content(*v, txn),
+            Out::YDoc(guid) => {
+                // deep copy of the document state
+                let subdoc = txn.subdoc(guid).unwrap();
+                let state = subdoc
+                    .transact()
+                    .encode_state_as_update_v1(&StateVector::default());
+                let options = subdoc.options().clone();
+                let mut subdoc = Doc::with_options(options);
+                subdoc
+                    .transact_mut()
+                    .apply_update(Update::decode_v1(&state).unwrap())
+                    .unwrap();
+                In::Doc(subdoc)
+            }
         }
     }
 }
@@ -209,7 +223,7 @@ impl ToJson for Out {
             Out::YXmlElement(v) => Any::from(v.get_string(txn)),
             Out::YXmlText(v) => Any::from(v.get_string(txn)),
             Out::YXmlFragment(v) => Any::from(v.get_string(txn)),
-            Out::YDoc(doc) => any!({"guid": doc.guid().as_ref()}),
+            Out::YDoc(guid) => any!({"guid": guid.as_ref()}),
             #[cfg(feature = "weak")]
             Out::YWeakLink(_) => Any::Undefined,
             Out::UndefinedRef(_) => Any::Undefined,
@@ -229,7 +243,7 @@ impl std::fmt::Display for Out {
             Out::YXmlText(_) => write!(f, "XmlTextRef"),
             #[cfg(feature = "weak")]
             Out::YWeakLink(_) => write!(f, "WeakRef"),
-            Out::YDoc(v) => write!(f, "Doc(guid:{})", v.guid()),
+            Out::YDoc(v) => write!(f, "Doc(guid:{})", v),
             Out::UndefinedRef(_) => write!(f, "UndefinedRef"),
         }
     }

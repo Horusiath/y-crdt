@@ -16,9 +16,9 @@ where
     ///
     /// # Example
     /// ```rust
-    /// use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out, Transact, WriteTxn};
+    /// use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out, WriteTxn};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
     /// let users = txn.get_or_insert_array("users");
     ///
@@ -461,11 +461,11 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::{
         any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out, ReadTxn,
-        Transact, Update, WriteTxn,
+        Update, WriteTxn,
     };
 
     fn mixed_sample() -> Doc {
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         let mut tx = doc.transact_mut();
         let users = tx.get_or_insert_array("users");
         users.insert(
@@ -624,7 +624,7 @@ mod test {
         let doc_state = mixed_sample()
             .transact()
             .encode_state_as_update_v1(&Default::default());
-        let doc = Doc::new();
+        let mut doc = Doc::new();
         doc.transact_mut()
             .apply_update(Update::decode_v1(&doc_state).unwrap())
             .unwrap();

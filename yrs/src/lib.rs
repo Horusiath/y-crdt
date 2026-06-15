@@ -25,11 +25,11 @@
 //! the following code snippet:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
+//! use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Update};
 //! use yrs::updates::decoder::Decode;
 //! use yrs::updates::encoder::Encode;
 //!
-//! let doc = Doc::new();
+//! let mut doc = Doc::new();
 //! let text = doc.get_or_insert_text("article");
 //!
 //! {
@@ -42,7 +42,7 @@
 //! assert_eq!(text.get_string(&doc.transact()), "hello world".to_owned());
 //!
 //! // synchronize state with remote replica
-//! let remote_doc = Doc::new();
+//! let mut remote_doc = Doc::new();
 //! let remote_text = remote_doc.get_or_insert_text("article");
 //! let remote_timestamp = remote_doc.transact().state_vector().encode_v1();
 //!
@@ -113,10 +113,10 @@
 //! (eg. image binaries or [ArrayRef]s that we could interpret in example as nested tables).
 //!
 //! ```rust
-//! use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, Transact, WriteTxn, XmlFragment, XmlTextPrelim};
+//! use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, WriteTxn, XmlFragment, XmlTextPrelim};
 //! use yrs::types::Attrs;
 //!
-//! let doc = Doc::new();
+//! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
 //! let f = txn.get_or_insert_xml_fragment("article");
 //! let xml = f.insert(&mut txn, 0, XmlTextPrelim::new(""));
@@ -160,15 +160,15 @@
 //! on following example:
 //!
 //! ```rust
-//! use yrs::{Doc, ClientID, GetString, ReadTxn, StateVector, Text, Transact, Update};
+//! use yrs::{Doc, ClientID, GetString, ReadTxn, StateVector, Text, Update};
 //! use yrs::updates::decoder::Decode;
 //!
-//! let doc1 = Doc::with_client_id(1);
+//! let mut doc1 = Doc::with_client_id(1);
 //! let text1 = doc1.get_or_insert_text("article");
 //! let mut txn1 = doc1.transact_mut();
 //! text1.insert(&mut txn1, 0, "hello");
 //!
-//! let doc2 = Doc::with_client_id(2);
+//! let mut doc2 = Doc::with_client_id(2);
 //! let text2 = doc2.get_or_insert_text("article");
 //! let mut txn2 = doc2.transact_mut();
 //! text2.insert(&mut txn2, 0, "world");
@@ -195,15 +195,15 @@
 //! location, that will persist between concurrent updates being made:
 //!
 //! ```rust
-//! use yrs::{Assoc, ClientID, Doc, GetString, ReadTxn, IndexedSequence, StateVector, Text, Transact, Update};
+//! use yrs::{Assoc, ClientID, Doc, GetString, ReadTxn, IndexedSequence, StateVector, Text, Update};
 //! use yrs::updates::decoder::Decode;
 //!
-//! let doc1 = Doc::with_client_id(1);
+//! let mut doc1 = Doc::with_client_id(1);
 //! let text1 = doc1.get_or_insert_text("article");
 //! let mut txn1 = doc1.transact_mut();
 //! text1.insert(&mut txn1, 0, "hello");
 //!
-//! let doc2 = Doc::with_client_id(1);
+//! let mut doc2 = Doc::with_client_id(1);
 //! let text2 = doc2.get_or_insert_text("article");
 //! let mut txn2 = doc2.transact_mut();
 //! text2.insert(&mut txn2, 0, "world");
@@ -251,9 +251,9 @@
 //! ```rust
 //! #[cfg(feature = "weak")]
 //! fn example() {
-//!     use yrs::{Doc, Text, Transact, GetString, Quotable, Map};
+//!     use yrs::{Doc, Text, GetString, Quotable, Map};
 //!
-//!     let doc = Doc::new();
+//!     let mut doc = Doc::new();
 //!     let text = doc.get_or_insert_text("text");
 //!     let map = doc.get_or_insert_map("map");
 //!     let mut txn = doc.transact_mut();
@@ -281,9 +281,9 @@
 //! ```rust
 //! #[cfg(feature = "weak")]
 //! fn example() {
-//!     use yrs::{Doc, Transact, Quotable, Map};
+//!     use yrs::{Doc, Quotable, Map};
 //!
-//!     let doc = Doc::new();
+//!     let mut doc = Doc::new();
 //!     let map = doc.get_or_insert_map("map");
 //!     let mut txn = doc.transact_mut();
 //!     map.insert(&mut txn, "origin", "value");
@@ -309,44 +309,47 @@
 //! [UndoManager] is a Yrs response for these needs, supporting wide variety of options:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, ReadTxn, Text, Transact, UndoManager, Update};
+//! use yrs::{Acquire, AcquireMut, Cell, Doc, GetString, ReadTxn, Text, UndoManager, Update};
 //! use yrs::undo::Options;
 //! use yrs::updates::decoder::Decode;
 //!
-//! let local = Doc::with_client_id(123);
-//! let text1 = local.get_or_insert_text("article");
+//! let local = Cell::new(Doc::with_client_id(123));
+//! let text1 = local.acquire_mut().get_or_insert_text("article");
+//! let local_client_id = local.acquire().client_id();
 //! let mut mgr = UndoManager::with_options(Options::default());
 //! mgr.expand_scope(&local, &text1);
-//! mgr.include_origin(local.client_id()); // only track changes originating from local peer
+//! mgr.include_origin(local_client_id); // only track changes originating from local peer
 //!
-//! let remote = Doc::with_client_id(321);
-//! let text2 = remote.get_or_insert_text("article");
+//! let remote = Cell::new(Doc::with_client_id(321));
+//! let text2 = remote.acquire_mut().get_or_insert_text("article");
+//! let remote_client_id = remote.acquire().client_id();
 //!
 //! // perform changes locally
-//! text1.push(&mut local.transact_mut_with(local.client_id()), "hello ");
+//! text1.push(&mut local.acquire_mut().transact_mut_with(local_client_id), "hello ");
 //! mgr.reset(); // prevent previous and next operation to be treated by Undo manager as one batch
-//! text1.push(&mut local.transact_mut_with(local.client_id()), "world");
-//! assert_eq!(text1.get_string(&local.transact()), "hello world");
+//! text1.push(&mut local.acquire_mut().transact_mut_with(local_client_id), "world");
+//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello world");
 //!
 //! // perform remote changes - these are not being tracked by mgr
 //! {
-//!     let mut remote_txn = remote.transact_mut_with(remote.client_id());
+//!     let mut g = remote.acquire_mut();
+//!     let mut remote_txn = g.transact_mut_with(remote_client_id);
 //!     text2.push(&mut remote_txn, "everyone");
 //!     assert_eq!(text2.get_string(&remote_txn), "everyone");
 //! }
 //!
 //! // sync changes from remote to local
-//! let update = remote.transact().encode_state_as_update_v1(&local.transact().state_vector());
-//! local.transact_mut().apply_update(Update::decode_v1(&update).unwrap());
-//! assert_eq!(text1.get_string(&local.transact()), "hello worldeveryone"); // remote changes synced
+//! let update = remote.acquire().transact().encode_state_as_update_v1(&local.acquire().transact().state_vector());
+//! local.acquire_mut().transact_mut().apply_update(Update::decode_v1(&update).unwrap());
+//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello worldeveryone"); // remote changes synced
 //!
 //! // undo last performed change on local
 //! mgr.undo_blocking();
-//! assert_eq!(text1.get_string(&local.transact()), "hello everyone");
+//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello everyone");
 //!
 //! // redo change we undone
 //! mgr.redo_blocking();
-//! assert_eq!(text1.get_string(&local.transact()), "hello worldeveryone");
+//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello worldeveryone");
 //! ```
 //!
 //! > Keep in mind, that in order to serve its purpose, undo manager may need to implicitly create
@@ -376,13 +379,13 @@
 //! as well as show the differences between them:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, Options, ReadTxn, Text, Transact, Update, WriteTxn, XmlFragment, XmlTextPrelim};
+//! use yrs::{Doc, GetString, Options, ReadTxn, Text, Update, WriteTxn, XmlFragment, XmlTextPrelim};
 //! use yrs::types::Attrs;
 //! use yrs::types::text::{Diff, YChange};
 //! use yrs::updates::decoder::Decode;
 //! use yrs::updates::encoder::{Encoder, EncoderV1};
 //!
-//! let doc = Doc::with_options(Options {
+//! let mut doc = Doc::with_options(Options {
 //!     skip_gc: true,  // in order to support revisions we cannot garbage collect deleted blocks
 //!     ..Options::default()
 //! });
@@ -408,7 +411,7 @@
 //! let update = encoder.to_vec();
 //!
 //! // restore the past state
-//! let doc = Doc::new();
+//! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
 //! let f = txn.get_or_insert_xml_fragment("article");
 //! txn.apply_update(Update::decode_v1(&update).unwrap());
@@ -473,21 +476,21 @@
 //! replicas living on other peers. This is possible via hooks:
 //!
 //! ```rust
-//! use yrs::{Array, ArrayRef, ClientID, Doc, Hook, MapPrelim, ReadTxn, RootRef, SharedRef, Transact, Update};
+//! use yrs::{Array, ArrayRef, ClientID, Doc, Hook, MapPrelim, ReadTxn, RootRef, SharedRef, Update};
 //! use yrs::types::ToJson;
 //! use yrs::updates::decoder::Decode;
 //!
 //! // create a logical identifier to a root type
 //! let root = ArrayRef::root("root");
 //!
-//! let local = Doc::with_client_id(1);
+//! let mut local = Doc::with_client_id(1);
 //! let local_array = root.get_or_create(&mut local.transact_mut());
 //! assert_eq!(local_array.hook(), Hook::from(root.clone())); // another way to get hook for existing type
 //!
 //! let local_map = local_array.push_back(&mut local.transact_mut(), MapPrelim::from([("key", "old")]));
 //! let nested = local_map.hook(); // logical identifier to a nested shared type
 //!
-//! let remote = Doc::with_client_id(2);
+//! let mut remote = Doc::with_client_id(2);
 //! let remote_array = root.get_or_create(&mut local.transact_mut());
 //! // we haven't synchronized yet, so nested element doesn't exist on remote
 //! assert!(nested.get(&remote.transact()).is_none());
@@ -580,9 +583,9 @@
 //! the document state in a way similar to [JSONPath](https://en.wikipedia.org/wiki/JSONPath):
 //!
 //! ```rust
-//! use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out, Transact, WriteTxn};
+//! use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out, WriteTxn};
 //!
-//! let doc = Doc::new();
+//! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
 //! let users = txn.get_or_insert_array("users");
 //!
@@ -630,6 +633,7 @@ pub mod any;
 pub mod atomic;
 mod block_iter;
 pub mod branch;
+pub mod cell;
 pub mod encoding;
 pub mod error;
 mod gc;
@@ -679,9 +683,7 @@ pub use crate::sticky_index::IndexedSequence;
 pub use crate::sticky_index::Offset;
 pub use crate::sticky_index::StickyIndex;
 pub use crate::store::Store;
-pub use crate::transact::{
-    AcquireTransaction, AcquireTransactionMut, AsyncTransact, Transact, TransactionAcqError,
-};
+pub use crate::transact::TransactionAcqError;
 pub use crate::transaction::Origin;
 pub use crate::transaction::ReadTxn;
 pub use crate::transaction::RootRefs;
@@ -714,6 +716,15 @@ pub use crate::types::Observable;
 pub use crate::types::RootRef;
 pub use crate::types::SharedRef;
 pub use crate::update::Update;
+
+pub use crate::cell::Acquire;
+pub use crate::cell::AcquireMut;
+
+#[cfg(not(feature = "sync"))]
+pub type Cell<T> = crate::cell::RcCell<T>;
+
+#[cfg(feature = "sync")]
+pub type Cell<T> = crate::cell::sync::ArcCell<T>;
 
 #[deprecated(since = "0.19.0", note = "Use `yrs::Out` instead")]
 pub type Value = Out;
