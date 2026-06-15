@@ -271,38 +271,34 @@ impl Doc {
     /// Starts destroy procedure for a current document, triggering an "destroy" callback and
     /// invalidating all event callback subscriptions.
     pub fn destroy(&mut self, parent_txn: Option<&mut TransactionMut<'_>>) {
-        // Recursively destroy subdocs (accessed through the index)
-        let subdoc_ptrs: Vec<_> = self.store.subdocs.values().copied().collect();
-        for item_ptr in subdoc_ptrs {
-            unsafe {
-                if let Some(doc) = (*item_ptr.as_ptr()).content.as_subdoc_mut() {
-                    doc.destroy(None);
-                }
+        // Recursively destroy subdocs
+        let subdoc_guids: Vec<_> = self.store.subdocs.keys().cloned().collect();
+        for guid in subdoc_guids {
+            if let Some(subdoc) = self.store.subdocs.get_mut(&guid) {
+                subdoc.destroy(None);
             }
         }
         if let Some(parent_txn) = parent_txn {
             if let Some(mut item) = self.store.parent.take() {
                 let parent_ref = item.clone();
                 let is_deleted = item.is_deleted();
-                if let Some(content) = item.content.as_subdoc_mut() {
-                    let mut options = content.options().clone();
+                if let Some(opts) = item.content.as_subdoc_options() {
+                    let mut options = opts.clone();
                     options.should_load = false;
-                    let new_ref = Doc::subdoc(parent_ref, options);
-                    let guid = new_ref.store.options.guid.clone();
+                    let guid = options.guid.clone();
+                    let new_doc = Doc::subdoc(parent_ref, options.clone());
+                    parent_txn.doc.store.subdocs.insert(guid.clone(), new_doc);
+                    // Update ItemContent with new options
+                    item.content = ItemContent::Doc(None, options);
                     if !is_deleted {
                         parent_txn.subdocs_mut().added.insert(guid.clone());
                     }
                     parent_txn.subdocs_mut().removed.insert(guid);
-
-                    *content = new_ref;
                 }
             }
         }
         // cleanup events
         if let Some(mut events) = self.store.events.take() {
-            // SAFETY: We use a raw pointer to get a &Doc reference for the
-            // callback while also having a &mut Doc for the TransactionMut.
-            // The callback only receives a shared &Doc and &TransactionMut.
             let doc_ptr = self as *const Doc;
             let txn = TransactionMut::new(self, None);
             unsafe {
@@ -516,7 +512,10 @@ impl Prelim for Doc {
         if txn.parent_doc().is_some() {
             panic!("Cannot integrate the document, because it's already being used as a sub-document elsewhere");
         }
-        (ItemContent::Doc(None, self), None)
+        let options = self.options().clone();
+        let guid = options.guid.clone();
+        txn.doc.store.subdocs.insert(guid, self);
+        (ItemContent::Doc(None, options), None)
     }
 
     fn integrate(self, _txn: &mut TransactionMut, _inner_ref: BranchPtr) {}
@@ -526,8 +525,8 @@ impl TryFrom<ItemPtr> for Uuid {
     type Error = ItemPtr;
 
     fn try_from(item: ItemPtr) -> Result<Self, Self::Error> {
-        if let ItemContent::Doc(_, doc) = &item.content {
-            Ok(doc.store.options.guid.clone())
+        if let Some(guid) = item.content.as_subdoc_guid() {
+            Ok(guid.clone())
         } else {
             Err(item)
         }
@@ -557,28 +556,17 @@ mod test {
     use std::sync::{Arc, Mutex};
 
     /// Load a subdoc by guid during a transaction.
-    /// Uses unsafe to avoid borrow conflicts between Store and TransactionMut.
     fn load_subdoc(txn: &mut TransactionMut, guid: &Uuid) {
-        if let Some(item_ptr) = txn.doc.store.subdocs.get(guid).copied() {
-            unsafe {
-                let item = &mut *item_ptr.as_ptr();
-                if let ItemContent::Doc(_, doc) = &mut item.content {
-                    doc.load(txn);
-                }
-            }
+        if let Some(mut subdoc) = txn.doc.store.subdocs.remove(guid) {
+            subdoc.load(txn);
+            txn.doc.store.subdocs.insert(guid.clone(), subdoc);
         }
     }
 
     /// Destroy a subdoc by guid during a transaction.
-    /// Uses unsafe to avoid borrow conflicts between Store and TransactionMut.
     fn destroy_subdoc(txn: &mut TransactionMut, guid: &Uuid) {
-        if let Some(item_ptr) = txn.doc.store.subdocs.get(guid).copied() {
-            unsafe {
-                let item = &mut *item_ptr.as_ptr();
-                if let ItemContent::Doc(_, doc) = &mut item.content {
-                    doc.destroy(Some(txn));
-                }
-            }
+        if let Some(mut subdoc) = txn.doc.store.subdocs.remove(guid) {
+            subdoc.destroy(Some(txn));
         }
     }
 
@@ -1768,14 +1756,9 @@ mod test {
         let sub_guid = sub_doc.guid().clone();
         let _sub_uuid = map.insert(&mut txn, "sub-doc", sub_doc);
         {
-            let item_ptr = *txn.doc.store.subdocs.get(&sub_guid).unwrap();
-            unsafe {
-                let item = &mut *item_ptr.as_ptr();
-                if let ItemContent::Doc(_, sub_doc) = &mut item.content {
-                    let mut sub_txn = sub_doc.transact_mut();
-                    sub_text.push(&mut sub_txn, "sample");
-                }
-            }
+            let sub_doc = txn.doc.store.subdocs.get_mut(&sub_guid).unwrap();
+            let mut sub_txn = sub_doc.transact_mut();
+            sub_text.push(&mut sub_txn, "sample");
         }
 
         drop(txn);

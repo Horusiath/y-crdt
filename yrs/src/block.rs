@@ -870,16 +870,19 @@ impl Item {
                 txn.delete_set.insert(self.id, *len);
                 self.mark_as_deleted();
             }
-            ItemContent::Doc(parent_doc, doc) => {
+            ItemContent::Doc(parent_doc, options) => {
                 *parent_doc = Some(txn.doc().guid().clone());
-                doc.store.parent = Some(self_ptr);
-                let doc_guid = doc.store.options.guid.clone();
-                // Add to subdocs index — the Doc lives inside ItemContent,
-                // the index just stores the ItemPtr for lookup.
-                txn.doc.store.subdocs.insert(doc_guid.clone(), self_ptr);
+                let doc_guid = options.guid.clone();
+                let should_load = options.should_load;
+                // If the Doc isn't already in store.subdocs (e.g. from Prelim),
+                // create it now (e.g. from decoded Options).
+                let subdoc = txn.doc.store.subdocs
+                    .entry(doc_guid.clone())
+                    .or_insert_with(|| Doc::with_options(options.clone()));
+                subdoc.store.parent = Some(self_ptr);
                 let subdocs = txn.subdocs.get_or_init();
                 subdocs.added.insert(doc_guid.clone());
-                if doc.store.options.should_load {
+                if should_load {
                     subdocs.loaded.insert(doc_guid);
                 }
             }
@@ -1713,8 +1716,9 @@ pub enum ItemContent {
     /// Deleted elements also don't contribute to an overall length of containing collection type.
     Deleted(u32),
 
-    /// Sub-document container. Contains the parent document's guid and a child document.
-    Doc(Option<Uuid>, Doc),
+    /// Sub-document reference. Contains the parent document's guid and the subdocument's
+    /// [Options] (used for serialization). The actual [Doc] is owned by `Store.subdocs`.
+    Doc(Option<Uuid>, Options),
 
     /// Obsolete: collection of consecutively inserted stringified JSON values.
     JSON(Vec<String>),
@@ -1832,8 +1836,8 @@ impl ItemContent {
                     buf[0] = Out::Any(Any::from(v.deref()));
                     1
                 }
-                ItemContent::Doc(_, doc) => {
-                    buf[0] = Out::YDoc(doc.store.options.guid.clone());
+                ItemContent::Doc(_, opts) => {
+                    buf[0] = Out::YDoc(opts.guid.clone());
                     1
                 }
                 ItemContent::Type(c) => {
@@ -1864,19 +1868,19 @@ impl ItemContent {
         }
     }
 
-    /// Returns a reference to the subdoc if this content is a `Doc` variant.
-    pub fn as_subdoc(&self) -> Option<&Doc> {
-        if let ItemContent::Doc(_, doc) = self {
-            Some(doc)
+    /// Returns the subdoc guid if this content is a `Doc` variant.
+    pub fn as_subdoc_guid(&self) -> Option<&Uuid> {
+        if let ItemContent::Doc(_, options) = self {
+            Some(&options.guid)
         } else {
             None
         }
     }
 
-    /// Returns a mutable reference to the subdoc if this content is a `Doc` variant.
-    pub fn as_subdoc_mut(&mut self) -> Option<&mut Doc> {
-        if let ItemContent::Doc(_, doc) = self {
-            Some(doc)
+    /// Returns the subdoc options if this content is a `Doc` variant.
+    pub fn as_subdoc_options(&self) -> Option<&Options> {
+        if let ItemContent::Doc(_, options) = self {
+            Some(options)
         } else {
             None
         }
@@ -1888,7 +1892,7 @@ impl ItemContent {
             ItemContent::Any(v) => v.first().map(|a| Out::Any(a.clone())),
             ItemContent::Binary(v) => Some(Out::Any(Any::from(v.deref()))),
             ItemContent::Deleted(_) => None,
-            ItemContent::Doc(_, v) => Some(Out::YDoc(v.store.options.guid.clone())),
+            ItemContent::Doc(_, opts) => Some(Out::YDoc(opts.guid.clone())),
             ItemContent::JSON(v) => v.first().map(|v| Out::Any(Any::from(v.deref()))),
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
@@ -1903,7 +1907,7 @@ impl ItemContent {
             ItemContent::Any(v) => v.last().map(|a| Out::Any(a.clone())),
             ItemContent::Binary(v) => Some(Out::Any(Any::from(v.deref()))),
             ItemContent::Deleted(_) => None,
-            ItemContent::Doc(_, v) => Some(Out::YDoc(v.store.options.guid.clone())),
+            ItemContent::Doc(_, opts) => Some(Out::YDoc(opts.guid.clone())),
             ItemContent::JSON(v) => v.last().map(|v| Out::Any(Any::from(v.as_str()))),
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
@@ -1954,7 +1958,7 @@ impl ItemContent {
                     encoder.write_any(&any[i as usize]);
                 }
             }
-            ItemContent::Doc(_, doc) => doc.options().encode(encoder),
+            ItemContent::Doc(_, opts) => opts.encode(encoder),
         }
     }
 
@@ -1983,7 +1987,7 @@ impl ItemContent {
                     encoder.write_any(a);
                 }
             }
-            ItemContent::Doc(_, doc) => doc.options().encode(encoder),
+            ItemContent::Doc(_, opts) => opts.encode(encoder),
         }
     }
 
@@ -2028,7 +2032,7 @@ impl ItemContent {
             BLOCK_ITEM_DOC_REF_NUMBER => {
                 let mut options = Options::decode(decoder)?;
                 options.should_load = options.should_load || options.auto_load;
-                Ok(ItemContent::Doc(None, Doc::with_options(options)))
+                Ok(ItemContent::Doc(None, options))
             }
             _ => Err(Error::UnexpectedValue),
         }
@@ -2133,7 +2137,7 @@ impl Clone for ItemContent {
             ItemContent::Any(array) => ItemContent::Any(array.clone()),
             ItemContent::Binary(bytes) => ItemContent::Binary(bytes.clone()),
             ItemContent::Deleted(len) => ItemContent::Deleted(*len),
-            ItemContent::Doc(parent, subdoc) => todo!("subdoc clone"),
+            ItemContent::Doc(parent, opts) => ItemContent::Doc(parent.clone(), opts.clone()),
             ItemContent::JSON(array) => ItemContent::JSON(array.clone()),
             ItemContent::Embed(json) => ItemContent::Embed(json.clone()),
             ItemContent::Format(key, value) => ItemContent::Format(key.clone(), value.clone()),
@@ -2262,7 +2266,7 @@ impl std::fmt::Display for ItemContent {
                 TypeRef::WeakLink(s) => write!(f, "<weak({}..{})>", s.quote_start, s.quote_end),
                 _ => write!(f, "<undefined type ref>"),
             },
-            ItemContent::Doc(_, doc) => std::fmt::Display::fmt(doc, f),
+            ItemContent::Doc(_, opts) => write!(f, "Doc(guid: {})", opts.guid),
             _ => Ok(()),
         }
     }

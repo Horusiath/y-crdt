@@ -180,9 +180,7 @@ pub trait ReadTxn: Sized {
     }
 
     fn subdoc(&self, guid: &Uuid) -> Option<&Doc> {
-        let store = self.store();
-        let item = store.subdocs.get(guid)?;
-        item.content.as_subdoc()
+        self.store().subdocs.get(guid)
     }
 
     /// Returns a [TextRef] data structure stored under a given `name`. Text structures are used for
@@ -257,8 +255,8 @@ pub trait ReadTxn: Sized {
             TypeRef::XmlText => Some(Out::YXmlText(XmlTextRef::from(ptr))),
             TypeRef::SubDoc => {
                 let item = ptr.item?;
-                let doc = item.content.as_subdoc()?;
-                Some(Out::YDoc(doc.store.options.guid.clone()))
+                let guid = item.content.as_subdoc_guid()?;
+                Some(Out::YDoc(guid.clone()))
             }
             #[cfg(feature = "weak")]
             TypeRef::WeakLink(_) => Some(Out::YWeakLink(crate::WeakRef::from(ptr))),
@@ -762,9 +760,9 @@ impl<'doc> TransactionMut<'doc> {
             }
 
             match &mut item.content {
-                ItemContent::Doc(_, doc) => {
+                ItemContent::Doc(_, opts) => {
                     let subdocs = self.subdocs.get_or_init();
-                    let guid = doc.store.options.guid.clone();
+                    let guid = opts.guid.clone();
                     if !subdocs.added.remove(&guid) {
                         subdocs.removed.insert(guid);
                     }
@@ -1116,27 +1114,14 @@ impl<'doc> TransactionMut<'doc> {
         if let Some(subdocs) = self.subdocs.take() {
             let client_id = self.doc.store.options.client_id;
             let collection_id = self.doc.store.options.collection_id.clone();
-            // Update newly added subdocs with parent's client_id and collection_id.
-            // Subdocs are accessed through the index (HashMap<Uuid, ItemPtr>)
-            // and the actual Doc lives inside ItemContent::Doc of the pointed-to item.
             for guid in subdocs.added.iter() {
-                if let Some(item_ptr) = self.doc.store.subdocs.get(guid) {
-                    // SAFETY: ItemPtr is a raw pointer to a heap-allocated Item (via Box<Item>).
-                    // The item is alive as long as the block store exists.
-                    unsafe {
-                        if let Some(doc) = (*item_ptr.as_ptr()).content.as_subdoc_mut() {
-                            doc.store.options.client_id = client_id;
-                            if doc.store.options.collection_id.is_none() {
-                                doc.store.options.collection_id = collection_id.clone();
-                            }
-                        }
+                if let Some(subdoc) = self.doc.store.subdocs.get_mut(guid) {
+                    subdoc.store.options.client_id = client_id;
+                    if subdoc.store.options.collection_id.is_none() {
+                        subdoc.store.options.collection_id = collection_id.clone();
                     }
                 }
             }
-            // Track which guids were replaced (both added and removed) so we can
-            // skip them in the final destruction pass. When destroy() is called on
-            // a subdoc, it creates a replacement Doc in the same item and marks
-            // the guid as both added and removed.
             let replaced: HashSet<_> = subdocs
                 .removed
                 .intersection(&subdocs.added)
@@ -1164,17 +1149,11 @@ impl<'doc> TransactionMut<'doc> {
             };
 
             for guid in removed.iter() {
-                // Skip guids that were replaced by destroy() - the replacement
-                // Doc should remain in the index and not be destroyed again.
                 if replaced.contains(guid) {
                     continue;
                 }
-                if let Some(item_ptr) = self.doc.store.subdocs.remove(guid) {
-                    unsafe {
-                        if let Some(doc) = (*item_ptr.as_ptr()).content.as_subdoc_mut() {
-                            doc.destroy(Some(self));
-                        }
-                    }
+                if let Some(mut subdoc) = self.doc.store.subdocs.remove(guid) {
+                    subdoc.destroy(Some(self));
                 }
             }
         }

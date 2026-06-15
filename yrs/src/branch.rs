@@ -279,8 +279,7 @@ impl Branch {
 
     pub fn as_subdoc_guid(&self) -> Option<crate::Uuid> {
         let item = self.item?;
-        let doc = item.content.as_subdoc()?;
-        Some(doc.store.options.guid.clone())
+        item.content.as_subdoc_guid().cloned()
     }
 
     /// Returns an identifier of an underlying complex data type (eg. is it an Array or a Map).

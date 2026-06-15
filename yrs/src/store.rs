@@ -44,9 +44,8 @@ pub struct Store {
     /// into `blocks`.
     pub(crate) pending_ds: Option<IdSet>,
 
-    /// Index of subdocs: maps guid to the ItemPtr containing the subdoc.
-    /// The actual Doc lives inside ItemContent::Doc of the pointed-to item.
-    pub(crate) subdocs: HashMap<Uuid, ItemPtr>,
+    /// Sub-documents owned by this store, keyed by their guid.
+    pub(crate) subdocs: HashMap<Uuid, Doc>,
 
     pub(crate) events: Option<Box<StoreEvents>>,
 
@@ -348,12 +347,12 @@ impl Store {
 
     /// Returns a collection of sub documents linked within the structures of this document store.
     pub fn subdocs(&self) -> impl Iterator<Item = &Doc> {
-        self.subdocs.values().filter_map(|item_ptr| item_ptr.content.as_subdoc())
+        self.subdocs.values()
     }
 
     /// Returns a collection of sub documents linked within the structures of this document store.
     pub fn subdocs_mut(&mut self) -> impl Iterator<Item = &mut Doc> {
-        self.subdocs.values_mut().filter_map(|item_ptr| item_ptr.content.as_subdoc_mut())
+        self.subdocs.values_mut()
     }
 
     /// Returns a collection of globally unique identifiers of sub documents linked within
@@ -364,12 +363,12 @@ impl Store {
 
     /// Returns a mutable reference to a subdoc by guid.
     pub(crate) fn subdoc_mut(&mut self, guid: &Uuid) -> Option<&mut Doc> {
-        self.subdocs.get_mut(guid)?.content.as_subdoc_mut()
+        self.subdocs.get_mut(guid)
     }
 
     /// Returns a reference to a subdoc by guid.
     pub(crate) fn subdoc(&self, guid: &Uuid) -> Option<&Doc> {
-        self.subdocs.get(guid)?.content.as_subdoc()
+        self.subdocs.get(guid)
     }
 
     pub(crate) fn follow_redone(&self, id: &ID) -> Option<ItemSlice> {
