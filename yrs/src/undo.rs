@@ -651,13 +651,13 @@ where
         let deleted: Vec<_> = item.insertions.blocks().collect(&txn);
         for slice in deleted {
             if let BlockSlice::Item(slice) = slice {
-                let mut item = txn.doc.store.materialize(slice);
+                let mut item = txn.doc.materialize(slice);
                 if item.redone.is_some() {
-                    let slice = match txn.store_mut().follow_redone(item.id()) {
+                    let slice = match txn.doc.follow_redone(item.id()) {
                         Some(slice) => slice,
                         None => return false,
                     };
-                    item = txn.doc.store.materialize(slice);
+                    item = txn.doc.materialize(slice);
                 }
 
                 if !item.is_deleted() && scope.iter().any(|b| b.is_parent_of(Some(item))) {
@@ -669,7 +669,7 @@ where
         let mut deleted = item.deletions.blocks();
         while let Some(slice) = deleted.next(&txn) {
             if let BlockSlice::Item(slice) = slice {
-                let ptr = txn.doc.store.materialize(slice);
+                let ptr = txn.doc.materialize(slice);
                 if scope.iter().any(|b| b.is_parent_of(Some(ptr)))
                     && !item.insertions.contains(ptr.id())
                 // Never redo structs in stackItem.insertions because they were created and deleted in the same capture interval.

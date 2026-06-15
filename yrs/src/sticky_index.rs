@@ -158,7 +158,7 @@ impl StickyIndex {
 
         match &self.scope {
             IndexScope::Relative(right_id) => {
-                let store = txn.store();
+                let store = txn.doc();
                 if store.blocks.get_clock(&right_id.client) <= right_id.clock {
                     // type does not exist yet
                     return None;
@@ -192,7 +192,7 @@ impl StickyIndex {
                 }
             }
             IndexScope::Nested(id) => {
-                let store = txn.store();
+                let store = txn.doc();
                 if store.blocks.get_clock(&id.client) <= id.clock {
                     // type does not exist yet
                     return None;
@@ -210,7 +210,7 @@ impl StickyIndex {
                 } // else - branch remains null
             }
             IndexScope::Root(name) => {
-                branch = txn.store().get_type(name.clone());
+                branch = txn.doc().get_type(name.clone());
                 if let Some(ptr) = branch.as_ref() {
                     index = if self.assoc == Assoc::After {
                         ptr.content_len
@@ -288,7 +288,7 @@ impl StickyIndex {
         let branch = match &self.scope {
             IndexScope::Relative(id) => {
                 // position relative to existing block
-                let item = txn.store().blocks.get_item(id)?;
+                let item = txn.doc().blocks.get_item(id)?;
                 return if self.assoc == Assoc::After && &item.last_id() == id {
                     item.right
                 } else {
@@ -297,12 +297,12 @@ impl StickyIndex {
             }
             IndexScope::Nested(id) => {
                 // position at the beginning/end of a nested type
-                let item = txn.store().blocks.get_item(id)?;
+                let item = txn.doc().blocks.get_item(id)?;
                 item.as_branch()?
             }
             IndexScope::Root(name) => {
                 // position at the beginning/end of a root type
-                let branch = txn.store().types.get(name.as_ref())?;
+                let branch = txn.doc().types.get(name.as_ref())?;
                 BranchPtr::from(branch)
             }
         };

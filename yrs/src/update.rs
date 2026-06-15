@@ -6,7 +6,7 @@ use crate::branch::BranchPtr;
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
 use crate::id_set::IdSet;
-use crate::store::Store;
+use crate::Doc;
 use crate::transaction::TransactionMut;
 use crate::types::{TypePtr, TypeRef};
 use crate::updates::decoder::{Decode, Decoder};
@@ -337,14 +337,14 @@ impl Update {
                     let len = stack_head.len();
                     let local_clock = state
                         .entry(id.client)
-                        .or_insert_with(|| txn.doc.store.blocks.get_clock(&id.client));
+                        .or_insert_with(|| txn.doc.blocks.get_clock(&id.client));
                     let offset = (*local_clock as i32) - (id.clock as i32);
 
                     if let Some(missing) =
-                        Self::missing_dependency(&mut stack_head, &mut txn.doc.store)?
+                        Self::missing_dependency(&mut stack_head, txn.doc)?
                     {
                         next =
-                            picker.switch(stack_head, &missing, |c| txn.doc.store.blocks.get_clock(c));
+                            picker.switch(stack_head, &missing, |c| txn.doc.blocks.get_clock(c));
                         continue;
                     } else {
                         // block has no missing dependencies, therefore we can integrate it right away
@@ -380,7 +380,7 @@ impl Update {
 
     fn missing_dependency(
         block: &mut Block,
-        store: &mut Store,
+        store: &mut Doc,
     ) -> Result<Option<ClientID>, UpdateError> {
         if let Block::Item(item) = block {
             if let Some(origin_left) = &item.origin {

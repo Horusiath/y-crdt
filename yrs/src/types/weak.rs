@@ -560,7 +560,7 @@ impl LinkSource {
             // for maps, advance to most recent item
             if let Some(mut last) = Some(curr).to_iter().last() {
                 last.info.set_linked();
-                let linked_by = txn.doc.store.linked_by.entry(last).or_default();
+                let linked_by = txn.doc.linked_by.entry(last).or_default();
                 linked_by.insert(inner_ref);
             }
         } else {
@@ -570,7 +570,7 @@ impl LinkSource {
             let mut i = Some(curr).to_iter().within_range(from, to);
             while let Some(slice) = i.next() {
                 let mut item = if !slice.adjacent() {
-                    txn.doc.store.materialize(slice)
+                    txn.doc.materialize(slice)
                 } else {
                     slice.ptr
                 };
@@ -578,7 +578,7 @@ impl LinkSource {
                     first = false;
                 }
                 item.info.set_linked();
-                let linked_by = txn.doc.store.linked_by.entry(item).or_default();
+                let linked_by = txn.doc.linked_by.entry(item).or_default();
                 linked_by.insert(inner_ref);
             }
         }
@@ -702,7 +702,7 @@ pub trait Quotable: AsRef<Branch> + Sized {
             Bound::Excluded(&i) => Some((i, Assoc::Before)),
             Bound::Unbounded => None,
         };
-        let encoding = txn.store().options.offset_kind;
+        let encoding = txn.doc().options.offset_kind;
         let mut start_index = 0;
         let mut remaining = start_index;
         let mut curr = None;
@@ -798,7 +798,7 @@ pub(crate) fn join_linked_range(mut block: ItemPtr, txn: &mut TransactionMut) {
     // we checked if left and right exists before this method call
     let left = item.left.unwrap();
     let right = item.right.unwrap();
-    let all_links = &mut txn.doc.store.linked_by;
+    let all_links = &mut txn.doc.linked_by;
     let left_links = all_links.get(&left);
     let right_links = all_links.get(&right);
     let mut common = HashSet::new();

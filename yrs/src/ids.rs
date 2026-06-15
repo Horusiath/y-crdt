@@ -1228,7 +1228,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..5])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(0, 5)]);
     }
 
@@ -1244,7 +1244,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [3..7])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(3, 4)]); // clocks 3,4,5,6
     }
 
@@ -1260,7 +1260,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [2..5])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(2, 3)]); // clocks 2,3,4
     }
 
@@ -1276,7 +1276,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..3])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(0, 3)]); // clocks 0,1,2
     }
 
@@ -1292,7 +1292,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [1..3, 7..9])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(1, 2), (7, 2)]);
     }
 
@@ -1317,7 +1317,7 @@ mod test {
         let txn = d1.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [1..4]), (ClientID::new(2), [0..2])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(1, 3), (0, 2)]);
     }
 
@@ -1348,7 +1348,7 @@ mod test {
         let txn = d1.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..5])]);
 
-        let slices: Vec<_> = set.iter_blocks(&txn.store().blocks).collect();
+        let slices: Vec<_> = set.iter_blocks(&txn.doc().blocks).collect();
         // Verify all clocks 0..5 are covered
         let total_len: u32 = slices.iter().map(|s| s.len()).sum();
         assert_eq!(total_len, 5);
@@ -1368,7 +1368,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..100])]); // range far past actual blocks
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert_eq!(result, vec![(0, 3)]);
     }
 
@@ -1382,7 +1382,7 @@ mod test {
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(999), [0..10])]);
 
-        let result = collect_slices(&set, &txn.store().blocks);
+        let result = collect_slices(&set, &txn.doc().blocks);
         assert!(result.is_empty());
     }
 
@@ -1396,7 +1396,7 @@ mod test {
         let txn = doc.transact();
         let empty = IdSet::default();
 
-        let result = collect_slices(&empty, &txn.store().blocks);
+        let result = collect_slices(&empty, &txn.doc().blocks);
         assert!(result.is_empty());
     }
 
@@ -1424,7 +1424,7 @@ mod test {
             (ClientID::new(2), vec![3..6]), // client=2: one partial range into the 8-char block
         ]);
 
-        let result = collect_slices(&map, &txn.store().blocks);
+        let result = collect_slices(&map, &txn.doc().blocks);
         // client=1 ranges: (2, 3) and (8, 2); client=2 range: (3, 3)
         assert_eq!(result, vec![(2, 3), (8, 2), (3, 3)]);
     }

@@ -743,7 +743,7 @@ fn find_position(this: BranchPtr, txn: &mut TransactionMut, index: u32) -> Optio
     };
 
     let mut format_ptrs = HashMap::new();
-    let store = txn.store_mut();
+    let store = &mut *txn.doc;
     let encoding = store.options.offset_kind;
     let mut remaining = index;
     while let Some(right) = pos.right {
@@ -804,7 +804,7 @@ fn find_position(this: BranchPtr, txn: &mut TransactionMut, index: u32) -> Optio
 }
 
 fn remove(txn: &mut TransactionMut, pos: &mut ItemPosition, len: u32) {
-    let encoding = txn.store().options.offset_kind;
+    let encoding = txn.doc().options.offset_kind;
     let mut remaining = len;
     let start = pos.right.clone();
     let start_attrs = pos.current_attrs.clone();
@@ -826,7 +826,7 @@ fn remove(txn: &mut TransactionMut, pos: &mut ItemPosition, len: u32) {
                             len
                         };
                         remaining = 0;
-                        txn.store_mut()
+                        txn.doc
                             .blocks
                             .split_block(ptr, offset, OffsetKind::Utf16);
                     } else {
@@ -881,7 +881,7 @@ fn insert_format(
 ) {
     minimize_attr_changes(pos, &attrs);
     let mut negated_attrs = insert_attributes(this, txn, pos, attrs.clone()); //TODO: remove `attrs.clone()`
-    let encoding = txn.store().options.offset_kind;
+    let encoding = txn.doc().options.offset_kind;
     // iterate until first non-format or null is found
     // delete all formats with attributes[format.key] != null
     // also check the attributes after the first non-format as we do not want to insert redundant
@@ -909,7 +909,7 @@ fn insert_format(
                         // split block
                         let offset = s.block_offset(len, encoding);
                         let new_right =
-                            txn.store_mut()
+                            txn.doc
                                 .blocks
                                 .split_block(right, offset, OffsetKind::Utf16);
                         pos.left = Some(right);
@@ -922,7 +922,7 @@ fn insert_format(
                     let content_len = right.len();
                     if len < content_len {
                         let new_right =
-                            txn.store_mut()
+                            txn.doc
                                 .blocks
                                 .split_block(right, len, OffsetKind::Utf16);
                         pos.left = Some(right);
@@ -969,7 +969,7 @@ fn insert_attributes(
     attrs: Attrs,
 ) -> Attrs {
     let mut negated_attrs = HashMap::with_capacity(attrs.len());
-    let mut store = txn.store_mut();
+    let mut store = &mut *txn.doc;
     for (k, v) in attrs {
         let current_value = pos
             .current_attrs
@@ -996,7 +996,7 @@ fn insert_attributes(
             let item_ptr = txn.integrate_item(item, 0);
             pos.right = item_ptr;
             pos.forward();
-            store = txn.store_mut();
+            store = &mut *txn.doc;
         }
     }
     negated_attrs
@@ -1026,7 +1026,7 @@ fn insert_negated_attributes(
         }
     }
 
-    let mut store = txn.store_mut();
+    let mut store = &mut *txn.doc;
     for (k, v) in attrs {
         let client_id = store.options.client_id;
         let parent = this.into();
@@ -1044,7 +1044,7 @@ fn insert_negated_attributes(
         let item_ptr = txn.integrate_item(item, 0);
         pos.right = item_ptr;
         pos.forward();
-        store = txn.store_mut();
+        store = &mut *txn.doc;
     }
 }
 
@@ -1311,7 +1311,7 @@ impl TextEvent {
             }
         }
 
-        let encoding = txn.store().options.offset_kind;
+        let encoding = txn.doc().options.offset_kind;
         let mut old_attrs = HashMap::new();
         let mut asm = DeltaAssembler::default();
         let mut current = target.start;

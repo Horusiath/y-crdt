@@ -391,7 +391,7 @@ impl Branch {
         mut ptr: Option<ItemPtr>,
         mut index: u32,
     ) -> (Option<ItemPtr>, Option<ItemPtr>) {
-        let encoding = txn.doc.store.options.offset_kind;
+        let encoding = txn.doc.options.offset_kind;
         while let Some(item) = ptr {
             let content_len = item.content_len(encoding);
             if !item.is_deleted() && item.is_countable() {
@@ -405,7 +405,7 @@ impl Branch {
                     } else {
                         index
                     };
-                    let right = txn.doc.store.blocks.split_block(item, index, encoding);
+                    let right = txn.doc.blocks.split_block(item, index, encoding);
                     return (ptr, right);
                 }
                 index -= content_len;
@@ -426,7 +426,7 @@ impl Branch {
         };
         while remaining > 0 {
             if let Some(item) = ptr {
-                let encoding = txn.store().options.offset_kind;
+                let encoding = txn.doc().options.offset_kind;
                 if !item.is_deleted() {
                     let content_len = item.content_len(encoding);
                     let (l, r) = if remaining < content_len {
@@ -436,7 +436,7 @@ impl Branch {
                             remaining
                         };
                         remaining = 0;
-                        let new_right = txn.doc.store.blocks.split_block(item, offset, encoding);
+                        let new_right = txn.doc.blocks.split_block(item, offset, encoding);
                         (item, new_right)
                     } else {
                         remaining -= content_len;
@@ -686,7 +686,7 @@ impl<S: RootRef> Root<S> {
     /// Returns a reference to a shared root-level collection current [Root] represents, or creates
     /// it if it wasn't instantiated before.
     pub fn get_or_create<T: WriteTxn>(&self, txn: &mut T) -> S {
-        let store = txn.store_mut();
+        let store = txn.doc_mut();
         let branch = store.get_or_create_type(self.name.clone(), S::type_ref());
         S::from(branch)
     }
@@ -696,7 +696,7 @@ impl<S: SharedRef> Root<S> {
     /// Returns a reference to a shared collection current [Root] represents, or returns `None` if
     /// that collection hasn't been instantiated yet.
     pub fn get<T: ReadTxn>(&self, txn: &T) -> Option<S> {
-        txn.store().get_type(self.name.clone()).map(S::from)
+        txn.doc().get_type(self.name.clone()).map(S::from)
     }
 }
 
@@ -757,7 +757,7 @@ impl<S: SharedRef> Nested<S> {
     /// If the referenced collection has been deleted or was not yet present in current transaction
     /// scope i.e. due to missing update, a `None` will be returned.  
     pub fn get<T: ReadTxn>(&self, txn: &T) -> Option<S> {
-        let store = txn.store();
+        let store = txn.doc();
         let block = store.blocks.get_block(&self.id)?;
         if let Block::Item(block) = block.as_ref() {
             if let ItemContent::Type(branch) = &block.content {
@@ -915,11 +915,11 @@ pub enum BranchID {
 impl BranchID {
     #[inline]
     pub fn get_root<T: ReadTxn, K: Borrow<str>>(txn: &T, name: K) -> Option<BranchPtr> {
-        txn.store().get_type(name)
+        txn.doc().get_type(name)
     }
 
     pub fn get_nested<T: ReadTxn>(txn: &T, id: &ID) -> Option<BranchPtr> {
-        let block = txn.store().blocks.get_block(id)?;
+        let block = txn.doc().blocks.get_block(id)?;
         if let Block::Item(block) = block.as_ref() {
             if let ItemContent::Type(branch) = &block.content {
                 return Some(BranchPtr::from(&*branch));

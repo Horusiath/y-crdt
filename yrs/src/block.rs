@@ -4,7 +4,6 @@ use crate::doc::OffsetKind;
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
 use crate::slice::{BlockSlice, ItemSlice};
-use crate::store::Store;
 use crate::transaction::TransactionMut;
 use crate::types::text::update_current_attributes;
 use crate::types::{Attrs, TypePtr, TypeRef};
@@ -458,8 +457,8 @@ impl ItemPtr {
         let self_ptr = self.clone();
         let item = self.deref_mut();
         if let Some(redone) = item.redone.as_ref() {
-            let slice = txn.doc.store.blocks.get_item_clean_start(redone)?;
-            return Some(txn.doc.store.materialize(slice));
+            let slice = txn.doc.blocks.get_item_clean_start(redone)?;
+            return Some(txn.doc.materialize(slice));
         }
 
         let mut parent_block = item.parent.as_branch().and_then(|b| b.item);
@@ -479,10 +478,9 @@ impl ItemPtr {
                 while let Some(id) = redone.as_ref() {
                     parent_block = txn
                         .doc
-                        .store
                         .blocks
                         .get_item_clean_start(id)
-                        .map(|slice| txn.doc.store.materialize(slice));
+                        .map(|slice| txn.doc.materialize(slice));
                     redone = parent_block.and_then(|ptr| ptr.redone);
                 }
             }
@@ -517,10 +515,10 @@ impl ItemPtr {
                             left = Some(left_right);
                             while let Some(item) = left.as_deref() {
                                 if let Some(id) = item.redone.as_ref() {
-                                    left = match txn.doc.store.blocks.get_item_clean_start(id) {
+                                    left = match txn.doc.blocks.get_item_clean_start(id) {
                                         None => break,
                                         Some(slice) => {
-                                            let ptr = txn.doc.store.materialize(slice);
+                                            let ptr = txn.doc.materialize(slice);
                                             txn.merge_blocks.push(ptr.id().clone());
                                             Some(ptr)
                                         }
@@ -556,8 +554,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         left_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.doc.store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.doc.store.materialize(s))
+                            let slice = txn.doc.blocks.get_item_clean_start(redone);
+                            slice.map(|s| txn.doc.materialize(s))
                         } else {
                             None
                         };
@@ -582,8 +580,8 @@ impl ItemPtr {
                     let p = trace.parent.as_branch().and_then(|p| p.item);
                     if parent_block != p {
                         right_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.doc.store.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.doc.store.materialize(s))
+                            let slice = txn.doc.blocks.get_item_clean_start(redone);
+                            slice.map(|s| txn.doc.materialize(s))
                         } else {
                             None
                         };
@@ -602,8 +600,8 @@ impl ItemPtr {
             }
         }
 
-        let next_clock = txn.doc.store.get_local_state();
-        let next_id = ID::new(txn.doc.store.options.client_id, next_clock);
+        let next_clock = txn.doc.get_local_state();
+        let next_id = ID::new(txn.doc.options.client_id, next_clock);
         let mut redone_item = Item::new(
             next_id,
             left,
@@ -835,7 +833,7 @@ impl Item {
         BlockRange::new(self.id, self.len)
     }
 
-    fn trim(&mut self, offset: u32, store: &mut Store) {
+    fn trim(&mut self, offset: u32, store: &mut Doc) {
         // offset could be > 0 only in context of Update::integrate,
         // in such case offset kind in use always means Yjs-compatible offset (utf-16)
         self.id.clock += offset;
@@ -876,10 +874,10 @@ impl Item {
                 let should_load = options.should_load;
                 // If the Doc isn't already in store.subdocs (e.g. from Prelim),
                 // create it now (e.g. from decoded Options).
-                let subdoc = txn.doc.store.subdocs
+                let subdoc = txn.doc.subdocs
                     .entry(doc_guid.clone())
                     .or_insert_with(|| Doc::with_options(options.clone()));
-                subdoc.store.parent = Some(self_ptr);
+                subdoc.parent = Some(self_ptr);
                 let subdocs = txn.subdocs.get_or_init();
                 subdocs.added.insert(doc_guid.clone());
                 if should_load {
@@ -909,7 +907,7 @@ impl Item {
     fn inherit_links(mut curr: ItemPtr, mut left: ItemPtr, txn: &mut TransactionMut) {
         left.info.clear_linked();
         curr.info.set_linked();
-        let all_links = &mut txn.doc.store.linked_by;
+        let all_links = &mut txn.doc.linked_by;
         if let Some(linked_by) = all_links.remove(&left) {
             all_links.insert(curr, linked_by);
         }
@@ -1004,10 +1002,9 @@ impl<'doc> TransactionMut<'doc> {
     /// If it returns true, it means that the block should be deleted after being added to a block store.
     pub(crate) fn integrate_item(&mut self, mut item: Box<Item>, offset: u32) -> Option<ItemPtr> {
         let mut item_ptr = ItemPtr::from(&*item);
-        let store = &mut self.doc.store;
-        let encoding = store.options.offset_kind;
+        let encoding = self.doc.options.offset_kind;
         if offset > 0 {
-            item.trim(offset, store);
+            item.trim(offset, self.doc);
         }
 
         // always try to copy over parent_sub from neighbor - this way we can reuse Arc<str> instead
@@ -1021,12 +1018,12 @@ impl<'doc> TransactionMut<'doc> {
         let mut parent = match &item.parent {
             TypePtr::Branch(branch) => *branch,
             TypePtr::Named(name) => {
-                let branch = store.get_or_create_type(name.clone(), TypeRef::Undefined);
+                let branch = self.doc.get_or_create_type(name.clone(), TypeRef::Undefined);
                 item.parent = TypePtr::Branch(branch);
                 branch
             }
             TypePtr::ID(id)
-                if let Some(branch) = store.blocks.get_item(id).and_then(|i| i.as_branch()) =>
+                if let Some(branch) = self.doc.blocks.get_item(id).and_then(|i| i.as_branch()) =>
             {
                 item.parent = TypePtr::Branch(branch);
                 branch
@@ -1038,7 +1035,7 @@ impl<'doc> TransactionMut<'doc> {
         };
 
         if item.detect_conflict() {
-            item.resolve_conflict(&mut store.blocks);
+            item.resolve_conflict(&mut self.doc.blocks);
         }
 
         // reconnect left/right + update parent map/start if necessary
@@ -1093,7 +1090,7 @@ impl<'doc> TransactionMut<'doc> {
             }
         }
         self.insert_set.insert(item.id, item.len);
-        self.doc.store.blocks.push(Block::Item(item));
+        self.doc.blocks.push(Block::Item(item));
         let item = &mut *item_ptr;
 
         item.integrate_content(self);
@@ -1103,7 +1100,6 @@ impl<'doc> TransactionMut<'doc> {
         if item.info.is_linked() {
             if let Some(links) = self
                 .doc
-                .store
                 .linked_by
                 .get(&ItemPtr::from(&*item))
                 .cloned()
@@ -1129,7 +1125,7 @@ impl<'doc> TransactionMut<'doc> {
         }
         self.delete_set.insert(gc.id(), gc.len);
         self.insert_set.insert(gc.id(), gc.len);
-        self.doc.store.blocks.push(Block::GC(gc));
+        self.doc.blocks.push(Block::GC(gc));
     }
 
     pub(crate) fn integrate_skip(&mut self, mut skip: BlockRange, offset: u32) {
@@ -1137,7 +1133,7 @@ impl<'doc> TransactionMut<'doc> {
             skip.clock += offset;
             skip.len -= offset;
         }
-        let blocks = &mut self.doc.store.blocks;
+        let blocks = &mut self.doc.blocks;
         blocks.skips.insert(skip.id(), skip.len);
         blocks.push(Block::Skip(skip));
     }
@@ -1717,7 +1713,7 @@ pub enum ItemContent {
     Deleted(u32),
 
     /// Sub-document reference. Contains the parent document's guid and the subdocument's
-    /// [Options] (used for serialization). The actual [Doc] is owned by `Store.subdocs`.
+    /// [Options] (used for serialization). The actual [Doc] is owned by `Doc.subdocs`.
     Doc(Option<Uuid>, Options),
 
     /// Obsolete: collection of consecutively inserted stringified JSON values.

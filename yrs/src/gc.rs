@@ -1,5 +1,5 @@
 use crate::block::{Block, ClientID};
-use crate::{IdSet, Store, TransactionMut, ID};
+use crate::{Doc, IdSet, TransactionMut, ID};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -11,7 +11,7 @@ impl GCCollector {
     /// Garbage collect all blocks deleted within current transaction scope.
     pub fn collect(txn: &mut TransactionMut) {
         let mut gc = Self::default();
-        gc.mark_in_scope(&mut txn.doc.store, None, &txn.delete_set);
+        gc.mark_in_scope(&mut txn.doc, None, &txn.delete_set);
         gc.collect_marked(txn);
     }
 
@@ -20,7 +20,7 @@ impl GCCollector {
         let mut gc = Self::default();
         match delete_set {
             None => gc.mark_all(txn),
-            Some(ds) => gc.mark_in_scope(&mut txn.doc.store, Some(&mut txn.merge_blocks), ds),
+            Some(ds) => gc.mark_in_scope(&mut txn.doc, Some(&mut txn.merge_blocks), ds),
         }
         gc.collect_marked(txn);
     }
@@ -28,7 +28,7 @@ impl GCCollector {
     /// Mark deleted items based on a provided delete set.
     fn mark_in_scope(
         &mut self,
-        store: &mut Store,
+        store: &mut Doc,
         mut merge_blocks: Option<&mut Vec<ID>>,
         delete_set: &IdSet,
     ) {
@@ -61,7 +61,7 @@ impl GCCollector {
     }
 
     fn mark_all(&mut self, txn: &mut TransactionMut) {
-        for (_, client_blocks) in txn.doc.store.blocks.iter_mut() {
+        for (_, client_blocks) in txn.doc.blocks.iter_mut() {
             for mut block in client_blocks.iter() {
                 if let Block::Item(item) = block.as_mut() {
                     if item.is_deleted() {
@@ -82,7 +82,7 @@ impl GCCollector {
     /// Garbage collects all items marked for GC.
     fn collect_marked(self, txn: &mut TransactionMut) {
         for (client_id, clocks) in self.marked.into_iter() {
-            let client = txn.doc.store.blocks.get_client_blocks_mut(client_id);
+            let client = txn.doc.blocks.get_client_blocks_mut(client_id);
             for clock in clocks {
                 if let Some(index) = client.find_index(clock) {
                     let block = unsafe { client.get(index).unwrap_unchecked() }.as_mut();

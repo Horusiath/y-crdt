@@ -9,7 +9,6 @@ use crate::block::{Block, ClientID, Item, ItemContent};
 use crate::branch::Branch;
 use crate::encoding::read::Read;
 use crate::id_set::IdSet;
-use crate::store::Store;
 use crate::test_utils::Blocks;
 use crate::types::xml::XmlFragment;
 use crate::types::{ToJson, TypePtr, TypeRef};
@@ -382,8 +381,8 @@ fn roundtrip_v1(payload: &[u8], expected: &Vec<Block>) {
     let blocks: Vec<&Block> = Blocks::new(&u.blocks).collect();
     assert_eq!(blocks, expected, "failed to decode V1");
 
-    let store: Store = u.into();
-    let serialized = store.encode_v1();
+    let doc: Doc = u.into();
+    let serialized = doc.encode_v1();
     assert_eq!(serialized, payload, "failed to encode V1");
 }
 
@@ -394,8 +393,8 @@ fn roundtrip_v2(payload: &[u8], expected: &Vec<Block>) {
     let blocks: Vec<&Block> = Blocks::new(&u.blocks).collect();
     assert_eq!(blocks, expected, "failed to decode V2");
 
-    let store: Store = u.into();
-    let serialized = store.encode_v2();
+    let doc: Doc = u.into();
+    let serialized = doc.encode_v2();
     assert_eq!(serialized, payload, "failed to encode V2");
 }
 

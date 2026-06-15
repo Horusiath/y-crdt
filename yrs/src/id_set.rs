@@ -4,7 +4,7 @@ use crate::encoding::read::Error;
 use crate::ids::{BlockSliceIter, IdMapInner, IdRanges};
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
-use crate::store::Store;
+use crate::Doc;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::ReadTxn;
@@ -447,7 +447,7 @@ pub(crate) trait DeleteSet {
     /// the delete set itself.
     fn from_store(store: &BlockStore) -> Self;
 
-    fn try_squash_with(&mut self, store: &mut Store);
+    fn try_squash_with(&mut self, store: &mut Doc);
 
     fn blocks(&self) -> Blocks<'_>;
 }
@@ -472,7 +472,7 @@ impl DeleteSet for IdSet {
         set
     }
 
-    fn try_squash_with(&mut self, store: &mut Store) {
+    fn try_squash_with(&mut self, store: &mut Doc) {
         // try to merge deleted / gc'd items
         for (&client, range) in self.0.iter() {
             let blocks = store.blocks.get_client_blocks_mut(client);
@@ -531,7 +531,7 @@ impl<'ds> TxnIterator for Blocks<'ds> {
         if let Some(r) = self.current_range.clone() {
             let mut block = if let Some(idx) = self.current_index.as_mut() {
                 if let Some(block) = txn
-                    .store()
+                    .doc()
                     .blocks
                     .get_client(&self.current_client_id?)
                     .unwrap()
@@ -547,7 +547,7 @@ impl<'ds> TxnIterator for Blocks<'ds> {
             } else {
                 // first block for a particular client
                 let list = txn
-                    .store()
+                    .doc()
                     .blocks
                     .get_client(&self.current_client_id?)
                     .unwrap();
@@ -1074,7 +1074,7 @@ pub(crate) mod test {
             let mut i = 0;
             let mut deleted = s.delete_set.blocks();
             while let Some(BlockSlice::Item(b)) = deleted.next(&txn) {
-                let item = txn.doc.store.materialize(b);
+                let item = txn.doc.materialize(b);
                 if let ItemContent::String(str) = &item.content {
                     let t = (
                         item.is_deleted(),

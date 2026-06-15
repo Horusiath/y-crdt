@@ -94,7 +94,7 @@ impl From<ItemSlice> for BlockSlice {
 /// blocks without need to splice them.
 ///
 /// If an underlying [Item] needs to be spliced to fit the boundaries defined by a corresponding
-/// [ItemSlice], this can be done with help of transaction (see: [Store::materialize]).
+/// [ItemSlice], this can be done with help of transaction (see: [Doc::materialize]).
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct ItemSlice {
     pub ptr: ItemPtr,

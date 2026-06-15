@@ -95,7 +95,7 @@ impl BlockIter {
             self.rel = 0;
         }
 
-        let encoding = txn.store().options.offset_kind;
+        let encoding = txn.doc().options.offset_kind;
         while self.can_forward(item, len) {
             if item.is_none() {
                 return false;
@@ -132,7 +132,7 @@ impl BlockIter {
             panic!("Length exceeded");
         }
         self.index -= len;
-        let encoding = txn.store().options.offset_kind;
+        let encoding = txn.doc().options.offset_kind;
         if self.reached_end {
             if let Some(next_item) = self.next_item.as_deref() {
                 self.rel = if next_item.is_countable() && !next_item.is_deleted() {
@@ -189,7 +189,7 @@ impl BlockIter {
             panic!("Length exceeded");
         }
 
-        let encoding = txn.store().options.offset_kind;
+        let encoding = txn.doc().options.offset_kind;
         let mut i: &Item;
         while len > 0 {
             while let Some(block) = item.as_deref() {
@@ -198,7 +198,7 @@ impl BlockIter {
                     if self.rel > 0 {
                         let mut id = i.id.clone();
                         id.clock += self.rel;
-                        let store = txn.store_mut();
+                        let store = &mut *txn.doc;
                         item = store
                             .blocks
                             .get_item_clean_start(&id)
@@ -209,7 +209,7 @@ impl BlockIter {
                     if len < i.content_len(encoding) {
                         let mut id = i.id.clone();
                         id.clock += len;
-                        let store = txn.store_mut();
+                        let store = &mut *txn.doc;
                         store
                             .blocks
                             .get_item_clean_start(&id)
@@ -245,7 +245,7 @@ impl BlockIter {
         }
         self.index += len;
         let mut next_item = self.next_item;
-        let encoding = txn.store().options.offset_kind;
+        let encoding = txn.doc().options.offset_kind;
         let mut read = 0u32;
         while len > 0 {
             if !self.reached_end {
@@ -300,7 +300,7 @@ impl BlockIter {
             if let Some(ptr) = self.next_item {
                 let mut item_id = ptr.id().clone();
                 item_id.clock += self.rel;
-                let store = txn.store_mut();
+                let store = &mut *txn.doc;
                 self.next_item = store
                     .blocks
                     .get_item_clean_start(&item_id)
@@ -326,7 +326,7 @@ impl BlockIter {
     ) -> Option<ItemPtr> {
         self.split_rel(txn);
         let id = {
-            let store = txn.store();
+            let store = txn.doc();
             let client_id = store.options.client_id;
             let clock = store.blocks.get_clock(&client_id);
             ID::new(client_id, clock)

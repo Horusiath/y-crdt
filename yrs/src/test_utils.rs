@@ -11,7 +11,7 @@ use crate::transaction::ReadTxn;
 use crate::update::BlockSet;
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-use crate::{Doc, Options, StateVector, Store, Update};
+use crate::{Doc, Options, StateVector, Update};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";
 
@@ -423,8 +423,8 @@ impl TestConnector {
             let a = p1.doc.transact();
             let b = p2.doc.transact();
 
-            let astore = a.store();
-            let bstore = b.store();
+            let astore = a.doc();
+            let bstore = b.doc();
             let mut all_clients = HashSet::new();
             for (&client, _) in astore.blocks.iter() {
                 all_clients.insert(client);
@@ -604,20 +604,20 @@ impl<'a> Iterator for Blocks<'a> {
     }
 }
 
-impl Into<Store> for Update {
-    fn into(self) -> Store {
+impl Into<Doc> for Update {
+    fn into(self) -> Doc {
         use crate::doc::Options;
 
-        let mut store = Store::new(Options::with_client_id(ClientID::new(0)));
+        let mut doc = Doc::with_options(Options::with_client_id(ClientID::new(0)));
         for (_, vec) in self.blocks.clients {
             for block in vec {
                 if let Block::Item(block) = block {
-                    store.blocks.push(Block::Item(block));
+                    doc.blocks.push(Block::Item(block));
                 } else {
                     panic!("Cannot convert Update into block store - Skip block detected");
                 }
             }
         }
-        store
+        doc
     }
 }
