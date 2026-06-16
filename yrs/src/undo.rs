@@ -217,7 +217,7 @@ where
         !inner
             .scope
             .iter()
-            .any(|parent| txn.changed_parent_types.contains(parent))
+            .any(|parent| txn.changed_parent_types().contains(parent))
             || !txn
                 .origin()
                 .map(|o| inner.options.tracked_origins.contains(o))
@@ -253,7 +253,7 @@ where
             });
         }
 
-        let insertions = txn.insert_set.clone();
+        let insertions = txn.insert_set().clone();
         let now = inner.options.timestamp.now();
         let stack = if undoing {
             &mut inner.redo_stack
@@ -275,12 +275,12 @@ where
         if extend {
             // append change to last stack op
             let last_op = stack.last_mut().unwrap(); // always true - we checked if stack is empty above
-            last_op.deletions.merge_with(txn.delete_set.clone());
+            last_op.deletions.merge_with(txn.delete_set().clone());
             last_op.insertions.merge_with(insertions);
         } else {
             // create a new stack op
             let doc = txn.doc().guid().clone();
-            let item = StackItem::new(doc, txn.delete_set.clone(), insertions);
+            let item = StackItem::new(doc, txn.delete_set().clone(), insertions);
             stack.push(item);
         }
 
@@ -288,7 +288,7 @@ where
             inner.last_change = now;
         }
         // make sure that deleted structs are not gc'd
-        let ds = txn.delete_set.clone();
+        let ds = txn.delete_set().clone();
         let mut deleted = ds.blocks();
         while let Some(slice) = deleted.next(txn) {
             if let Some(item) = slice.as_item() {
@@ -301,9 +301,9 @@ where
         let last_op = stack.last_mut().unwrap();
         let meta = std::mem::take(&mut last_op.meta);
         let mut event = if undoing {
-            Event::redo(meta, txn.origin.clone(), txn.changed_parent_types.clone())
+            Event::redo(meta, txn.origin().cloned(), txn.changed_parent_types().to_vec())
         } else {
-            Event::undo(meta, txn.origin.clone(), txn.changed_parent_types.clone())
+            Event::undo(meta, txn.origin().cloned(), txn.changed_parent_types().to_vec())
         };
         if !extend {
             if inner.observer_added.has_subscribers() {
@@ -698,9 +698,9 @@ where
         if change_performed {
             txn.commit();
             let mut e = if undoing {
-                Event::undo(item.meta, Some(origin), txn.changed_parent_types.clone())
+                Event::undo(item.meta, Some(origin), txn.changed_parent_types().to_vec())
             } else {
-                Event::redo(item.meta, Some(origin), txn.changed_parent_types.clone())
+                Event::redo(item.meta, Some(origin), txn.changed_parent_types().to_vec())
             };
             if observer_popped.has_subscribers() {
                 observer_popped.trigger(|fun| fun(&txn, &mut e));

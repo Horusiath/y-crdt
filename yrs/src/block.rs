@@ -4,7 +4,7 @@ use crate::doc::OffsetKind;
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
 use crate::slice::{BlockSlice, ItemSlice};
-use crate::transaction::TransactionMut;
+use crate::transaction::{ensure_state, TransactionMut};
 use crate::types::text::update_current_attributes;
 use crate::types::{Attrs, TypePtr, TypeRef};
 use crate::undo::UndoStack;
@@ -503,6 +503,7 @@ impl ItemPtr {
                 // Iterate right while is in itemsToDelete
                 // If it is intended to delete right while item is redone,
                 // we can expect that item should replace right.
+                let tx_state = ensure_state(&mut txn.state);
                 while let Some(left_item) = left.as_deref() {
                     if let Some(left_right) = left_item.right {
                         let id = left_right.id();
@@ -519,7 +520,7 @@ impl ItemPtr {
                                         None => break,
                                         Some(slice) => {
                                             let ptr = txn.doc.materialize(slice);
-                                            txn.merge_blocks.push(ptr.id().clone());
+                                            tx_state.merge_blocks.push(ptr.id().clone());
                                             Some(ptr)
                                         }
                                     };
@@ -635,9 +636,6 @@ impl ItemPtr {
 
     pub(crate) fn delete_as_cleanup(&self, txn: &mut TransactionMut, is_local: bool) {
         txn.delete(*self);
-        if is_local {
-            txn.delete_set.insert(*self.id(), self.len());
-        }
     }
 
     pub(crate) fn splice(&mut self, offset: u32, encoding: OffsetKind) -> Option<Box<Item>> {
@@ -865,7 +863,9 @@ impl Item {
         let self_ptr = ItemPtr::from(&*self);
         match &mut self.content {
             ItemContent::Deleted(len) => {
-                txn.delete_set.insert(self.id, *len);
+                ensure_state(&mut txn.state)
+                    .delete_set
+                    .insert(self.id, *len);
                 self.mark_as_deleted();
             }
             ItemContent::Doc(parent_doc, options) => {
@@ -874,11 +874,13 @@ impl Item {
                 let should_load = options.should_load;
                 // If the Doc isn't already in store.subdocs (e.g. from Prelim),
                 // create it now (e.g. from decoded Options).
-                let subdoc = txn.doc.subdocs
+                let subdoc = txn
+                    .doc
+                    .subdocs
                     .entry(doc_guid.clone())
                     .or_insert_with(|| Doc::with_options(options.clone()));
                 subdoc.parent = Some(self_ptr);
-                let subdocs = txn.subdocs.get_or_init();
+                let subdocs = ensure_state(&mut txn.state).subdocs.get_or_init();
                 subdocs.added.insert(doc_guid.clone());
                 if should_load {
                     subdocs.loaded.insert(doc_guid);
@@ -1018,7 +1020,9 @@ impl<'doc> TransactionMut<'doc> {
         let mut parent = match &item.parent {
             TypePtr::Branch(branch) => *branch,
             TypePtr::Named(name) => {
-                let branch = self.doc.get_or_create_type(name.clone(), TypeRef::Undefined);
+                let branch = self
+                    .doc
+                    .get_or_create_type(name.clone(), TypeRef::Undefined);
                 item.parent = TypePtr::Branch(branch);
                 branch
             }
@@ -1089,7 +1093,9 @@ impl<'doc> TransactionMut<'doc> {
                 }
             }
         }
-        self.insert_set.insert(item.id, item.len);
+        ensure_state(&mut self.state)
+            .insert_set
+            .insert(item.id, item.len);
         self.doc.blocks.push(Block::Item(item));
         let item = &mut *item_ptr;
 
@@ -1098,12 +1104,7 @@ impl<'doc> TransactionMut<'doc> {
 
         #[cfg(feature = "weak")]
         if item.info.is_linked() {
-            if let Some(links) = self
-                .doc
-                .linked_by
-                .get(&ItemPtr::from(&*item))
-                .cloned()
-            {
+            if let Some(links) = self.doc.linked_by.get(&ItemPtr::from(&*item)).cloned() {
                 // notify links about changes
                 for link in links.iter() {
                     self.add_changed_type(*link, item.parent_sub.clone());
@@ -1123,8 +1124,9 @@ impl<'doc> TransactionMut<'doc> {
             gc.clock += offset;
             gc.len -= offset;
         }
-        self.delete_set.insert(gc.id(), gc.len);
-        self.insert_set.insert(gc.id(), gc.len);
+        let state = ensure_state(&mut self.state);
+        state.delete_set.insert(gc.id(), gc.len);
+        state.insert_set.insert(gc.id(), gc.len);
         self.doc.blocks.push(Block::GC(gc));
     }
 

@@ -1,4 +1,5 @@
 use crate::block::{Block, ClientID};
+use crate::transaction::ensure_state;
 use crate::{Doc, IdSet, TransactionMut, ID};
 use std::collections::HashMap;
 
@@ -11,7 +12,8 @@ impl GCCollector {
     /// Garbage collect all blocks deleted within current transaction scope.
     pub fn collect(txn: &mut TransactionMut) {
         let mut gc = Self::default();
-        gc.mark_in_scope(&mut txn.doc, None, &txn.delete_set);
+        let state = txn.state.as_ref().unwrap();
+        gc.mark_in_scope(&mut txn.doc, None, &state.delete_set);
         gc.collect_marked(txn);
     }
 
@@ -20,7 +22,10 @@ impl GCCollector {
         let mut gc = Self::default();
         match delete_set {
             None => gc.mark_all(txn),
-            Some(ds) => gc.mark_in_scope(&mut txn.doc, Some(&mut txn.merge_blocks), ds),
+            Some(ds) => {
+                let state = ensure_state(&mut txn.state);
+                gc.mark_in_scope(&mut txn.doc, Some(&mut state.merge_blocks), ds);
+            }
         }
         gc.collect_marked(txn);
     }
@@ -66,7 +71,7 @@ impl GCCollector {
                 if let Block::Item(item) = block.as_mut() {
                     if item.is_deleted() {
                         item.gc(self, false);
-                        txn.merge_blocks.push(item.id);
+                        ensure_state(&mut txn.state).merge_blocks.push(item.id);
                     }
                 }
             }
