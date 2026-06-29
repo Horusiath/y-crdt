@@ -25,7 +25,7 @@
 //! the following code snippet:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Update};
+//! use yrs::{Doc, GetString, StateVector, Text, Update};
 //! use yrs::updates::decoder::Decode;
 //! use yrs::updates::encoder::Encode;
 //!
@@ -87,10 +87,10 @@
 //! In order to synchronize state between the document replicas living on a different peer processes,
 //! there are two possible cases:
 //!
-//! 1. Peer who wishes to receive an update first encodes its document's [state vector](ReadTxn::state_vector).
+//! 1. Peer who wishes to receive an update first encodes its document's [state vector](Transaction::state_vector).
 //!    It's a logical timestamp describing which updates that has been observed by this document instance
 //!    so far. This [StateVector] can be later serialized and passed to the remote collaborator. This
-//!    collaborator can then deserialize it back and [generate an update](ReadTxn::encode_diff) which
+//!    collaborator can then deserialize it back and [generate an update](Transaction::encode_diff) which
 //!    will contain all new changes performed since provided state vector. Finally this update can
 //!    be passed back to the requester, [deserialized](Update::decode) and integrated into a document
 //!    store via [TransactionMut::apply_update].
@@ -113,7 +113,7 @@
 //! (eg. image binaries or [ArrayRef]s that we could interpret in example as nested tables).
 //!
 //! ```rust
-//! use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, WriteTxn, XmlFragment, XmlTextPrelim};
+//! use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, XmlFragment, XmlTextPrelim};
 //! use yrs::types::Attrs;
 //!
 //! let mut doc = Doc::new();
@@ -160,7 +160,7 @@
 //! on following example:
 //!
 //! ```rust
-//! use yrs::{Doc, ClientID, GetString, ReadTxn, StateVector, Text, Update};
+//! use yrs::{Doc, ClientID, GetString, StateVector, Text, Update};
 //! use yrs::updates::decoder::Decode;
 //!
 //! let mut doc1 = Doc::with_client_id(1);
@@ -195,7 +195,7 @@
 //! location, that will persist between concurrent updates being made:
 //!
 //! ```rust
-//! use yrs::{Assoc, ClientID, Doc, GetString, ReadTxn, IndexedSequence, StateVector, Text, Update};
+//! use yrs::{Assoc, ClientID, Doc, GetString, IndexedSequence, StateVector, Text, Update};
 //! use yrs::updates::decoder::Decode;
 //!
 //! let mut doc1 = Doc::with_client_id(1);
@@ -309,7 +309,7 @@
 //! [UndoManager] is a Yrs response for these needs, supporting wide variety of options:
 //!
 //! ```rust
-//! use yrs::{Acquire, AcquireMut, Cell, Doc, GetString, ReadTxn, Text, UndoManager, Update};
+//! use yrs::{Acquire, AcquireMut, Cell, Doc, GetString, Text, UndoManager, Update};
 //! use yrs::undo::Options;
 //! use yrs::updates::decoder::Decode;
 //!
@@ -379,7 +379,7 @@
 //! as well as show the differences between them:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, Options, ReadTxn, Text, Update, WriteTxn, XmlFragment, XmlTextPrelim};
+//! use yrs::{Doc, GetString, Options, Text, Update, XmlFragment, XmlTextPrelim};
 //! use yrs::types::Attrs;
 //! use yrs::types::text::{Diff, YChange};
 //! use yrs::updates::decoder::Decode;
@@ -476,7 +476,7 @@
 //! replicas living on other peers. This is possible via hooks:
 //!
 //! ```rust
-//! use yrs::{Array, ArrayRef, ClientID, Doc, Hook, MapPrelim, ReadTxn, RootRef, SharedRef, Update};
+//! use yrs::{Array, ArrayRef, ClientID, Doc, Hook, MapPrelim, RootRef, SharedRef, Update};
 //! use yrs::types::ToJson;
 //! use yrs::updates::decoder::Decode;
 //!
@@ -583,7 +583,7 @@
 //! the document state in a way similar to [JSONPath](https://en.wikipedia.org/wiki/JSONPath):
 //!
 //! ```rust
-//! use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out, WriteTxn};
+//! use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out};
 //!
 //! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
@@ -683,11 +683,10 @@ pub use crate::sticky_index::Offset;
 pub use crate::sticky_index::StickyIndex;
 pub use crate::transact::TransactionAcqError;
 pub use crate::transaction::Origin;
-pub use crate::transaction::ReadTxn;
 pub use crate::transaction::RootRefs;
 pub use crate::transaction::Transaction;
 pub use crate::transaction::TransactionMut;
-pub use crate::transaction::WriteTxn;
+pub use crate::transaction::TransactionState;
 pub use crate::types::array::Array;
 pub use crate::types::array::ArrayPrelim;
 pub use crate::types::array::ArrayRef;

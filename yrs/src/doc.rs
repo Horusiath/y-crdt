@@ -13,9 +13,10 @@ use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
 use crate::{error, Observer};
 use crate::{
-    uuid_v4, uuid_v4_from, ArrayRef, BranchID, IdSet, MapRef, ReadTxn, Snapshot, StateVector,
-    TextRef, Transaction, Uuid, WriteTxn, XmlFragmentRef, ID,
+    uuid_v4, uuid_v4_from, ArrayRef, BranchID, IdSet, MapRef, Snapshot, StateVector, TextRef,
+    Transaction, Uuid, XmlFragmentRef, ID,
 };
+use crate::transaction::TransactionState;
 use crate::{Any, Subscription};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
@@ -166,18 +167,21 @@ impl Doc {
     }
 
     /// Creates a lightweight read-only transaction.
-    pub fn transact(&self) -> Transaction<'_> {
-        Transaction::new(self)
+    pub fn transact(&self) -> Transaction<&Doc> {
+        Transaction { doc: self, state: None }
     }
 
     /// Creates a read-write capable transaction.
     pub fn transact_mut(&mut self) -> TransactionMut<'_> {
-        TransactionMut::new(self, None)
+        Transaction { doc: self, state: None }
     }
 
     /// Creates a read-write capable transaction with an `origin` classifier attached.
     pub fn transact_mut_with<T: Into<Origin>>(&mut self, origin: T) -> TransactionMut<'_> {
-        TransactionMut::new(self, Some(origin.into()))
+        Transaction {
+            doc: self,
+            state: Some(Box::new(TransactionState::new(Some(origin.into())))),
+        }
     }
 
     /// A unique client identifier, that's also a unique identifier of current document replica
@@ -257,7 +261,7 @@ impl Doc {
         /// if necessary or passed to remote peers right away. This callback is triggered on
         /// function commit.
         observe_update_v1, observe_update_v1_with, unobserve_update_v1,
-        update_v1_events, FnMut(&TransactionMut, &UpdateEvent)
+        update_v1_events, FnMut(&Transaction<&Doc>, &UpdateEvent)
     );
 
     define_doc_observer!(
@@ -266,14 +270,14 @@ impl Doc {
         /// if necessary or passed to remote peers right away. This callback is triggered on
         /// function commit.
         observe_update_v2, observe_update_v2_with, unobserve_update_v2,
-        update_v2_events, FnMut(&TransactionMut, &UpdateEvent)
+        update_v2_events, FnMut(&Transaction<&Doc>, &UpdateEvent)
     );
 
     define_doc_observer!(
         /// Subscribe callback function to updates on the `Doc`. The callback will receive state
         /// updates and deletions when a document transaction is committed.
         observe_transaction_cleanup, observe_transaction_cleanup_with, unobserve_transaction_cleanup,
-        transaction_cleanup_events, FnMut(&TransactionMut, &TransactionCleanupEvent)
+        transaction_cleanup_events, FnMut(&Transaction<&Doc>, &TransactionCleanupEvent)
     );
 
     define_doc_observer!(
@@ -289,29 +293,26 @@ impl Doc {
         /// type-level observers are triggered. This is used by attribution managers to update
         /// their internal state before any observer reads attribution data.
         observe_before_observer_calls, observe_before_observer_calls_with, unobserve_before_observer_calls,
-        before_observer_calls_events, FnMut(&TransactionMut)
+        before_observer_calls_events, FnMut(&Transaction<&Doc>)
     );
 
     define_doc_observer!(
         /// Subscribe callback function, that will be called whenever a subdocuments inserted in
         /// this [Doc] will request a load.
         observe_subdocs, observe_subdocs_with, unobserve_subdocs,
-        subdocs_events, FnMut(&TransactionMut, &SubdocsEvent)
+        subdocs_events, FnMut(&Transaction<&Doc>, &SubdocsEvent)
     );
 
     define_doc_observer!(
         /// Subscribe callback function, that will be called whenever a [Doc::destroy] has been
         /// called.
         observe_destroy, observe_destroy_with, unobserve_destroy,
-        destroy_events, FnMut(&TransactionMut, &Doc)
+        destroy_events, FnMut(&Transaction<&Doc>, &Doc)
     );
 
     /// Sends a load request to a parent document. Works only if current document is a sub-document
     /// of a document.
-    pub fn load<T>(&mut self, parent_txn: &mut T)
-    where
-        T: WriteTxn,
-    {
+    pub fn load(&mut self, parent_txn: &mut TransactionMut) {
         let was_loaded = self.options.should_load;
         self.options.should_load = true;
         if !was_loaded && self.is_subdoc() {
@@ -352,10 +353,11 @@ impl Doc {
         // cleanup events
         if let Some(mut events) = self.events.take() {
             let doc_ptr = self as *const Doc;
-            let txn = TransactionMut::new(self, None);
+            let txn: TransactionMut = Transaction { doc: self, state: None };
             unsafe {
                 let doc_ref = &*doc_ptr;
-                events.destroy_events.trigger(|cb| cb(&txn, doc_ref));
+                let txn_ref = txn.as_readonly();
+                events.destroy_events.trigger(|cb| cb(txn_ref, doc_ref));
             }
         }
     }
@@ -735,7 +737,7 @@ impl Default for Doc {
 }
 
 impl ToJson for Doc {
-    fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
+    fn to_json<D: std::ops::Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Any {
         let mut m = HashMap::new();
         for (key, value) in txn.root_refs() {
             m.insert(key.to_string(), value.to_json(txn));
@@ -754,14 +756,14 @@ macro_rules! define_event_type {
 }
 
 define_event_type!(TransactionCleanupFn(
-    &TransactionMut,
+    &Transaction<&Doc>,
     &TransactionCleanupEvent
 ));
 define_event_type!(AfterTransactionFn(&mut TransactionMut));
-define_event_type!(UpdateFn(&TransactionMut, &UpdateEvent));
-define_event_type!(SubdocsFn(&TransactionMut, &SubdocsEvent));
-define_event_type!(DestroyFn(&TransactionMut, &Doc));
-define_event_type!(BeforeObserverCallsFn(&TransactionMut));
+define_event_type!(UpdateFn(&Transaction<&Doc>, &UpdateEvent));
+define_event_type!(SubdocsFn(&Transaction<&Doc>, &SubdocsEvent));
+define_event_type!(DestroyFn(&Transaction<&Doc>, &Doc));
+define_event_type!(BeforeObserverCallsFn(&Transaction<&Doc>));
 
 #[derive(Default)]
 pub struct DocEvents {
@@ -796,6 +798,7 @@ impl DocEvents {
         if self.update_v1_events.has_subscribers() {
             if !txn.delete_set().is_empty() || txn.after_state() != txn.before_state() {
                 let update = UpdateEvent::new_v1(txn);
+                let txn = txn.as_readonly();
                 self.update_v1_events
                     .trigger(|callback| callback(txn, &update));
             }
@@ -806,6 +809,7 @@ impl DocEvents {
         if self.update_v2_events.has_subscribers() {
             if !txn.delete_set().is_empty() || txn.after_state() != txn.before_state() {
                 let update = UpdateEvent::new_v2(txn);
+                let txn = txn.as_readonly();
                 self.update_v2_events.trigger(|fun| fun(txn, &update));
             }
         }
@@ -818,12 +822,14 @@ impl DocEvents {
     pub fn emit_transaction_cleanup(&mut self, txn: &TransactionMut) {
         if self.transaction_cleanup_events.has_subscribers() {
             let event = TransactionCleanupEvent::new(txn);
+            let txn = txn.as_readonly();
             self.transaction_cleanup_events
                 .trigger(|fun| fun(txn, &event));
         }
     }
 
     pub fn emit_before_observer_calls(&mut self, txn: &TransactionMut) {
+        let txn = txn.as_readonly();
         self.before_observer_calls_events.trigger(|fun| fun(txn));
     }
 }
@@ -1000,15 +1006,16 @@ mod test {
     use crate::block::{Block, BlockRange, ClientID, ItemContent};
     use crate::error::Error;
     use crate::test_utils::{exchange_updates, Blocks};
-    use crate::transaction::{ReadTxn, TransactionMut};
+    use crate::transaction::TransactionMut;
     use crate::types::ToJson;
     use crate::update::Update;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
         any, uuid_v4, Any, Array, ArrayPrelim, ArrayRef, Doc, GetString, IdSet, Map, MapRef,
-        OffsetKind, Options, Snapshot, StateVector, Subscription, Text, TextPrelim, TextRef, Uuid,
-        WriteTxn, XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
+        OffsetKind, Options, Snapshot, StateVector, Subscription, Text, TextPrelim, TextRef,
+        Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, XmlElementPrelim, XmlFragment,
+        XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
     };
     use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
@@ -1316,7 +1323,7 @@ mod test {
         // Subscribe callback
 
         let sub: Subscription =
-            doc.observe_transaction_cleanup(move |_: &TransactionMut, event| {
+            doc.observe_transaction_cleanup(move |_: &Transaction<&Doc>, event: &TransactionCleanupEvent| {
                 before_ref.store(Some(event.before_state.clone().into()));
                 after_ref.store(Some(event.after_state.clone().into()));
                 delete_ref.store(Some(event.delete_set.clone().into()));
@@ -1394,7 +1401,7 @@ mod test {
         let acc = Arc::new(Mutex::new(String::new()));
 
         let a = acc.clone();
-        let _sub = d1.observe_update_v1(move |_: &TransactionMut, e| {
+        let _sub = d1.observe_update_v1(move |_: &Transaction<&Doc>, e: &UpdateEvent| {
             let u = Update::decode_v1(&e.update).unwrap();
             for block in u.blocks.into_blocks(false) {
                 if let Block::Item(item) = block {
@@ -1421,7 +1428,7 @@ mod test {
         // test incremental deletes
         let acc = Arc::new(Mutex::new(vec![]));
         let a = acc.clone();
-        let _sub = d1.observe_update_v1(move |_: &TransactionMut, e| {
+        let _sub = d1.observe_update_v1(move |_: &Transaction<&Doc>, e: &UpdateEvent| {
             let u = Update::decode_v1(&e.update).unwrap();
             for (&client_id, range) in u.delete_set.iter() {
                 if client_id == ClientID::new(1) {

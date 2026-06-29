@@ -4,11 +4,12 @@ use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{BranchID, ClientID, ReadTxn, ID};
+use crate::{BranchID, ClientID, Doc, Transaction, ID};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Formatter;
+use std::ops::Deref;
 use std::sync::Arc;
 
 /// A sticky index is based on the Yjs model and is not affected by document changes.
@@ -57,9 +58,9 @@ impl StickyIndex {
         Self::new(IndexScope::Relative(id), assoc)
     }
 
-    pub fn from_type<T, B>(_txn: &T, branch: &B, assoc: Assoc) -> Self
+    pub fn from_type<D, B>(_txn: &Transaction<D>, branch: &B, assoc: Assoc) -> Self
     where
-        T: ReadTxn,
+        D: Deref<Target = Doc>,
         B: AsRef<Branch>,
     {
         let branch = branch.as_ref();
@@ -152,7 +153,7 @@ impl StickyIndex {
     /// let off2 = pos.get_offset(&txn).unwrap();
     /// assert_ne!(off2.index, off.index); // offset index changed due to new insert above
     /// ```
-    pub fn get_offset<T: ReadTxn>(&self, txn: &T) -> Option<Offset> {
+    pub fn get_offset<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<Offset> {
         let mut branch = None;
         let mut index = 0;
 
@@ -228,8 +229,8 @@ impl StickyIndex {
         }
     }
 
-    pub fn at<T: ReadTxn>(
-        txn: &T,
+    pub fn at<D: Deref<Target = Doc>>(
+        txn: &Transaction<D>,
         branch: BranchPtr,
         mut index: u32,
         assoc: Assoc,
@@ -243,7 +244,7 @@ impl StickyIndex {
         }
 
         let mut walker = BlockIter::new(branch);
-        if !walker.try_forward(txn, index) {
+        if !walker.try_forward(txn.doc(), index) {
             return None;
         }
         if walker.finished() {
@@ -284,11 +285,11 @@ impl StickyIndex {
         }
     }
 
-    pub(crate) fn get_item<T: ReadTxn>(&self, txn: &T) -> Option<ItemPtr> {
+    pub(crate) fn get_item(&self, doc: &Doc) -> Option<ItemPtr> {
         let branch = match &self.scope {
             IndexScope::Relative(id) => {
                 // position relative to existing block
-                let item = txn.doc().blocks.get_item(id)?;
+                let item = doc.blocks.get_item(id)?;
                 return if self.assoc == Assoc::After && &item.last_id() == id {
                     item.right
                 } else {
@@ -297,12 +298,12 @@ impl StickyIndex {
             }
             IndexScope::Nested(id) => {
                 // position at the beginning/end of a nested type
-                let item = txn.doc().blocks.get_item(id)?;
+                let item = doc.blocks.get_item(id)?;
                 item.as_branch()?
             }
             IndexScope::Root(name) => {
                 // position at the beginning/end of a root type
-                let branch = txn.doc().types.get(name.as_ref())?;
+                let branch = doc.types.get(name.as_ref())?;
                 BranchPtr::from(branch)
             }
         };
@@ -608,7 +609,7 @@ impl Decode for Assoc {
 pub trait IndexedSequence: AsRef<Branch> {
     /// Returns a [StickyIndex] equivalent to a human-readable `index`.
     /// Returns `None` if `index` is beyond the length of current sequence.
-    fn sticky_index<T: ReadTxn>(&self, txn: &T, index: u32, assoc: Assoc) -> Option<StickyIndex> {
+    fn sticky_index<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>, index: u32, assoc: Assoc) -> Option<StickyIndex> {
         StickyIndex::at(txn, BranchPtr::from(self.as_ref()), index, assoc)
     }
 }

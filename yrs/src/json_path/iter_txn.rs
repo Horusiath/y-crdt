@@ -1,22 +1,23 @@
 use crate::any::AnyArrayIter;
 use crate::json_path::JsonPathToken;
-use crate::{Any, Array, JsonPath, JsonPathEval, Map, Out, ReadTxn, Xml, XmlFragment};
+use crate::{Any, Array, Doc, JsonPath, JsonPathEval, Map, Out, Transaction, Xml, XmlFragment};
+use std::ops::Deref;
 
-impl<T> JsonPathEval for T
+impl<D> JsonPathEval for Transaction<D>
 where
-    T: ReadTxn,
+    D: Deref<Target = Doc>,
 {
     type Iter<'a>
-        = JsonPathIter<'a, T>
+        = JsonPathIter<'a, D>
     where
-        T: 'a;
+        D: 'a;
 
     /// Evaluate JSON path on the current transaction, starting from current transaction [Doc] as
     /// its root.
     ///
     /// # Example
     /// ```rust
-    /// use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out, WriteTxn};
+    /// use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out};
     ///
     /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
@@ -45,8 +46,8 @@ where
     }
 }
 
-fn slice_iter<'a, T: ReadTxn>(
-    txn: &'a T,
+fn slice_iter<'a, D: Deref<Target = Doc>>(
+    txn: &'a Transaction<D>,
     value: Option<Out>,
     from: usize,
     to: usize,
@@ -79,8 +80,8 @@ fn slice_iter<'a, T: ReadTxn>(
     }
 }
 
-fn any_iter<'a, T: ReadTxn>(
-    txn: &'a T,
+fn any_iter<'a, D: Deref<Target = Doc>>(
+    txn: &'a Transaction<D>,
     out: Option<Out>,
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
     #[inline]
@@ -115,8 +116,8 @@ fn any_iter<'a, T: ReadTxn>(
     }
 }
 
-fn member_union_iter<'a, T: ReadTxn>(
-    txn: &'a T,
+fn member_union_iter<'a, D: Deref<Target = Doc>>(
+    txn: &'a Transaction<D>,
     value: Option<Out>,
     members: &'a [&'a str],
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
@@ -139,8 +140,8 @@ fn member_union_iter<'a, T: ReadTxn>(
     }
 }
 
-fn index_union_iter<'a, T: ReadTxn>(
-    txn: &'a T,
+fn index_union_iter<'a, D: Deref<Target = Doc>>(
+    txn: &'a Transaction<D>,
     value: Option<Out>,
     indices: &'a [i32],
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
@@ -196,17 +197,17 @@ fn index_union_iter<'a, T: ReadTxn>(
     }
 }
 
-pub struct JsonPathIter<'a, T> {
-    txn: &'a T,
+pub struct JsonPathIter<'a, D> {
+    txn: &'a Transaction<D>,
     pattern: &'a [JsonPathToken<'a>],
     frame: ExecutionFrame<'a>,
 }
 
-impl<'a, T> JsonPathIter<'a, T>
+impl<'a, D> JsonPathIter<'a, D>
 where
-    T: ReadTxn,
+    D: Deref<Target = Doc>,
 {
-    fn new(txn: &'a T, path: &'a [JsonPathToken<'a>]) -> Self {
+    fn new(txn: &'a Transaction<D>, path: &'a [JsonPathToken<'a>]) -> Self {
         Self {
             txn,
             pattern: path.as_ref(),
@@ -215,9 +216,9 @@ where
     }
 }
 
-impl<'a, T> Iterator for JsonPathIter<'a, T>
+impl<'a, D> Iterator for JsonPathIter<'a, D>
 where
-    T: ReadTxn,
+    D: Deref<Target = Doc>,
 {
     type Item = Out;
 
@@ -337,7 +338,7 @@ where
     }
 }
 
-fn get_member<T: ReadTxn>(txn: &T, out: Option<&Out>, key: &str) -> Option<Out> {
+fn get_member<D: Deref<Target = Doc>>(txn: &Transaction<D>, out: Option<&Out>, key: &str) -> Option<Out> {
     match out {
         None => txn.get(key),
         Some(Out::YMap(map)) => map.get(txn, key),
@@ -353,7 +354,7 @@ fn get_member<T: ReadTxn>(txn: &T, out: Option<&Out>, key: &str) -> Option<Out> 
     }
 }
 
-fn get_index<T: ReadTxn>(txn: &T, out: Option<&Out>, idx: i32) -> Option<Out> {
+fn get_index<D: Deref<Target = Doc>>(txn: &Transaction<D>, out: Option<&Out>, idx: i32) -> Option<Out> {
     match out {
         Some(Out::YArray(array)) => {
             let idx = if idx < 0 {
@@ -460,8 +461,8 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = Out> + 'a>;
 mod test {
     use crate::updates::decoder::Decode;
     use crate::{
-        any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out, ReadTxn,
-        Update, WriteTxn,
+        any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out,
+        Update,
     };
 
     fn mixed_sample() -> Doc {

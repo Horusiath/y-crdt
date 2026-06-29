@@ -6,7 +6,7 @@ use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{Cell, Doc, IdSet, Observer, TransactionMut, Uuid, ID};
+use crate::{Cell, Doc, IdSet, Observer, Transaction, TransactionMut, Uuid, ID};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
@@ -317,7 +317,7 @@ where
         last_op.meta = event.meta;
     }
 
-    fn handle_destroy(txn: &TransactionMut, inner: &mut Inner<M>) {
+    fn handle_destroy(txn: &Transaction<&Doc>, inner: &mut Inner<M>) {
         let origin = Origin::from(inner as *mut Inner<M> as usize);
         // Just remove from tracked origins. The observer subscriptions will be cleaned up
         // when the Observer itself is dropped (the doc is being destroyed).
@@ -990,7 +990,7 @@ mod test {
     use crate::undo::{Options, StackItem};
     use crate::updates::decoder::Decode;
     use crate::{
-        any, Any, Array, ArrayPrelim, Cell, Doc, GetString, Map, MapPrelim, MapRef, ReadTxn,
+        any, Any, Array, ArrayPrelim, Cell, Doc, GetString, Map, MapPrelim, MapRef,
         StateVector, Text, TextPrelim, TextRef, UndoManager, Update, Xml, XmlElementPrelim,
         XmlElementRef, XmlFragment, XmlTextPrelim,
     };

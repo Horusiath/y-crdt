@@ -20,363 +20,13 @@ use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Formatter;
 use std::hash::Hash;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-/// Trait defining read capabilities present in a transaction. Implemented by both lightweight
-/// [read-only](Transaction) and [read-write](TransactionMut) transactions.
-pub trait ReadTxn: Sized {
-    fn doc(&self) -> &Doc;
-
-    /// Returns state vector describing current state of the updates.
-    fn state_vector(&self) -> StateVector {
-        self.doc().blocks.get_state_vector()
-    }
-
-    /// Returns a snapshot which describes a current state of updates and removals made within
-    /// the corresponding document.
-    fn snapshot(&self) -> Snapshot {
-        let store = self.doc();
-        let blocks = &store.blocks;
-        let sv = blocks.get_state_vector();
-        let ds = IdSet::from_store(blocks);
-        Snapshot::new(sv, ds)
-    }
-
-    /// Encodes all changes from current transaction block store up to a given `snapshot`.
-    /// This enables to encode state of a document at some specific point in the past.
-    fn encode_state_from_snapshot<E: Encoder>(
-        &self,
-        snapshot: &Snapshot,
-        encoder: &mut E,
-    ) -> Result<(), Error> {
-        self.doc().encode_state_from_snapshot(snapshot, encoder)
-    }
-
-    /// Encodes the difference between remote peer state given its `state_vector` and the state
-    /// of a current local peer.
-    ///
-    /// # Differences between alternative methods
-    ///
-    /// - [Self::encode_state_as_update] encodes full document state including pending updates and
-    /// entire delete set.
-    /// - [Self::encode_diff] encodes only the difference between the current state and
-    /// the given state vector, including entire delete set. Pending updates are not included.
-    /// - [TransactionMut::encode_update] encodes only inserts and deletes made within the scope
-    /// of the current transaction.
-    fn encode_diff<E: Encoder>(&self, state_vector: &StateVector, encoder: &mut E) {
-        self.doc().encode_diff(state_vector, encoder)
-    }
-
-    /// Encodes the difference between remote peer state given its `state_vector` and the state
-    /// of a current local peer, using lib0 v1 encoding.
-    ///
-    /// # Differences between alternative methods
-    ///
-    /// - [Self::encode_state_as_update_v1] encodes full document state including pending updates
-    /// and entire delete set.
-    /// - [Self::encode_diff_v1] encodes only the difference between the current state and
-    /// the given state vector, including entire delete set. Pending updates are not included.
-    /// - [TransactionMut::encode_update_v1] encodes only inserts and deletes made within the scope
-    /// of the current transaction.
-    fn encode_diff_v1(&self, state_vector: &StateVector) -> Vec<u8> {
-        let mut encoder = EncoderV1::new();
-        self.encode_diff(state_vector, &mut encoder);
-        encoder.to_vec()
-    }
-
-    /// Encodes the difference between remote peer state given its `state_vector` and the state
-    /// of a current local peer, using lib0 v2 encoding.
-    ///
-    /// # Differences between alternative methods
-    ///
-    /// - [Self::encode_state_as_update_v2] encodes full document state including pending updates
-    /// and entire delete set.
-    /// - [Self::encode_diff_v2] encodes only the difference between the current state and
-    /// the given state vector, including entire delete set. Pending updates are not included.
-    /// - [TransactionMut::encode_update_v2] encodes only inserts and deletes made within the scope
-    /// of the current transaction.
-    fn encode_diff_v2(&self, state_vector: &StateVector) -> Vec<u8> {
-        let mut encoder = EncoderV2::new();
-        self.encode_diff(state_vector, &mut encoder);
-        encoder.to_vec()
-    }
-
-    /// Encodes the difference between remote peer state given its `state_vector` and the state
-    /// of a current local peer. Also includes pending updates which were not yet integrated into
-    /// the main document state and entire delete set.
-    ///
-    /// # Differences between alternative methods
-    ///
-    /// - [Self::encode_state_as_update] encodes full document state including pending updates and
-    /// entire delete set.
-    /// - [Self::encode_diff] encodes only the difference between the current state and
-    /// the given state vector, including entire delete set. Pending updates are not included.
-    /// - [TransactionMut::encode_update] encodes only inserts and deletes made within the scope
-    /// of the current transaction.
-    fn encode_state_as_update<E: Encoder>(&self, sv: &StateVector, encoder: &mut E) {
-        let store = self.doc();
-        store.write_blocks_from(sv, encoder);
-        let ds = IdSet::from_store(&store.blocks);
-        ds.encode(encoder);
-    }
-
-    /// Encodes the difference between remote peer state given its `state_vector` and the state
-    /// of a current local peer, using lib0 v1 encoding. Also includes pending updates which were
-    /// not yet integrated into the main document state and entire delete set.
-    ///
-    /// # Differences between alternative methods
-    ///
-    /// - [Self::encode_state_as_update_v1] encodes full document state including pending updates
-    /// and entire delete set.
-    /// - [Self::encode_diff_v1] encodes only the difference between the current state and
-    /// the given state vector, including entire delete set. Pending updates are not included.
-    /// - [TransactionMut::encode_update_v1] encodes only inserts and deletes made within the scope
-    /// of the current transaction.
-    fn encode_state_as_update_v1(&self, sv: &StateVector) -> Vec<u8> {
-        let mut encoder = EncoderV1::new();
-        self.encode_state_as_update(sv, &mut encoder);
-        // check for pending data
-        merge_pending_v1(encoder.to_vec(), self.doc())
-    }
-
-    /// Encodes the difference between remote peer state given its `state_vector` and the state
-    /// of a current local peer, using lib0 v2 encoding. Also includes pending updates which were
-    /// not yet integrated into the main document state and entire delete set.
-    ///
-    /// # Differences between alternative methods
-    ///
-    /// - [Self::encode_state_as_update_v2] encodes full document state including pending updates
-    /// and entire delete set.
-    /// - [Self::encode_diff_v2] encodes only the difference between the current state and
-    /// the given state vector, including entire delete set. Pending updates are not included.
-    /// - [TransactionMut::encode_update_v2] encodes only inserts and deletes made within the scope
-    /// of the current transaction.
-    fn encode_state_as_update_v2(&self, sv: &StateVector) -> Vec<u8> {
-        let mut encoder = EncoderV2::new();
-        self.encode_state_as_update(sv, &mut encoder);
-
-        // check for pending data
-        merge_pending_v2(encoder.to_vec(), self.doc())
-    }
-
-    /// Returns an iterator over top level (root) shared types available in current [Doc].
-    fn root_refs(&self) -> RootRefs {
-        let store = self.doc();
-        RootRefs(store.types.iter())
-    }
-
-    /// Returns a collection of globally unique identifiers of sub documents linked within
-    /// the structures of this document store.
-    fn subdoc_guids(&self) -> impl Iterator<Item = &crate::Uuid> {
-        let store = self.doc();
-        store.subdoc_guids()
-    }
-
-    /// Returns a collection of sub documents linked within the structures of this document store.
-    fn subdocs(&self) -> impl Iterator<Item = &Doc> {
-        let store = self.doc();
-        store.subdocs()
-    }
-
-    fn subdoc(&self, guid: &Uuid) -> Option<&Doc> {
-        self.doc().subdocs.get(guid)
-    }
-
-    /// Returns a [TextRef] data structure stored under a given `name`. Text structures are used for
-    /// collaborative text editing: they expose operations to append and remove chunks of text,
-    /// which are free to execute concurrently by multiple peers over remote boundaries.
-    ///
-    /// If not structure under defined `name` existed before, [None] will be returned.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as a text (in such case a sequence component of complex data type will be
-    /// interpreted as a list of text chunks).
-    #[inline]
-    fn get_text<N: Into<Arc<str>>>(&self, name: N) -> Option<TextRef> {
-        TextRef::root(name).get(self)
-    }
-
-    /// Returns an [ArrayRef] data structure stored under a given `name`. Array structures are used for
-    /// storing a sequences of elements in ordered manner, positioning given element accordingly
-    /// to its index.
-    ///
-    /// If not structure under defined `name` existed before, [None] will be returned.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as an array (in such case a sequence component of complex data type will be
-    /// interpreted as a list of inserted values).
-    #[inline]
-    fn get_array<N: Into<Arc<str>>>(&self, name: N) -> Option<ArrayRef> {
-        ArrayRef::root(name).get(self)
-    }
-
-    /// Returns a [MapRef] data structure stored under a given `name`. Maps are used to store key-value
-    /// pairs associated. These values can be primitive data (similar but not limited to
-    /// a JavaScript Object Notation) as well as other shared types (Yrs maps, arrays, text
-    /// structures etc.), enabling to construct a complex recursive tree structures.
-    ///
-    /// If not structure under defined `name` existed before, [None] will be returned.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as a map (in such case a map component of complex data type will be
-    /// interpreted as native map).
-    #[inline]
-    fn get_map<N: Into<Arc<str>>>(&self, name: N) -> Option<MapRef> {
-        MapRef::root(name).get(self)
-    }
-
-    /// Returns a [XmlFragmentRef] data structure stored under a given `name`. XML elements represent
-    /// nodes of XML document. They can contain attributes (key-value pairs, both of string type)
-    /// and other nested XML elements or text values, which are stored in their insertion
-    /// order.
-    ///
-    /// If not structure under defined `name` existed before, [None] will be returned.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as a XML element (in such case a map component of complex data type will be
-    /// interpreted as map of its attributes, while a sequence component - as a list of its child
-    /// XML nodes).
-    #[inline]
-    fn get_xml_fragment<N: Into<Arc<str>>>(&self, name: N) -> Option<XmlFragmentRef> {
-        XmlFragmentRef::root(name).get(self)
-    }
-
-    fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
-        let value = self.doc().types.get(name.as_ref())?;
-        let ptr = BranchPtr::from(&*value);
-        match &ptr.type_ref {
-            TypeRef::Array => Some(Out::YArray(ArrayRef::from(ptr))),
-            TypeRef::Map => Some(Out::YMap(MapRef::from(ptr))),
-            TypeRef::Text => Some(Out::YText(TextRef::from(ptr))),
-            TypeRef::XmlElement(_) => Some(Out::YXmlElement(XmlElementRef::from(ptr))),
-            TypeRef::XmlFragment => Some(Out::YXmlFragment(XmlFragmentRef::from(ptr))),
-            TypeRef::XmlHook => None,
-            TypeRef::XmlText => Some(Out::YXmlText(XmlTextRef::from(ptr))),
-            TypeRef::SubDoc => {
-                let item = ptr.item?;
-                let guid = item.content.as_subdoc_guid()?;
-                Some(Out::YDoc(guid.clone()))
-            }
-            #[cfg(feature = "weak")]
-            TypeRef::WeakLink(_) => Some(Out::YWeakLink(crate::WeakRef::from(ptr))),
-            TypeRef::Undefined => Some(Out::UndefinedRef(ptr)),
-        }
-    }
-
-    /// If current document has been inserted as a sub-document, returns the guid of its parent
-    /// document.
-    fn parent_doc(&self) -> Option<crate::Uuid> {
-        if let Some(item) = self.doc().parent.as_deref() {
-            if let ItemContent::Doc(parent_guid, _) = &item.content {
-                return parent_guid.clone();
-            }
-        }
-
-        None
-    }
-
-    /// If current document has been inserted as a sub-document, returns its [BranchID].
-    fn branch_id(&self) -> Option<BranchID> {
-        if let Some(item) = self.doc().parent {
-            Some(BranchID::Nested(item.id))
-        } else {
-            None
-        }
-    }
-
-    /// Returns `true` if current document has any pending updates that are not yet
-    /// integrated into the document.
-    fn has_missing_updates(&self) -> bool {
-        let store = self.doc();
-        store.pending.is_some() || store.pending_ds.is_some()
-    }
-}
-
-pub trait WriteTxn: Sized {
-    fn doc_mut(&mut self) -> &mut Doc;
-    fn subdocs_mut(&mut self) -> &mut Subdocs;
-
-    /// Returns a [TextRef] data structure stored under a given `name`. Text structures are used for
-    /// collaborative text editing: they expose operations to append and remove chunks of text,
-    /// which are free to execute concurrently by multiple peers over remote boundaries.
-    ///
-    /// If no structure under defined `name` existed before, it will be created and returned
-    /// instead.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as a text (in such case a sequence component of complex data type will be
-    /// interpreted as a list of text chunks).
-    fn get_or_insert_text<N: Into<Arc<str>>>(&mut self, name: N) -> TextRef {
-        TextRef::root(name).get_or_create(self)
-    }
-
-    /// Returns a [MapRef] data structure stored under a given `name`. Maps are used to store key-value
-    /// pairs associated. These values can be primitive data (similar but not limited to
-    /// a JavaScript Object Notation) as well as other shared types (Yrs maps, arrays, text
-    /// structures etc.), enabling to construct a complex recursive tree structures.
-    ///
-    /// If no structure under defined `name` existed before, it will be created and returned
-    /// instead.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as a map (in such case a map component of complex data type will be
-    /// interpreted as native map).
-    fn get_or_insert_map<N: Into<Arc<str>>>(&mut self, name: N) -> MapRef {
-        MapRef::root(name).get_or_create(self)
-    }
-
-    /// Returns an [ArrayRef] data structure stored under a given `name`. Array structures are used for
-    /// storing a sequences of elements in ordered manner, positioning given element accordingly
-    /// to its index.
-    ///
-    /// If no structure under defined `name` existed before, it will be created and returned
-    /// instead.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as an array (in such case a sequence component of complex data type will be
-    /// interpreted as a list of inserted values).
-    fn get_or_insert_array<N: Into<Arc<str>>>(&mut self, name: N) -> ArrayRef {
-        ArrayRef::root(name).get_or_create(self)
-    }
-
-    /// Returns a [XmlFragmentRef] data structure stored under a given `name`. XML elements represent
-    /// nodes of XML document. They can contain attributes (key-value pairs, both of string type)
-    /// as well as other nested XML elements or text values, which are stored in their insertion
-    /// order.
-    ///
-    /// If no structure under defined `name` existed before, it will be created and returned
-    /// instead.
-    ///
-    /// If a structure under defined `name` already existed, but its type was different it will be
-    /// reinterpreted as a XML element (in such case a map component of complex data type will be
-    /// interpreted as map of its attributes, while a sequence component - as a list of its child
-    /// XML nodes).
-    fn get_or_insert_xml_fragment<N: Into<Arc<str>>>(&mut self, name: N) -> XmlFragmentRef {
-        XmlFragmentRef::root(name).get_or_create(self)
-    }
-
-    /// Prunes a pending updates from the current document and returns them.
-    /// Returns `None` if current document didn't have any pending updates.
-    fn prune_pending(&mut self) -> Option<Update> {
-        let mut merge = Vec::with_capacity(2);
-        let store = self.doc_mut();
-        if let Some(pending) = store.pending.take() {
-            merge.push(pending.update);
-        }
-        if let Some(pending_ds) = store.pending_ds.take() {
-            let mut u = Update::new();
-            u.delete_set = pending_ds.clone();
-            merge.push(u);
-        }
-        if merge.is_empty() {
-            None
-        } else {
-            Some(Update::merge_updates(merge))
-        }
-    }
-}
+// ReadTxn and WriteTxn traits have been replaced by generic impl blocks on Transaction<D>.
+// Use Transaction<&Doc> for read-only access and Transaction<&mut Doc> for read-write access.
 
 fn merge_pending_v1(update: Vec<u8>, store: &Doc) -> Vec<u8> {
     let mut merge = VecDeque::new();
@@ -414,25 +64,25 @@ fn merge_pending_v2(update: Vec<u8>, store: &Doc) -> Vec<u8> {
     }
 }
 
-/// A very lightweight read-only transaction. These transactions are guaranteed to not modify the
-/// contents of an underlying [Doc] and can be used to read it or for serialization purposes.
-#[derive(Debug)]
-pub struct Transaction<'doc> {
-    doc: &'doc Doc,
+/// A transaction provides a controlled scope for reading and writing to a [Doc].
+///
+/// - `Transaction<&Doc>` is a lightweight **read-only** transaction.
+/// - `Transaction<&mut Doc>` (aka [`TransactionMut`]) is a **read-write** transaction that
+///   tracks changes and auto-commits when dropped.
+///
+/// Read-write transactions store information about all changes performed in their scope.
+/// These are used during [`Transaction::commit`] to optimize metadata, trigger event callbacks, etc.
+/// For performance, batch as many updates as possible in a single transaction.
+///
+/// Rollbacks are not supported. Use [UndoManager] to undo operations.
+#[repr(C)]
+pub struct Transaction<D> {
+    pub(crate) doc: D,
+    pub(crate) state: Option<Box<TransactionState>>,
 }
 
-impl<'doc> Transaction<'doc> {
-    pub(crate) fn new(doc: &'doc Doc) -> Self {
-        Transaction { doc }
-    }
-}
-
-impl<'doc> ReadTxn for Transaction<'doc> {
-    #[inline]
-    fn doc(&self) -> &Doc {
-        self.doc
-    }
-}
+/// Backward-compatible alias for a read-write transaction.
+pub type TransactionMut<'doc> = Transaction<&'doc mut Doc>;
 
 /// Mutable state accumulated during a read-write transaction. Tracks inserts, deletes,
 /// changed types, and other metadata needed for commit.
@@ -460,7 +110,7 @@ pub struct TransactionState {
 }
 
 impl TransactionState {
-    fn new(origin: Option<Origin>) -> Self {
+    pub fn new(origin: Option<Origin>) -> Self {
         TransactionState {
             before_state: OnceCell::new(),
             after_state: OnceCell::new(),
@@ -491,68 +141,191 @@ pub(crate) fn ensure_state(state: &mut Option<Box<TransactionState>>) -> &mut Tr
     state.get_or_insert_with(|| Box::new(TransactionState::default()))
 }
 
-/// Read-write transaction. It can be used to modify an underlying state of the corresponding [Doc].
-/// Read-write transactions require an exclusive access to document store - only one such
-/// transaction can be present per [Doc] at the same time (read-only [Transaction]s are not allowed
-/// to coexists at the same time as well).
-///
-/// This transaction type stores the information about all of the changes performed in its scope.
-/// These will be used during [TransactionMut::commit] call to optimize metadata of incoming updates,
-/// triggering necessary event callbacks etc. For performance reasons it's preferred to batch as
-/// many updates as possible using the same transaction.
-///
-/// In Yrs transactions are always auto-committing all of their changes when dropped. Rollbacks are
-/// not supported (if some operations needs to be undone, this can be achieved using [UndoManager])
-pub struct TransactionMut<'doc> {
-    pub(crate) doc: &'doc mut Doc,
-    pub(crate) state: Option<Box<TransactionState>>,
-}
-
-impl<'doc> ReadTxn for TransactionMut<'doc> {
+/// Read methods — available on both `Transaction<&Doc>` and `Transaction<&mut Doc>`.
+impl<D: Deref<Target = Doc>> Transaction<D> {
+    /// Returns a reference to the [Doc] that this transaction operates on.
     #[inline]
-    fn doc(&self) -> &Doc {
-        self.doc
+    pub fn doc(&self) -> &Doc {
+        &self.doc
     }
-}
 
-impl<'doc> WriteTxn for TransactionMut<'doc> {
+    /// Returns state vector describing current state of the updates.
+    pub fn state_vector(&self) -> StateVector {
+        self.doc().blocks.get_state_vector()
+    }
+
+    /// Returns a snapshot which describes a current state of updates and removals made within
+    /// the corresponding document.
+    pub fn snapshot(&self) -> Snapshot {
+        let store = self.doc();
+        let blocks = &store.blocks;
+        let sv = blocks.get_state_vector();
+        let ds = IdSet::from_store(blocks);
+        Snapshot::new(sv, ds)
+    }
+
+    /// Encodes all changes from current transaction block store up to a given `snapshot`.
+    pub fn encode_state_from_snapshot<E: Encoder>(
+        &self,
+        snapshot: &Snapshot,
+        encoder: &mut E,
+    ) -> Result<(), Error> {
+        self.doc().encode_state_from_snapshot(snapshot, encoder)
+    }
+
+    /// Encodes the difference between remote peer state given its `state_vector` and the state
+    /// of a current local peer.
+    pub fn encode_diff<E: Encoder>(&self, state_vector: &StateVector, encoder: &mut E) {
+        self.doc().encode_diff(state_vector, encoder)
+    }
+
+    pub fn encode_diff_v1(&self, state_vector: &StateVector) -> Vec<u8> {
+        let mut encoder = EncoderV1::new();
+        self.encode_diff(state_vector, &mut encoder);
+        encoder.to_vec()
+    }
+
+    pub fn encode_diff_v2(&self, state_vector: &StateVector) -> Vec<u8> {
+        let mut encoder = EncoderV2::new();
+        self.encode_diff(state_vector, &mut encoder);
+        encoder.to_vec()
+    }
+
+    pub fn encode_state_as_update<E: Encoder>(&self, sv: &StateVector, encoder: &mut E) {
+        let store = self.doc();
+        store.write_blocks_from(sv, encoder);
+        let ds = IdSet::from_store(&store.blocks);
+        ds.encode(encoder);
+    }
+
+    pub fn encode_state_as_update_v1(&self, sv: &StateVector) -> Vec<u8> {
+        let mut encoder = EncoderV1::new();
+        self.encode_state_as_update(sv, &mut encoder);
+        merge_pending_v1(encoder.to_vec(), self.doc())
+    }
+
+    pub fn encode_state_as_update_v2(&self, sv: &StateVector) -> Vec<u8> {
+        let mut encoder = EncoderV2::new();
+        self.encode_state_as_update(sv, &mut encoder);
+        merge_pending_v2(encoder.to_vec(), self.doc())
+    }
+
+    /// Returns an iterator over top level (root) shared types available in current [Doc].
+    pub fn root_refs(&self) -> RootRefs {
+        let store = self.doc();
+        RootRefs(store.types.iter())
+    }
+
+    /// Returns a collection of globally unique identifiers of sub documents linked within
+    /// the structures of this document store.
+    pub fn subdoc_guids(&self) -> impl Iterator<Item = &crate::Uuid> {
+        let store = self.doc();
+        store.subdoc_guids()
+    }
+
+    /// Returns a collection of sub documents linked within the structures of this document store.
+    pub fn subdocs(&self) -> impl Iterator<Item = &Doc> {
+        let store = self.doc();
+        store.subdocs()
+    }
+
+    pub fn subdoc(&self, guid: &Uuid) -> Option<&Doc> {
+        self.doc().subdocs.get(guid)
+    }
+
     #[inline]
-    fn doc_mut(&mut self) -> &mut Doc {
-        self.doc
+    pub fn get_text<N: Into<Arc<str>>>(&self, name: N) -> Option<TextRef> {
+        TextRef::root(name).get(self)
     }
 
-    fn subdocs_mut(&mut self) -> &mut Subdocs {
-        ensure_state(&mut self.state).subdocs.get_or_init()
+    #[inline]
+    pub fn get_array<N: Into<Arc<str>>>(&self, name: N) -> Option<ArrayRef> {
+        ArrayRef::root(name).get(self)
     }
-}
 
-impl<'doc> Drop for TransactionMut<'doc> {
-    fn drop(&mut self) {
-        self.commit()
+    #[inline]
+    pub fn get_map<N: Into<Arc<str>>>(&self, name: N) -> Option<MapRef> {
+        MapRef::root(name).get(self)
     }
-}
 
-impl<'doc> TransactionMut<'doc> {
-    pub(crate) fn new(doc: &'doc mut Doc, origin: Option<Origin>) -> Self {
-        let state = if origin.is_some() {
-            Some(Box::new(TransactionState::new(origin)))
+    #[inline]
+    pub fn get_xml_fragment<N: Into<Arc<str>>>(&self, name: N) -> Option<XmlFragmentRef> {
+        XmlFragmentRef::root(name).get(self)
+    }
+
+    pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
+        let value = self.doc().types.get(name.as_ref())?;
+        let ptr = BranchPtr::from(&*value);
+        match &ptr.type_ref {
+            TypeRef::Array => Some(Out::YArray(ArrayRef::from(ptr))),
+            TypeRef::Map => Some(Out::YMap(MapRef::from(ptr))),
+            TypeRef::Text => Some(Out::YText(TextRef::from(ptr))),
+            TypeRef::XmlElement(_) => Some(Out::YXmlElement(XmlElementRef::from(ptr))),
+            TypeRef::XmlFragment => Some(Out::YXmlFragment(XmlFragmentRef::from(ptr))),
+            TypeRef::XmlHook => None,
+            TypeRef::XmlText => Some(Out::YXmlText(XmlTextRef::from(ptr))),
+            TypeRef::SubDoc => {
+                let item = ptr.item?;
+                let guid = item.content.as_subdoc_guid()?;
+                Some(Out::YDoc(guid.clone()))
+            }
+            #[cfg(feature = "weak")]
+            TypeRef::WeakLink(_) => Some(Out::YWeakLink(crate::WeakRef::from(ptr))),
+            TypeRef::Undefined => Some(Out::UndefinedRef(ptr)),
+        }
+    }
+
+    /// If current document has been inserted as a sub-document, returns the guid of its parent
+    /// document.
+    pub fn parent_doc(&self) -> Option<crate::Uuid> {
+        if let Some(item) = self.doc().parent.as_deref() {
+            if let ItemContent::Doc(parent_guid, _) = &item.content {
+                return parent_guid.clone();
+            }
+        }
+        None
+    }
+
+    /// If current document has been inserted as a sub-document, returns its [BranchID].
+    pub fn branch_id(&self) -> Option<BranchID> {
+        if let Some(item) = self.doc().parent {
+            Some(BranchID::Nested(item.id))
         } else {
             None
-        };
-        TransactionMut { doc, state }
+        }
     }
 
-    /// Returns a reference to the [Doc] that this transaction operates on.
-    pub fn doc(&self) -> &Doc {
-        self.doc
+    /// Returns `true` if current document has any pending updates that are not yet
+    /// integrated into the document.
+    pub fn has_missing_updates(&self) -> bool {
+        let store = self.doc();
+        store.pending.is_some() || store.pending_ds.is_some()
     }
 
-    pub fn events(&self) -> Option<&DocEvents> {
-        self.doc.events.as_deref()
+    /// Data about insertions performed in the scope of current transaction.
+    pub fn insert_set(&self) -> &IdSet {
+        static EMPTY: OnceLock<IdSet> = OnceLock::new();
+        self.state
+            .as_ref()
+            .map_or_else(|| EMPTY.get_or_init(IdSet::new), |s| &s.insert_set)
     }
 
-    pub fn events_mut(&mut self) -> &mut DocEvents {
-        self.doc.events.get_or_init()
+    /// Data about deletions performed in the scope of current transaction.
+    pub fn delete_set(&self) -> &IdSet {
+        static EMPTY: OnceLock<IdSet> = OnceLock::new();
+        self.state
+            .as_ref()
+            .map_or_else(|| EMPTY.get_or_init(IdSet::new), |s| &s.delete_set)
+    }
+
+    /// Returns origin of the transaction if any was defined.
+    pub fn origin(&self) -> Option<&Origin> {
+        self.state.as_ref().and_then(|s| s.origin.as_ref())
+    }
+
+    /// Returns a list of root level types changed in a scope of the current transaction.
+    pub fn changed_parent_types(&self) -> &[BranchPtr] {
+        self.state.as_ref().map_or(&[], |s| &s.changed_parent_types)
     }
 
     /// Corresponding document's state vector at the moment when current transaction was created.
@@ -589,32 +362,89 @@ impl<'doc> TransactionMut<'doc> {
         })
     }
 
-    /// Data about insertions performed in the scope of current transaction.
-    pub fn insert_set(&self) -> &IdSet {
-        static EMPTY: OnceLock<IdSet> = OnceLock::new();
-        self.state
-            .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(IdSet::new), |s| &s.insert_set)
+    /// Checks if item with a given `id` has been added to a block store within this transaction.
+    pub(crate) fn has_added(&self, id: &ID) -> bool {
+        match &self.state {
+            None => false,
+            Some(state) => state.insert_set.contains(id),
+        }
     }
 
-    /// Data about deletions performed in the scope of current transaction.
-    pub fn delete_set(&self) -> &IdSet {
-        static EMPTY: OnceLock<IdSet> = OnceLock::new();
-        self.state
-            .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(IdSet::new), |s| &s.delete_set)
+    /// Checks if item with a given `id` has been deleted within this transaction.
+    pub(crate) fn has_deleted(&self, id: &ID) -> bool {
+        match &self.state {
+            None => false,
+            Some(state) => state.delete_set.contains(id),
+        }
+    }
+}
+
+/// Transmute helper: downgrade a shared reference to a mutable transaction into a read-only view.
+impl<'doc> Transaction<&'doc mut Doc> {
+    /// Returns a read-only view of this mutable transaction.
+    ///
+    /// # Safety
+    /// This uses `transmute` internally. It is safe because:
+    /// - `Transaction<&mut Doc>` and `Transaction<&Doc>` have identical layout (`#[repr(C)]`).
+    /// - A shared reference (`&self`) only permits read access.
+    #[inline(always)]
+    pub fn as_readonly(&self) -> &Transaction<&'doc Doc> {
+        unsafe { std::mem::transmute(self) }
+    }
+}
+
+/// Write methods — only available on `Transaction<&mut Doc>` (aka `TransactionMut`).
+impl<'doc> Transaction<&'doc mut Doc> {
+    #[inline]
+    pub fn doc_mut(&mut self) -> &mut Doc {
+        self.doc
     }
 
-    /// Returns origin of the transaction if any was defined. Read-write transactions can get an
-    /// origin assigned via [Transact::try_transact_mut_with]/[Transact::transact_mut_with] methods.
-    pub fn origin(&self) -> Option<&Origin> {
-        self.state.as_ref().and_then(|s| s.origin.as_ref())
+    pub fn subdocs_mut(&mut self) -> &mut Subdocs {
+        ensure_state(&mut self.state).subdocs.get_or_init()
     }
 
-    /// Returns a list of root level types changed in a scope of the current transaction. This
-    /// list is not filled right away, but as a part of [TransactionMut::commit] process.
-    pub fn changed_parent_types(&self) -> &[BranchPtr] {
-        self.state.as_ref().map_or(&[], |s| &s.changed_parent_types)
+    pub fn get_or_insert_text<N: Into<Arc<str>>>(&mut self, name: N) -> TextRef {
+        TextRef::root(name).get_or_create(self)
+    }
+
+    pub fn get_or_insert_map<N: Into<Arc<str>>>(&mut self, name: N) -> MapRef {
+        MapRef::root(name).get_or_create(self)
+    }
+
+    pub fn get_or_insert_array<N: Into<Arc<str>>>(&mut self, name: N) -> ArrayRef {
+        ArrayRef::root(name).get_or_create(self)
+    }
+
+    pub fn get_or_insert_xml_fragment<N: Into<Arc<str>>>(&mut self, name: N) -> XmlFragmentRef {
+        XmlFragmentRef::root(name).get_or_create(self)
+    }
+
+    /// Prunes pending updates from the current document and returns them.
+    pub fn prune_pending(&mut self) -> Option<Update> {
+        let mut merge = Vec::with_capacity(2);
+        let store = self.doc_mut();
+        if let Some(pending) = store.pending.take() {
+            merge.push(pending.update);
+        }
+        if let Some(pending_ds) = store.pending_ds.take() {
+            let mut u = Update::new();
+            u.delete_set = pending_ds.clone();
+            merge.push(u);
+        }
+        if merge.is_empty() {
+            None
+        } else {
+            Some(Update::merge_updates(merge))
+        }
+    }
+
+    pub fn events(&self) -> Option<&DocEvents> {
+        self.doc.events.as_deref()
+    }
+
+    pub fn events_mut(&mut self) -> &mut DocEvents {
+        self.doc.events.get_or_init()
     }
 
     /// Encodes changes made within the scope of the current transaction using lib0 v1 encoding.
@@ -1021,7 +851,9 @@ impl<'doc> TransactionMut<'doc> {
                     self.state.as_mut().unwrap().needs_cleanup = true;
                 }
                 let mut branch = *branch;
-                if let Some(e) = branch.trigger(self, subs.clone()) {
+                // SAFETY: same as as_readonly() — identical layout, shared ref only
+                let txn: &Transaction<&Doc> = unsafe { std::mem::transmute(&*self) };
+                if let Some(e) = branch.trigger(txn, subs.clone()) {
                     event_cache.push(e);
                     let state = self.state.as_mut().unwrap();
                     Self::call_type_observers(
@@ -1054,7 +886,7 @@ impl<'doc> TransactionMut<'doc> {
             // because we know it has at least one element
             let events = Events::new(&mut unsorted);
             let mut branch = branch;
-            branch.trigger_deep(self, &events);
+            branch.trigger_deep(self.as_readonly(), &events);
         }
     }
 
@@ -1173,7 +1005,8 @@ impl<'doc> TransactionMut<'doc> {
         let removed = if let Some(mut events) = self.doc.events.take() {
             let removed = if events.subdocs_events.has_subscribers() {
                 let e = SubdocsEvent::new(subdocs);
-                events.subdocs_events.trigger(|cb| cb(self, &e));
+                let txn = self.as_readonly();
+                events.subdocs_events.trigger(|cb| cb(txn, &e));
                 e.removed
             } else {
                 subdocs.removed
@@ -1398,22 +1231,6 @@ impl<'doc> TransactionMut<'doc> {
         }
     }
 
-    /// Checks if item with a given `id` has been added to a block store within this transaction.
-    pub(crate) fn has_added(&self, id: &ID) -> bool {
-        match &self.state {
-            None => false,
-            Some(state) => state.insert_set.contains(id),
-        }
-    }
-
-    /// Checks if item with a given `id` has been deleted within this transaction.
-    pub(crate) fn has_deleted(&self, id: &ID) -> bool {
-        match &self.state {
-            None => false,
-            Some(state) => state.delete_set.contains(id),
-        }
-    }
-
     pub(crate) fn split_by_snapshot(&mut self, snapshot: &Snapshot) {
         let mut merge_blocks: Vec<ID> = Vec::new();
         let blocks = &mut self.doc.blocks;
@@ -1461,6 +1278,21 @@ impl<'doc> TransactionMut<'doc> {
                 ensure_state(&mut self.state).merge_blocks.push(source.id);
             }
         }
+    }
+}
+
+impl<D> Drop for Transaction<D> {
+    fn drop(&mut self) {
+        match self.state.as_ref() {
+            None => return,
+            Some(s) if s.committed => return,
+            _ => {}
+        }
+        // SAFETY: Only Transaction<&mut Doc> can have state that is not None and not committed.
+        // Transaction<&Doc> is always constructed with state = None.
+        // Both variants have identical layout due to #[repr(C)] and pointer-sized D.
+        let this: &mut Transaction<&mut Doc> = unsafe { std::mem::transmute(self) };
+        this.commit();
     }
 }
 

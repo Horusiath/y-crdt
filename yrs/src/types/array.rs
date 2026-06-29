@@ -8,14 +8,12 @@ use crate::types::{
     event_change_set, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim, In, Out, Path,
     RootRef, SharedRef, ToJson, TypeRef,
 };
-use crate::{Any, Assoc, DeepObservable, IndexedSequence, Observable, ReadTxn, ID};
+use crate::{Any, Assoc, DeepObservable, Doc, IndexedSequence, Observable, Transaction, ID};
 use serde::de::DeserializeOwned;
-use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
 use std::iter::FromIterator;
-use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
 /// A collection used to store data in an indexed sequence structure. This type is internally
@@ -89,11 +87,11 @@ impl IndexedSequence for ArrayRef {}
 impl crate::Quotable for ArrayRef {}
 
 impl ToJson for ArrayRef {
-    fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
+    fn to_json<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Any {
         let mut walker = BlockIter::new(self.0);
         let len = self.0.len();
         let mut buf = vec![Out::default(); len as usize];
-        let read = walker.slice(txn, &mut buf);
+        let read = walker.slice(txn.doc(), &mut buf);
         if read == len {
             let res = buf.into_iter().map(|v| v.to_json(txn)).collect();
             Any::Array(res)
@@ -150,7 +148,7 @@ impl TryFrom<Out> for ArrayRef {
 impl AsPrelim for ArrayRef {
     type Prelim = ArrayPrelim;
 
-    fn as_prelim<T: ReadTxn>(&self, txn: &T) -> Self::Prelim {
+    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let mut prelim = Vec::with_capacity(self.len(txn) as usize);
         for value in self.iter(txn) {
             prelim.push(value.as_prelim(txn));
@@ -170,7 +168,7 @@ impl DefaultPrelim for ArrayRef {
 
 pub trait Array: AsRef<Branch> + Sized {
     /// Returns a number of elements stored in current array.
-    fn len<T: ReadTxn>(&self, _txn: &T) -> u32 {
+    fn len<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().len()
     }
 
@@ -188,7 +186,7 @@ pub trait Array: AsRef<Branch> + Sized {
         V: Prelim,
     {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.try_forward(txn.doc(), index) {
             let ptr = walker
                 .insert_contents(txn, value)
                 .expect("cannot insert empty value");
@@ -252,7 +250,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// or `index` is outside of the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.try_forward(txn.doc(), index) {
             walker.delete(txn, len)
         } else {
             panic!("Index {} is outside of the range of an array", index);
@@ -261,10 +259,11 @@ pub trait Array: AsRef<Branch> + Sized {
 
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
-    fn get<T: ReadTxn>(&self, txn: &T, index: u32) -> Option<Out> {
+    fn get<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>, index: u32) -> Option<Out> {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
-            walker.read_value(txn)
+        let doc = txn.doc();
+        if walker.try_forward(doc, index) {
+            walker.read_value(doc)
         } else {
             None
         }
@@ -277,7 +276,7 @@ pub trait Array: AsRef<Branch> + Sized {
     /// # Example
     ///
     /// ```rust
-    /// use yrs::{Doc, In, Array, MapPrelim, WriteTxn};
+    /// use yrs::{Doc, In, Array, MapPrelim};
     ///
     /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
@@ -323,9 +322,9 @@ pub trait Array: AsRef<Branch> + Sized {
     /// let bob: Option<Person> = array.get_as(&txn, 1).unwrap();
     /// assert_eq!(bob, None);
     /// ```
-    fn get_as<T, V>(&self, txn: &T, index: u32) -> Result<V, Error>
+    fn get_as<D, V>(&self, txn: &Transaction<D>, index: u32) -> Result<V, Error>
     where
-        T: ReadTxn,
+        D: Deref<Target = Doc>,
         V: DeserializeOwned,
     {
         let out = self.get(txn, index).unwrap_or(Out::Any(Any::Null));
@@ -336,52 +335,26 @@ pub trait Array: AsRef<Branch> + Sized {
 
     /// Returns an iterator, that can be used to lazely traverse over all values stored in a current
     /// array.
-    fn iter<'a, T: ReadTxn + 'a>(&self, txn: &'a T) -> ArrayIter<&'a T, T> {
-        ArrayIter::from_ref(self.as_ref(), txn)
+    fn iter<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> ArrayIter<'a> {
+        ArrayIter::new(self.as_ref(), txn.doc())
     }
 }
 
-pub struct ArrayIter<B, T>
-where
-    B: Borrow<T>,
-    T: ReadTxn,
-{
+pub struct ArrayIter<'a> {
     inner: BlockIter,
-    txn: B,
-    _marker: PhantomData<T>,
+    doc: &'a Doc,
 }
 
-impl<T> ArrayIter<T, T>
-where
-    T: Borrow<T> + ReadTxn,
-{
-    pub fn from(array: &ArrayRef, txn: T) -> Self {
-        ArrayIter {
-            inner: BlockIter::new(array.0),
-            txn,
-            _marker: PhantomData::default(),
-        }
-    }
-}
-
-impl<'a, T> ArrayIter<&'a T, T>
-where
-    T: Borrow<T> + ReadTxn,
-{
-    pub fn from_ref(array: &Branch, txn: &'a T) -> Self {
+impl<'a> ArrayIter<'a> {
+    pub fn new(array: &Branch, doc: &'a Doc) -> Self {
         ArrayIter {
             inner: BlockIter::new(BranchPtr::from(array)),
-            txn,
-            _marker: PhantomData::default(),
+            doc,
         }
     }
 }
 
-impl<B, T> Iterator for ArrayIter<B, T>
-where
-    B: Borrow<T>,
-    T: ReadTxn,
-{
+impl<'a> Iterator for ArrayIter<'a> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -389,8 +362,7 @@ where
             None
         } else {
             let mut buf = [Out::default(); 1];
-            let txn = self.txn.borrow();
-            if self.inner.slice(txn, &mut buf) != 0 {
+            if self.inner.slice(self.doc, &mut buf) != 0 {
                 Some(std::mem::replace(&mut buf[0], Out::default()))
             } else {
                 None
@@ -534,23 +506,23 @@ impl ArrayEvent {
 
     /// Returns summary of changes made over corresponding [ArrayRef] collection within
     /// a bounds of current transaction.
-    pub fn delta(&self, txn: &TransactionMut) -> &[Change] {
+    pub fn delta<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &[Change] {
         self.changes(txn).delta.as_slice()
     }
 
     /// Returns a collection of block identifiers that have been added within a bounds of
     /// current transaction.
-    pub fn inserts(&self, txn: &TransactionMut) -> &HashSet<ID> {
+    pub fn inserts<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashSet<ID> {
         &self.changes(txn).added
     }
 
     /// Returns a collection of block identifiers that have been removed within a bounds of
     /// current transaction.
-    pub fn removes(&self, txn: &TransactionMut) -> &HashSet<ID> {
+    pub fn removes<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashSet<ID> {
         &self.changes(txn).deleted
     }
 
-    fn changes(&self, txn: &TransactionMut) -> &ChangeSet<Change> {
+    fn changes<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &ChangeSet<Change> {
         let change_set = unsafe { self.change_set.get().as_mut().unwrap() };
         change_set.get_or_insert_with(|| Box::new(event_change_set(txn, self.target.0.start)))
     }
@@ -564,7 +536,7 @@ mod test {
     use crate::types::{Change, DeepObservable, Event, Out, Path, PathSegment, ToJson};
     use crate::{
         any, Any, Array, ArrayPrelim, Assoc, Doc, Map, MapRef, Observable, SharedRef, StateVector,
-        Update, WriteTxn, ID,
+        Update, ID,
     };
     use std::collections::{HashMap, HashSet};
     use std::iter::FromIterator;
@@ -1084,7 +1056,6 @@ mod test {
         assert_eq!(c2.swap(None), Some(Arc::new(a2.hook())));
     }
 
-    use crate::transaction::ReadTxn;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encoder, EncoderV1};
     use arc_swap::ArcSwapOption;

@@ -117,10 +117,6 @@ impl FromIterator<(ClientID, u32)> for StateVector {
 impl Decode for StateVector {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
         let len = decoder.read_var::<u32>()? as usize;
-        // Attempt to pre-allocate memory for the state vector. `len` is attacker-controlled
-        // (a few bytes can declare a huge count), so a fallible reservation turns an
-        // allocation bomb into a recoverable decode error instead of an abort. Mirrors the
-        // `try_reserve` pattern already used for blocks in `Update::decode`.
         let mut sv = HashMap::with_hasher(BuildHasherDefault::default());
         sv.try_reserve(len)?;
         let mut i = 0;
@@ -215,7 +211,7 @@ impl Decode for Snapshot {
 mod test {
     use crate::block::ClientID;
     use crate::updates::decoder::Decode;
-    use crate::{Doc, ReadTxn, StateVector, Text, WriteTxn};
+    use crate::{Doc, StateVector, Text};
     use std::cmp::Ordering;
     use std::iter::FromIterator;
 

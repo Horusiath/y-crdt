@@ -1206,7 +1206,7 @@ mod test {
     }
 
     use crate::test_utils::exchange_updates;
-    use crate::{Doc, IdSet, Options, ReadTxn, Text};
+    use crate::{Doc, IdSet, Options, Text};
 
     /// Helper: collect (clock_start, len) tuples from iter_blocks.
     fn collect_slices(id_set: &IdSet, store: &BlockStore) -> Vec<(u32, u32)> {

@@ -1078,8 +1078,8 @@ mod test {
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
     use crate::{
-        merge_updates_v1, Any, Doc, GetString, IdSet, Options, ReadTxn, StateVector, Text,
-        WriteTxn, XmlFragment, XmlOut, ID,
+        merge_updates_v1, Any, Doc, GetString, IdSet, Options, StateVector, Text,
+        XmlFragment, XmlOut, ID,
     };
 
     #[test]

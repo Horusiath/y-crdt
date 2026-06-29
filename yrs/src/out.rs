@@ -3,11 +3,12 @@ use crate::branch::{Branch, BranchPtr};
 use crate::types::{AsPrelim, ToJson};
 use crate::updates::decoder::Decode;
 use crate::{
-    any, Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, ReadTxn, StateVector, TextRef,
-    Update, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef,
+    any, Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, StateVector, TextRef,
+    Transaction, Update, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 use std::convert::TryFrom;
 use std::fmt::Formatter;
+use std::ops::Deref;
 use std::sync::Arc;
 
 /// Value that can be returned by Yrs data types. This includes [Any] which is an extension
@@ -57,7 +58,7 @@ impl Out {
     }
 
     /// Converts current value into stringified representation.
-    pub fn to_string<T: ReadTxn>(self, txn: &T) -> String {
+    pub fn to_string<D: Deref<Target = Doc>>(self, txn: &Transaction<D>) -> String {
         match self {
             Out::Any(a) => a.to_string(),
             Out::YText(v) => v.get_string(txn),
@@ -107,7 +108,7 @@ impl TryFrom<ItemPtr> for Out {
 impl AsPrelim for Out {
     type Prelim = In;
 
-    fn as_prelim<T: ReadTxn>(&self, txn: &T) -> Self::Prelim {
+    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         match self {
             Out::Any(any) => In::Any(any.clone()),
             Out::YText(v) => In::Text(v.as_prelim(txn)),
@@ -137,7 +138,7 @@ impl AsPrelim for Out {
     }
 }
 
-fn infer_type_from_content<T: ReadTxn>(branch: BranchPtr, txn: &T) -> In {
+fn infer_type_from_content<D: Deref<Target = Doc>>(branch: BranchPtr, txn: &Transaction<D>) -> In {
     let has_map = !branch.map.is_empty();
     let mut ptr = branch.start;
     let has_list = ptr.is_some();
@@ -214,7 +215,7 @@ impl ToJson for Out {
     /// - [Out::YMap] is converted into JSON-like object map.
     /// - [Out::YText], [Out::YXmlText] and [Out::YXmlElement] are converted into strings
     ///   (XML types are stringified XML representation).
-    fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
+    fn to_json<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Any {
         match self {
             Out::Any(a) => a.clone(),
             Out::YText(v) => Any::from(v.get_string(txn)),

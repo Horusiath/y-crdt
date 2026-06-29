@@ -117,7 +117,7 @@ impl GetString for TextRef {
     /// Converts context of this text data structure into a single string value. This method doesn't
     /// render formatting attributes or embedded content. In order to retrieve it, use
     /// [TextRef::diff] method.
-    fn get_string<T: ReadTxn>(&self, _txn: &T) -> String {
+    fn get_string<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> String {
         let mut start = self.0.start;
         let mut s = String::new();
         while let Some(item) = start.as_deref() {
@@ -157,7 +157,7 @@ impl TryFrom<Out> for TextRef {
 
 pub trait Text: AsRef<Branch> + Sized {
     /// Returns a number of characters visible in a current text data structure.
-    fn len<T: ReadTxn>(&self, _txn: &T) -> u32 {
+    fn len<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().content_len
     }
 
@@ -417,10 +417,10 @@ pub trait Text: AsRef<Branch> + Sized {
     ///     Diff::new("world".into(), Some(Box::new(italic_and_bold))),
     /// ]);
     /// ```
-    fn diff<T, D, F>(&self, _txn: &T, compute_ychange: F) -> Vec<Diff<D>>
+    fn diff<D, C, F>(&self, _txn: &Transaction<D>, compute_ychange: F) -> Vec<Diff<C>>
     where
-        T: ReadTxn,
-        F: Fn(YChange) -> D,
+        D: Deref<Target = Doc>,
+        F: Fn(YChange) -> C,
     {
         let mut asm = DiffAssembler::new(compute_ychange);
         asm.process(self.as_ref().start, None, None, None, None);
@@ -466,7 +466,7 @@ impl AsRef<Branch> for TextRef {
 impl AsPrelim for TextRef {
     type Prelim = DeltaPrelim;
 
-    fn as_prelim<T: ReadTxn>(&self, txn: &T) -> Self::Prelim {
+    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let delta: Vec<Delta<In>> = self
             .diff(txn, YChange::identity)
             .into_iter()
@@ -826,9 +826,7 @@ fn remove(txn: &mut TransactionMut, pos: &mut ItemPosition, len: u32) {
                             len
                         };
                         remaining = 0;
-                        txn.doc
-                            .blocks
-                            .split_block(ptr, offset, OffsetKind::Utf16);
+                        txn.doc.blocks.split_block(ptr, offset, OffsetKind::Utf16);
                     } else {
                         remaining -= content_len;
                     };
@@ -909,9 +907,7 @@ fn insert_format(
                         // split block
                         let offset = s.block_offset(len, encoding);
                         let new_right =
-                            txn.doc
-                                .blocks
-                                .split_block(right, offset, OffsetKind::Utf16);
+                            txn.doc.blocks.split_block(right, offset, OffsetKind::Utf16);
                         pos.left = Some(right);
                         pos.right = new_right;
                         break;
@@ -921,10 +917,7 @@ fn insert_format(
                 _ => {
                     let content_len = right.len();
                     if len < content_len {
-                        let new_right =
-                            txn.doc
-                                .blocks
-                                .split_block(right, len, OffsetKind::Utf16);
+                        let new_right = txn.doc.blocks.split_block(right, len, OffsetKind::Utf16);
                         pos.left = Some(right);
                         pos.right = new_right;
                         break;
@@ -1232,14 +1225,17 @@ impl TextEvent {
 
     /// Returns a summary of text changes made over corresponding [Text] collection within
     /// bounds of current transaction.
-    pub fn delta(&self, txn: &TransactionMut) -> &[Delta] {
+    pub fn delta<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &[Delta] {
         let delta = unsafe { self.delta.get().as_mut().unwrap() };
         delta
             .get_or_insert_with(|| Self::get_delta(self.target.0, txn))
             .as_slice()
     }
 
-    pub(crate) fn get_delta(target: BranchPtr, txn: &TransactionMut) -> Vec<Delta> {
+    pub(crate) fn get_delta<D: Deref<Target = Doc>>(
+        target: BranchPtr,
+        txn: &Transaction<D>,
+    ) -> Vec<Delta> {
         #[derive(Debug, Clone, Copy, Eq, PartialEq)]
         enum Action {
             Insert,
@@ -1499,14 +1495,13 @@ mod test {
     use crate::block::ClientID;
     use crate::doc::{OffsetKind, Options};
     use crate::test_utils::{exchange_updates, run_scenario, RngExt};
-    use crate::transaction::ReadTxn;
     use crate::types::text::{Attrs, ChangeKind, Delta, Diff, YChange};
     use crate::types::Out;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
         any, Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Observable, Snapshot,
-        StateVector, Text, Update, WriteTxn, ID,
+        StateVector, Text, Update, ID,
     };
     use arc_swap::ArcSwapOption;
     use fastrand::Rng;

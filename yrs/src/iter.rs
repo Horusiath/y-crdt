@@ -1,7 +1,6 @@
-use crate::block::{ItemContent, ItemPtr};
+use crate::block::ItemPtr;
 use crate::slice::ItemSlice;
-use crate::{Assoc, Out, ReadTxn, StickyIndex};
-use smallvec::{smallvec, SmallVec};
+use crate::{Assoc, Doc, Out, StickyIndex, Transaction};
 use std::ops::Deref;
 
 pub(crate) trait BlockIterator: Iterator<Item = ItemPtr> + Sized {
@@ -81,11 +80,11 @@ impl IntoIterator for ItemPtr {
 /// Iterator equivalent that can be supplied with transaction when iteration step may need it.
 pub trait TxnIterator {
     type Item;
-    fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item>;
+    fn next<D: Deref<Target = Doc>>(&mut self, txn: &Transaction<D>) -> Option<Self::Item>;
 
-    fn collect<T, B>(&mut self, txn: &T) -> B
+    fn collect<D, B>(&mut self, txn: &Transaction<D>) -> B
     where
-        T: ReadTxn,
+        D: Deref<Target = Doc>,
         B: Default + Extend<Self::Item>,
     {
         let mut buf = B::default();
@@ -98,7 +97,7 @@ pub trait TxnIterator {
 
 /// DoubleEndedIterator equivalent that can be supplied with transaction when iteration step may need it.
 pub trait TxnDoubleEndedIterator: TxnIterator {
-    fn next_back<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item>;
+    fn next_back<D: Deref<Target = Doc>>(&mut self, txn: &Transaction<D>) -> Option<Self::Item>;
 }
 
 /// Iterator over a slice of a continuous sequence of blocks.
@@ -282,25 +281,24 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct AsIter<'a, T, I> {
-    txn: &'a T,
+pub struct AsIter<'a, D, I> {
+    txn: &'a Transaction<D>,
     iter: I,
 }
 
-impl<'a, T, I> AsIter<'a, T, I>
+impl<'a, D, I> AsIter<'a, D, I>
 where
-    T: ReadTxn,
+    D: Deref<Target = Doc>,
     I: Iterator,
 {
-    pub fn new(iter: I, txn: &'a T) -> Self {
+    pub fn new(iter: I, txn: &'a Transaction<D>) -> Self {
         AsIter { txn, iter }
     }
 }
 
-impl<'a, T, I> Iterator for AsIter<'a, T, I>
+impl<'a, D, I> Iterator for AsIter<'a, D, I>
 where
-    T: ReadTxn,
+    D: Deref<Target = Doc>,
     I: Iterator,
 {
     type Item = I::Item;
@@ -313,7 +311,7 @@ where
 #[cfg(test)]
 mod test {
     use crate::block::ClientID;
-    use crate::iter::{BlockIterator, BlockSliceIterator, IntoBlockIter, TxnIterator};
+    use crate::iter::{BlockIterator, BlockSliceIterator, IntoBlockIter};
     use crate::{Array, Assoc, Doc, StickyIndex, ID};
 
     #[test]

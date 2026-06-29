@@ -7,7 +7,6 @@ use fastrand::Rng;
 
 use crate::block::{Block, ClientID};
 use crate::encoding::read::{Cursor, Read};
-use crate::transaction::ReadTxn;
 use crate::update::BlockSet;
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder, EncoderV1};

@@ -1,9 +1,7 @@
-use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::fmt::Write;
-use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -13,11 +11,11 @@ use crate::transaction::TransactionMut;
 use crate::types::text::{diff_between, TextEvent, YChange};
 use crate::types::{
     event_change_set, event_keys, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim,
-    Delta, Entries, EntryChange, MapRef, Out, Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
+    Delta, EntryChange, MapRef, Out, Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
 };
 use crate::{
-    Any, ArrayRef, BranchID, DeepObservable, GetString, In, IndexedSequence, Map, Observable,
-    ReadTxn, StickyIndex, Text, TextRef, ID,
+    Any, ArrayRef, BranchID, DeepObservable, Doc, GetString, In, IndexedSequence, Map, Observable,
+    StickyIndex, Text, TextRef, Transaction, ID,
 };
 
 pub trait XmlPrelim: Prelim {}
@@ -285,17 +283,17 @@ impl XmlElementRef {
 impl GetString for XmlElementRef {
     /// Converts current XML node into a textual representation. This representation if flat, it
     /// doesn't include any indentation.
-    fn get_string<T: ReadTxn>(&self, txn: &T) -> String {
+    fn get_string<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> String {
         let tag: &str = self.tag();
         let inner = self.0;
         let mut s = String::new();
         write!(&mut s, "<{}", tag).unwrap();
-        let attributes = Attributes(inner.entries(txn));
+        let attributes = Attributes::new(&inner, txn.doc());
         for (k, v) in attributes {
             write!(&mut s, " {}=\"{}\"", k, v).unwrap();
         }
         write!(&mut s, ">").unwrap();
-        for i in inner.iter(txn) {
+        for i in inner.iter(txn.doc()) {
             if !i.is_deleted() {
                 for content in i.content.get_content() {
                     write!(&mut s, "{}", content.to_string(txn)).unwrap();
@@ -357,7 +355,7 @@ impl TryFrom<Out> for XmlElementRef {
 impl AsPrelim for XmlElementRef {
     type Prelim = XmlElementPrelim;
 
-    fn as_prelim<T: ReadTxn>(&self, txn: &T) -> Self::Prelim {
+    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let attributes: HashMap<Arc<str>, String> = self
             .0
             .map
@@ -493,7 +491,7 @@ impl From<XmlElementPrelim> for In {
 /// # Example
 ///
 /// ```rust
-/// use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, WriteTxn, XmlFragment, XmlTextPrelim};
+/// use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, XmlFragment, XmlTextPrelim};
 /// use yrs::types::Attrs;
 ///
 /// let mut doc = Doc::new();
@@ -591,7 +589,7 @@ impl Observable for XmlTextRef {
 }
 
 impl GetString for XmlTextRef {
-    fn get_string<T: ReadTxn>(&self, _txn: &T) -> String {
+    fn get_string<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> String {
         XmlTextRef::get_string_fragment(self.0.start, None, None)
     }
 }
@@ -641,7 +639,7 @@ impl TryFrom<Out> for XmlTextRef {
 impl AsPrelim for XmlTextRef {
     type Prelim = XmlDeltaPrelim;
 
-    fn as_prelim<T: ReadTxn>(&self, txn: &T) -> Self::Prelim {
+    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let attributes: HashMap<Arc<str>, String> = self
             .0
             .map
@@ -814,10 +812,10 @@ impl AsRef<ArrayRef> for XmlFragmentRef {
 impl GetString for XmlFragmentRef {
     /// Converts current XML node into a textual representation. This representation if flat, it
     /// doesn't include any indentation.
-    fn get_string<T: ReadTxn>(&self, txn: &T) -> String {
+    fn get_string<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> String {
         let inner = self.0;
         let mut s = String::new();
-        for i in inner.iter(txn) {
+        for i in inner.iter(txn.doc()) {
             if !i.is_deleted() {
                 for content in i.content.get_content() {
                     write!(&mut s, "{}", content.to_string(txn)).unwrap();
@@ -878,7 +876,7 @@ impl TryFrom<Out> for XmlFragmentRef {
 impl AsPrelim for XmlFragmentRef {
     type Prelim = XmlFragmentPrelim;
 
-    fn as_prelim<T: ReadTxn>(&self, txn: &T) -> Self::Prelim {
+    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
         let children: Vec<_> = self
             .children(txn)
             .map(|v| match v {
@@ -951,7 +949,7 @@ pub struct XmlHookRef(BranchPtr);
 impl Map for XmlHookRef {}
 
 impl ToJson for XmlHookRef {
-    fn to_json<T: ReadTxn>(&self, txn: &T) -> Any {
+    fn to_json<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Any {
         let map: &MapRef = self.as_ref();
         map.to_json(txn)
     }
@@ -1029,20 +1027,20 @@ pub trait Xml: AsRef<Branch> {
 
     /// Returns a value of an attribute given its `attr_name`. Returns `None` if no such attribute
     /// can be found inside of a current XML element.
-    fn get_attribute<T: ReadTxn>(&self, txn: &T, attr_name: &str) -> Option<Out> {
+    fn get_attribute<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>, attr_name: &str) -> Option<Out> {
         let branch = self.as_ref();
-        branch.get(txn, attr_name)
+        branch.get(txn.doc(), attr_name)
     }
 
     /// Returns an unordered iterator over all attributes (key-value pairs), that can be found
     /// inside of a current XML element.
-    fn attributes<'a, T: ReadTxn>(&'a self, txn: &'a T) -> Attributes<'a, &'a T, T> {
-        Attributes(Entries::new(&self.as_ref().map, txn))
+    fn attributes<'a, D: Deref<Target = Doc>>(&'a self, txn: &'a Transaction<D>) -> Attributes<'a> {
+        Attributes::new(self.as_ref(), txn.doc())
     }
 
-    fn siblings<'a, T: ReadTxn>(&self, txn: &'a T) -> Siblings<'a, T> {
+    fn siblings<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> Siblings<'a> {
         let ptr = BranchPtr::from(self.as_ref());
-        Siblings::new(ptr.item, txn)
+        Siblings::new(ptr.item, txn.doc())
     }
 }
 
@@ -1061,13 +1059,13 @@ pub trait XmlFragment: AsRef<Branch> {
     /// Returns an iterator over all children of a current XML fragment.
     /// It does NOT include nested children of its children - for such cases use [Self::successors]
     /// iterator.
-    fn children<'a, T: ReadTxn>(&self, txn: &'a T) -> XmlNodes<'a, T> {
+    fn children<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> XmlNodes<'a> {
         let iter = BlockIter::new(BranchPtr::from(self.as_ref()));
-        XmlNodes::new(iter, txn)
+        XmlNodes::new(iter, txn.doc())
     }
 
     /// Returns a number of elements stored in current array.
-    fn len<T: ReadTxn>(&self, _txn: &T) -> u32 {
+    fn len<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().len()
     }
 
@@ -1116,7 +1114,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// or `index` is outside the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
         let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
-        if walker.try_forward(txn, index) {
+        if walker.try_forward(txn.doc(), index) {
             walker.delete(txn, len)
         } else {
             panic!("Index {} is outside of the range of an array", index);
@@ -1125,7 +1123,7 @@ pub trait XmlFragment: AsRef<Branch> {
 
     /// Retrieves a value stored at a given `index`. Returns `None` when provided index was out
     /// of the range of a current array.
-    fn get<T: ReadTxn>(&self, _txn: &T, index: u32) -> Option<XmlOut> {
+    fn get<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>, index: u32) -> Option<XmlOut> {
         let branch = self.as_ref();
         let (content, _) = branch.get_at(index)?;
         if let ItemContent::Type(inner) = content {
@@ -1176,91 +1174,83 @@ pub trait XmlFragment: AsRef<Branch> {
     ///   "again".to_string()
     /// ]);
     /// ```
-    fn successors<'a, T: ReadTxn>(&'a self, txn: &'a T) -> TreeWalker<'a, &'a T, T> {
-        TreeWalker::new(self.as_ref(), txn)
+    fn successors<'a, D: Deref<Target = Doc>>(&'a self, txn: &'a Transaction<D>) -> TreeWalker<'a> {
+        TreeWalker::new(self.as_ref(), txn.doc())
     }
 }
 
 /// Iterator over the attributes (key-value pairs represented as a strings) of an [XmlElement].
-pub struct Attributes<'a, B, T>(Entries<'a, B, T>);
-
-impl<'a, B, T> Attributes<'a, B, T>
-where
-    B: Borrow<T>,
-    T: ReadTxn,
-{
-    pub fn new(branch: &'a Branch, txn: B) -> Self {
-        let entries = Entries::new(&branch.map, txn);
-        Attributes(entries)
-    }
+pub struct Attributes<'a> {
+    iter: std::collections::hash_map::Iter<'a, Arc<str>, ItemPtr>,
+    _doc: &'a Doc,
 }
 
-impl<'a, B, T> Iterator for Attributes<'a, B, T>
-where
-    B: Borrow<T>,
-    T: ReadTxn,
-{
-    type Item = (&'a str, Out);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (key, block) = self.0.next()?;
-        match block.content.get_last() {
-            Some(value) => Some((key.as_ref(), value)),
-            None => self.next(),
+impl<'a> Attributes<'a> {
+    pub fn new(branch: &'a Branch, doc: &'a Doc) -> Self {
+        Attributes {
+            iter: branch.map.iter(),
+            _doc: doc,
         }
     }
 }
 
-pub struct XmlNodes<'a, T> {
-    iter: BlockIter,
-    txn: &'a T,
-}
+impl<'a> Iterator for Attributes<'a> {
+    type Item = (&'a str, Out);
 
-impl<'a, T: ReadTxn> XmlNodes<'a, T> {
-    fn new(iter: BlockIter, txn: &'a T) -> Self {
-        XmlNodes { iter, txn }
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (key, ptr) = self.iter.next()?;
+            if ptr.is_deleted() {
+                continue;
+            }
+            match ptr.content.get_last() {
+                Some(value) => return Some((key.as_ref(), value)),
+                None => continue,
+            }
+        }
     }
 }
 
-impl<'a, T: ReadTxn> Iterator for XmlNodes<'a, T> {
+pub struct XmlNodes<'a> {
+    iter: BlockIter,
+    doc: &'a Doc,
+}
+
+impl<'a> XmlNodes<'a> {
+    fn new(iter: BlockIter, doc: &'a Doc) -> Self {
+        XmlNodes { iter, doc }
+    }
+}
+
+impl<'a> Iterator for XmlNodes<'a> {
     type Item = XmlOut;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let value = self.iter.read_value(self.txn)?;
+        let value = self.iter.read_value(self.doc)?;
         XmlOut::try_from(value).ok()
     }
 }
 
 /// An iterator over [XmlElement] successors, working in a recursive depth-first manner.
-pub struct TreeWalker<'a, B, T> {
+pub struct TreeWalker<'a> {
     current: Option<&'a Item>,
     root: TypePtr,
     first_call: bool,
-    _txn: B,
-    _marker: PhantomData<T>,
+    _doc: &'a Doc,
 }
 
-impl<'a, B, T: ReadTxn> TreeWalker<'a, B, T>
-where
-    B: Borrow<T>,
-    T: ReadTxn,
-{
-    pub fn new(root: &'a Branch, txn: B) -> Self {
+impl<'a> TreeWalker<'a> {
+    pub fn new(root: &'a Branch, doc: &'a Doc) -> Self {
         TreeWalker {
             current: root.start.as_deref(),
             root: TypePtr::Branch(BranchPtr::from(root)),
             first_call: true,
-            _txn: txn,
-            _marker: PhantomData::default(),
+            _doc: doc,
         }
     }
 }
 
-impl<'a, B, T: ReadTxn> Iterator for TreeWalker<'a, B, T>
-where
-    B: Borrow<T>,
-    T: ReadTxn,
-{
+impl<'a> Iterator for TreeWalker<'a> {
     type Item = XmlOut;
 
     /// Tree walker used depth-first search to move over the xml tree.
@@ -1354,7 +1344,7 @@ impl XmlTextEvent {
 
     /// Returns a summary of text changes made over corresponding [XmlText] collection within
     /// bounds of current transaction.
-    pub fn delta(&self, txn: &TransactionMut) -> &[Delta] {
+    pub fn delta<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &[Delta] {
         let delta = unsafe { self.delta.get().as_mut().unwrap() };
         delta
             .get_or_insert_with(|| TextEvent::get_delta(self.target.0, txn))
@@ -1363,7 +1353,7 @@ impl XmlTextEvent {
 
     /// Returns a summary of attribute changes made over corresponding [XmlText] collection within
     /// bounds of current transaction.
-    pub fn keys(&self, txn: &TransactionMut) -> &HashMap<Arc<str>, EntryChange> {
+    pub fn keys<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashMap<Arc<str>, EntryChange> {
         let keys = unsafe { self.keys.get().as_mut().unwrap() };
 
         match keys {
@@ -1383,18 +1373,18 @@ impl XmlTextEvent {
     }
 }
 
-pub struct Siblings<'a, T> {
+pub struct Siblings<'a> {
     current: Option<ItemPtr>,
-    _txn: &'a T,
+    _doc: &'a Doc,
 }
 
-impl<'a, T> Siblings<'a, T> {
-    fn new(current: Option<ItemPtr>, txn: &'a T) -> Self {
-        Siblings { current, _txn: txn }
+impl<'a> Siblings<'a> {
+    fn new(current: Option<ItemPtr>, doc: &'a Doc) -> Self {
+        Siblings { current, _doc: doc }
     }
 }
 
-impl<'a, T> Iterator for Siblings<'a, T> {
+impl<'a> Iterator for Siblings<'a> {
     type Item = XmlOut;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1414,7 +1404,7 @@ impl<'a, T> Iterator for Siblings<'a, T> {
     }
 }
 
-impl<'a, T> DoubleEndedIterator for Siblings<'a, T> {
+impl<'a> DoubleEndedIterator for Siblings<'a> {
     fn next_back(&mut self) -> Option<Self::Item> {
         while let Some(item) = self.current.as_deref() {
             self.current = item.left;
@@ -1471,25 +1461,25 @@ impl XmlEvent {
 
     /// Returns a summary of XML child nodes changed within corresponding [XmlElement] collection
     /// within bounds of current transaction.
-    pub fn delta(&self, txn: &TransactionMut) -> &[Change] {
+    pub fn delta<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &[Change] {
         self.changes(txn).delta.as_slice()
     }
 
     /// Returns a collection of block identifiers that have been added within a bounds of
     /// current transaction.
-    pub fn added(&self, txn: &TransactionMut) -> &HashSet<ID> {
+    pub fn added<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashSet<ID> {
         &self.changes(txn).added
     }
 
     /// Returns a collection of block identifiers that have been removed within a bounds of
     /// current transaction.
-    pub fn deleted(&self, txn: &TransactionMut) -> &HashSet<ID> {
+    pub fn deleted<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashSet<ID> {
         &self.changes(txn).deleted
     }
 
     /// Returns a summary of attribute changes made over corresponding [XmlElement] collection
     /// within bounds of current transaction.
-    pub fn keys(&self, txn: &TransactionMut) -> &HashMap<Arc<str>, EntryChange> {
+    pub fn keys<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashMap<Arc<str>, EntryChange> {
         let keys = unsafe { self.keys.get().as_mut().unwrap() };
 
         match keys {
@@ -1506,7 +1496,7 @@ impl XmlEvent {
         }
     }
 
-    fn changes(&self, txn: &TransactionMut) -> &ChangeSet<Change> {
+    fn changes<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &ChangeSet<Change> {
         let change_set = unsafe { self.change_set.get().as_mut().unwrap() };
         change_set
             .get_or_insert_with(|| Box::new(event_change_set(txn, self.target.as_ptr().start)))
@@ -1521,7 +1511,6 @@ mod test {
     use arc_swap::ArcSwapOption;
 
     use crate::test_utils::exchange_updates;
-    use crate::transaction::ReadTxn;
     use crate::types::xml::{Xml, XmlFragment, XmlOut};
     use crate::types::{Attrs, Change, EntryChange, Out};
     use crate::updates::decoder::Decode;

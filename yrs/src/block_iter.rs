@@ -1,8 +1,8 @@
-use crate::block::{Block, Item, ItemContent, ItemPtr, Prelim};
+use crate::block::{Item, ItemContent, ItemPtr, Prelim};
 use crate::branch::BranchPtr;
-use crate::transaction::{ReadTxn, TransactionMut};
+use crate::transaction::TransactionMut;
 use crate::types::TypePtr;
-use crate::{Out, ID};
+use crate::{Doc, Out, ID};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -73,13 +73,13 @@ impl BlockIter {
         false
     }
 
-    pub fn forward<T: ReadTxn>(&mut self, txn: &T, len: u32) {
-        if !self.try_forward(txn, len) {
+    pub fn forward(&mut self, doc: &Doc, len: u32) {
+        if !self.try_forward(doc, len) {
             panic!("Length exceeded")
         }
     }
 
-    pub fn try_forward<T: ReadTxn>(&mut self, txn: &T, mut len: u32) -> bool {
+    pub fn try_forward(&mut self, doc: &Doc, mut len: u32) -> bool {
         if len == 0 && self.next_item.is_none() {
             return true;
         }
@@ -95,7 +95,7 @@ impl BlockIter {
             self.rel = 0;
         }
 
-        let encoding = txn.doc().options.offset_kind;
+        let encoding = doc.options.offset_kind;
         while self.can_forward(item, len) {
             if item.is_none() {
                 return false;
@@ -127,12 +127,12 @@ impl BlockIter {
         true
     }
 
-    pub fn backward<T: ReadTxn>(&mut self, txn: &mut T, mut len: u32) {
+    pub fn backward(&mut self, doc: &Doc, mut len: u32) {
         if self.index < len {
             panic!("Length exceeded");
         }
         self.index -= len;
-        let encoding = txn.doc().options.offset_kind;
+        let encoding = doc.options.offset_kind;
         if self.reached_end {
             if let Some(next_item) = self.next_item.as_deref() {
                 self.rel = if next_item.is_countable() && !next_item.is_deleted() {
@@ -228,7 +228,7 @@ impl BlockIter {
             }
             if len > 0 {
                 self.next_item = item;
-                if self.try_forward(txn, 0) {
+                if self.try_forward(txn.doc(), 0) {
                     item = self.next_item;
                 } else {
                     panic!("Block iter couldn't move forward");
@@ -238,14 +238,14 @@ impl BlockIter {
         self.next_item = item;
     }
 
-    pub(crate) fn slice<T: ReadTxn>(&mut self, txn: &T, buf: &mut [Out]) -> u32 {
+    pub(crate) fn slice(&mut self, doc: &Doc, buf: &mut [Out]) -> u32 {
         let mut len = buf.len() as u32;
         if self.index + len > self.branch.content_len() {
             return 0;
         }
         self.index += len;
         let mut next_item = self.next_item;
-        let encoding = txn.doc().options.offset_kind;
+        let encoding = doc.options.offset_kind;
         let mut read = 0u32;
         while len > 0 {
             if !self.reached_end {
@@ -279,7 +279,7 @@ impl BlockIter {
                 if !self.reached_end && len > 0 {
                     // always set nextItem before any method call
                     self.next_item = next_item;
-                    if !self.try_forward(txn, 0) || self.next_item.is_none() {
+                    if !self.try_forward(doc, 0) || self.next_item.is_none() {
                         return read;
                     }
                     next_item = self.next_item;
@@ -310,9 +310,9 @@ impl BlockIter {
         }
     }
 
-    pub(crate) fn read_value<T: ReadTxn>(&mut self, txn: &T) -> Option<Out> {
+    pub(crate) fn read_value(&mut self, doc: &Doc) -> Option<Out> {
         let mut buf = [Out::default()];
-        if self.slice(txn, &mut buf) != 0 {
+        if self.slice(doc, &mut buf) != 0 {
             Some(std::mem::replace(&mut buf[0], Out::default()))
         } else {
             None
@@ -366,26 +366,23 @@ impl BlockIter {
         block_ptr
     }
 
-    pub fn values<'a, 'txn, T: ReadTxn>(
-        &'a mut self,
-        txn: &'txn mut TransactionMut<'txn>,
-    ) -> Values<'a, 'txn> {
-        Values::new(self, txn)
+    pub fn values<'a, 'doc>(&'a mut self, doc: &'doc Doc) -> Values<'a, 'doc> {
+        Values::new(self, doc)
     }
 }
 
-pub struct Values<'a, 'txn> {
+pub struct Values<'a, 'doc> {
     iter: &'a mut BlockIter,
-    txn: &'txn mut TransactionMut<'txn>,
+    doc: &'doc Doc,
 }
 
-impl<'a, 'txn> Values<'a, 'txn> {
-    fn new(iter: &'a mut BlockIter, txn: &'txn mut TransactionMut<'txn>) -> Self {
-        Values { iter, txn }
+impl<'a, 'doc> Values<'a, 'doc> {
+    fn new(iter: &'a mut BlockIter, doc: &'doc Doc) -> Self {
+        Values { iter, doc }
     }
 }
 
-impl<'a, 'txn> Iterator for Values<'a, 'txn> {
+impl<'a, 'doc> Iterator for Values<'a, 'doc> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -393,7 +390,7 @@ impl<'a, 'txn> Iterator for Values<'a, 'txn> {
             None
         } else {
             let mut buf = [Out::default()];
-            if self.iter.slice(self.txn, &mut buf) != 0 {
+            if self.iter.slice(self.doc, &mut buf) != 0 {
                 Some(std::mem::replace(&mut buf[0], Out::default()))
             } else {
                 None

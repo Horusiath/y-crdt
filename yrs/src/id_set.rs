@@ -4,10 +4,10 @@ use crate::encoding::read::Error;
 use crate::ids::{BlockSliceIter, IdMapInner, IdRanges};
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
-use crate::Doc;
+use crate::{Doc, Transaction};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::ReadTxn;
+use std::ops::Deref;
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
@@ -527,7 +527,7 @@ impl<'ds> Blocks<'ds> {
 impl<'ds> TxnIterator for Blocks<'ds> {
     type Item = BlockSlice;
 
-    fn next<T: ReadTxn>(&mut self, txn: &T) -> Option<Self::Item> {
+    fn next<D: Deref<Target = Doc>>(&mut self, txn: &Transaction<D>) -> Option<Self::Item> {
         if let Some(r) = self.current_range.clone() {
             let mut block = if let Some(idx) = self.current_index.as_mut() {
                 if let Some(block) = txn
@@ -626,7 +626,7 @@ pub(crate) mod test {
     use crate::test_utils::exchange_updates;
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-    use crate::{Doc, Options, ReadTxn, Text, ID};
+    use crate::{Doc, Options, Text, ID};
     use std::collections::HashSet;
     use std::fmt::Debug;
 
