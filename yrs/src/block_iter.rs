@@ -1,5 +1,5 @@
 use crate::block::{Item, ItemContent, ItemPtr, Prelim};
-use crate::branch::BranchPtr;
+use crate::node::NodePtr;
 use crate::transaction::TransactionMut;
 use crate::types::TypePtr;
 use crate::{Doc, Out, ID};
@@ -8,7 +8,7 @@ use crate::{Doc, Out, ID};
 /// [Move] markers that may change their order.
 #[derive(Debug, Clone)]
 pub(crate) struct BlockIter {
-    branch: BranchPtr,
+    branch: NodePtr,
     index: u32,
     rel: u32,
     next_item: Option<ItemPtr>,
@@ -16,7 +16,7 @@ pub(crate) struct BlockIter {
 }
 
 impl BlockIter {
-    pub fn new(branch: BranchPtr) -> Self {
+    pub fn new(branch: NodePtr) -> Self {
         let next_item = branch.start;
         let reached_end = branch.start.is_none();
         BlockIter {
@@ -331,12 +331,12 @@ impl BlockIter {
             let clock = store.blocks.get_clock(&client_id);
             ID::new(client_id, clock)
         };
-        let parent = TypePtr::Branch(self.branch);
+        let parent = TypePtr::Node(self.branch);
         let right = self.right();
         let left = self.left();
         let (mut content, remainder) = value.into_content(txn);
-        let inner_ref = if let ItemContent::Type(inner_ref) = &mut content {
-            Some(BranchPtr::from(inner_ref))
+        let inner_ref = if let ItemContent::Node(inner_ref) = &mut content {
+            Some(NodePtr::from(inner_ref))
         } else {
             None
         };

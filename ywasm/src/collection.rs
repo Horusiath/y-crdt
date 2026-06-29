@@ -2,7 +2,7 @@ use crate::transaction::{ImplicitTransaction, YTransaction};
 use crate::Result;
 use std::ops::Deref;
 use wasm_bindgen::JsValue;
-use yrs::{BranchID, Doc, Hook, ReadTxn, SharedRef, Transact, Transaction, TransactionMut};
+use yrs::{Doc, Hook, NodeID, SharedRef, Transaction, TransactionMut};
 
 pub enum SharedCollection<P, S> {
     Integrated(Integrated<S>),
@@ -26,18 +26,18 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
             }
             SharedCollection::Integrated(c) => {
-                let branch_id = c.hook.id();
-                crate::js::to_js(branch_id).map_err(|e| JsValue::from_str(&e.to_string()))
+                let node_id = c.hook.id();
+                crate::js::to_js(node_id).map_err(|e| JsValue::from_str(&e.to_string()))
             }
         }
     }
 
-    pub fn try_integrated(&self) -> Result<(&BranchID, &Doc)> {
+    pub fn try_integrated(&self) -> Result<(&NodeID, &Doc)> {
         match self {
             SharedCollection::Integrated(i) => {
-                let branch_id = i.hook.id();
+                let node_id = i.hook.id();
                 let doc = &i.doc;
-                Ok((branch_id, doc))
+                Ok((node_id, doc))
             }
             SharedCollection::Prelim(_) => {
                 Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP))
@@ -64,7 +64,7 @@ impl<P, S: SharedRef + 'static> SharedCollection<P, S> {
     }
 
     #[inline]
-    pub fn branch_id(&self) -> Option<&BranchID> {
+    pub fn node_id(&self) -> Option<&NodeID> {
         match self {
             SharedCollection::Prelim(_) => None,
             SharedCollection::Integrated(v) => Some(v.hook.id()),
@@ -119,24 +119,18 @@ impl<S: SharedRef + 'static> Integrated<S> {
         }
     }
 
-    pub fn resolve<T: ReadTxn>(&self, txn: &T) -> Result<S> {
+    pub fn resolve<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Result<S> {
         match self.hook.get(txn) {
             Some(shared_ref) => Ok(shared_ref),
             None => Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),
         }
     }
 
-    pub fn transact(&self) -> Result<Transaction> {
-        match self.doc.try_transact() {
-            Ok(tx) => Ok(tx),
-            Err(_) => Err(JsValue::from_str(crate::js::errors::ANOTHER_RW_TX)),
-        }
+    pub fn transact(&self) -> Transaction<&yrs::Doc> {
+        self.doc.transact()
     }
 
-    pub fn transact_mut(&self) -> Result<TransactionMut> {
-        match self.doc.try_transact_mut() {
-            Ok(tx) => Ok(tx),
-            Err(_) => Err(JsValue::from_str(crate::js::errors::ANOTHER_TX)),
-        }
+    pub fn transact_mut(&mut self) -> TransactionMut {
+        self.doc.transact_mut()
     }
 }

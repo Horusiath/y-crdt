@@ -1,10 +1,11 @@
 use crate::block::{Block, ClientID, ItemContent, ItemPtr, Prelim};
 use crate::block_store::BlockStore;
-use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
 use crate::id_set::DeleteSet;
+use crate::node::{Node, NodePtr};
 use crate::slice::ItemSlice;
+use crate::transaction::TransactionState;
 use crate::transaction::{Origin, TransactionMut};
 use crate::types::{Path, PathSegment, RootRef, ToJson, TypeRef};
 use crate::update::PendingUpdate;
@@ -13,10 +14,9 @@ use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
 use crate::{error, Observer};
 use crate::{
-    uuid_v4, uuid_v4_from, ArrayRef, BranchID, IdSet, MapRef, Snapshot, StateVector, TextRef,
+    uuid_v4, uuid_v4_from, ArrayRef, IdSet, MapRef, NodeID, Snapshot, StateVector, TextRef,
     Transaction, Uuid, XmlFragmentRef, ID,
 };
-use crate::transaction::TransactionState;
 use crate::{Any, Subscription};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
@@ -38,7 +38,7 @@ pub struct Doc {
     /// Root types (a.k.a. top-level types). These types are defined by users at the document level,
     /// they have their own unique names and represent core shared types that expose operations
     /// which can be called concurrently by remote peers in a conflict-free manner.
-    pub(crate) types: HashMap<Arc<str>, Box<Branch>>,
+    pub(crate) types: HashMap<Arc<str>, Box<Node>>,
 
     /// A block store of a current document. It represent all blocks (inserted or tombstoned
     /// operations) integrated - and therefore visible - into a current document.
@@ -64,7 +64,7 @@ pub struct Doc {
     pub(crate) parent: Option<ItemPtr>,
 
     /// Dependencies between items and weak links pointing to these items.
-    pub(crate) linked_by: HashMap<ItemPtr, HashSet<BranchPtr>>,
+    pub(crate) linked_by: HashMap<ItemPtr, HashSet<NodePtr>>,
 }
 
 /// Generates `observe_*`, `observe_*_with`, and `unobserve_*` methods on [`Doc`] for a given
@@ -168,12 +168,18 @@ impl Doc {
 
     /// Creates a lightweight read-only transaction.
     pub fn transact(&self) -> Transaction<&Doc> {
-        Transaction { doc: self, state: None }
+        Transaction {
+            doc: self,
+            state: None,
+        }
     }
 
     /// Creates a read-write capable transaction.
     pub fn transact_mut(&mut self) -> TransactionMut<'_> {
-        Transaction { doc: self, state: None }
+        Transaction {
+            doc: self,
+            state: None,
+        }
     }
 
     /// Creates a read-write capable transaction with an `origin` classifier attached.
@@ -353,7 +359,10 @@ impl Doc {
         // cleanup events
         if let Some(mut events) = self.events.take() {
             let doc_ptr = self as *const Doc;
-            let txn: TransactionMut = Transaction { doc: self, state: None };
+            let txn: TransactionMut = Transaction {
+                doc: self,
+                state: None,
+            };
             unsafe {
                 let doc_ref = &*doc_ptr;
                 let txn_ref = txn.as_readonly();
@@ -368,8 +377,8 @@ impl Doc {
         self.transact().parent_doc()
     }
 
-    pub fn branch_id(&self) -> Option<BranchID> {
-        self.transact().branch_id()
+    pub fn node_id(&self) -> Option<NodeID> {
+        self.transact().node_id()
     }
 
     /// Returns a reference to the document's [Options].
@@ -413,8 +422,8 @@ impl Doc {
 
     /// Returns a branch reference to a complex type identified by its pointer. Returns `None` if
     /// no such type could be found or was ever defined.
-    pub(crate) fn get_type<K: Borrow<str>>(&self, key: K) -> Option<BranchPtr> {
-        let ptr = BranchPtr::from(self.types.get(key.borrow())?);
+    pub(crate) fn get_type<K: Borrow<str>>(&self, key: K) -> Option<NodePtr> {
+        let ptr = NodePtr::from(self.types.get(key.borrow())?);
         Some(ptr)
     }
 
@@ -424,17 +433,17 @@ impl Doc {
         &mut self,
         key: K,
         type_ref: TypeRef,
-    ) -> BranchPtr {
+    ) -> NodePtr {
         let key = key.into();
         match self.types.entry(key.clone()) {
             Entry::Occupied(e) => {
-                let mut branch = BranchPtr::from(e.get());
+                let mut branch = NodePtr::from(e.get());
                 branch.repair_type_ref(type_ref);
                 branch
             }
             Entry::Vacant(e) => {
-                let mut branch = Branch::new(type_ref);
-                let mut branch_ref = BranchPtr::from(&mut branch);
+                let mut branch = Node::new(type_ref);
+                let mut branch_ref = NodePtr::from(&mut branch);
                 branch_ref.name = Some(key);
                 e.insert(branch);
                 branch_ref
@@ -560,7 +569,7 @@ impl Doc {
         diff
     }
 
-    pub fn get_type_from_path(&self, path: &Path) -> Option<BranchPtr> {
+    pub fn get_type_from_path(&self, path: &Path) -> Option<NodePtr> {
         let mut i = path.iter();
         if let Some(PathSegment::Key(root_name)) = i.next() {
             let mut current = self.get_type(root_name.clone())?;
@@ -568,14 +577,14 @@ impl Doc {
                 match segment {
                     PathSegment::Key(key) => {
                         let child = current.map.get(key)?;
-                        if let ItemContent::Type(child_branch) = &child.content {
-                            current = BranchPtr::from(child_branch.as_ref());
+                        if let ItemContent::Node(child_branch) = &child.content {
+                            current = NodePtr::from(child_branch.as_ref());
                         } else {
                             return None;
                         }
                     }
                     PathSegment::Index(index) => {
-                        if let Some((ItemContent::Type(child_branch), _)) = current.get_at(*index) {
+                        if let Some((ItemContent::Node(child_branch), _)) = current.get_at(*index) {
                             current = child_branch.into();
                         } else {
                             return None;
@@ -755,10 +764,7 @@ macro_rules! define_event_type {
     };
 }
 
-define_event_type!(TransactionCleanupFn(
-    &Transaction<&Doc>,
-    &TransactionCleanupEvent
-));
+define_event_type!(TransactionCleanupFn(&Transaction<&Doc>, &TransactionCleanupEvent));
 define_event_type!(AfterTransactionFn(&mut TransactionMut));
 define_event_type!(UpdateFn(&Transaction<&Doc>, &UpdateEvent));
 define_event_type!(SubdocsFn(&Transaction<&Doc>, &SubdocsEvent));
@@ -986,7 +992,7 @@ impl Prelim for Doc {
         (ItemContent::Doc(None, options), None)
     }
 
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: BranchPtr) {}
+    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
 }
 
 impl TryFrom<ItemPtr> for Uuid {
@@ -1322,12 +1328,13 @@ mod test {
         let delete_ref = delete_set.clone();
         // Subscribe callback
 
-        let sub: Subscription =
-            doc.observe_transaction_cleanup(move |_: &Transaction<&Doc>, event: &TransactionCleanupEvent| {
+        let sub: Subscription = doc.observe_transaction_cleanup(
+            move |_: &Transaction<&Doc>, event: &TransactionCleanupEvent| {
                 before_ref.store(Some(event.before_state.clone().into()));
                 after_ref.store(Some(event.after_state.clone().into()));
                 delete_ref.store(Some(event.delete_set.clone().into()));
-            });
+            },
+        );
 
         {
             let mut txn = doc.transact_mut();

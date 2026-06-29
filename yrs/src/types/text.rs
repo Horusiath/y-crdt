@@ -1,8 +1,8 @@
-use crate::block::{Block, EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim, Unused};
+use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim, Unused};
 use crate::transaction::TransactionMut;
 use crate::types::{
-    AsPrelim, Attrs, Branch, BranchPtr, DefaultPrelim, Delta, Out, Path, RootRef, SharedRef,
-    TypePtr, TypeRef,
+    AsPrelim, Attrs, DefaultPrelim, Delta, Node, NodePtr, Out, Path, RootRef, SharedRef, TypePtr,
+    TypeRef,
 };
 use crate::utils::OptionExt;
 use crate::*;
@@ -88,7 +88,7 @@ use std::ops::{Deref, DerefMut};
 /// ```
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct TextRef(BranchPtr);
+pub struct TextRef(NodePtr);
 
 impl RootRef for TextRef {
     fn type_ref() -> TypeRef {
@@ -136,7 +136,7 @@ impl TryFrom<ItemPtr> for TextRef {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(branch) = value.clone().as_branch() {
+        if let Some(branch) = value.clone().as_node() {
             Ok(TextRef::from(branch))
         } else {
             Err(value)
@@ -155,7 +155,7 @@ impl TryFrom<Out> for TextRef {
     }
 }
 
-pub trait Text: AsRef<Branch> + Sized {
+pub trait Text: AsRef<Node> + Sized {
     /// Returns a number of characters visible in a current text data structure.
     fn len<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         self.as_ref().content_len
@@ -213,7 +213,7 @@ pub trait Text: AsRef<Branch> + Sized {
         if chunk.is_empty() {
             return;
         }
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             let value = crate::block::PrelimString(chunk.into());
             while let Some(right) = pos.right.as_ref() {
@@ -235,9 +235,9 @@ pub trait Text: AsRef<Branch> + Sized {
         D: IntoIterator<Item = Delta<P>>,
         P: Prelim,
     {
-        let branch = BranchPtr::from(self.as_ref());
+        let branch = NodePtr::from(self.as_ref());
         let mut pos = ItemPosition {
-            parent: TypePtr::Branch(branch),
+            parent: TypePtr::Node(branch),
             left: None,
             right: branch.start,
             index: 0,
@@ -282,7 +282,7 @@ pub trait Text: AsRef<Branch> + Sized {
         if chunk.is_empty() {
             return;
         }
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             let value = block::PrelimString(chunk.into());
             insert(this, txn, &mut pos, value, attributes);
@@ -302,7 +302,7 @@ pub trait Text: AsRef<Branch> + Sized {
     where
         V: Into<EmbedPrelim<V>> + Prelim,
     {
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         if let Some(pos) = find_position(this, txn, index) {
             let ptr = txn
                 .create_item(&pos, content.into(), None)
@@ -335,7 +335,7 @@ pub trait Text: AsRef<Branch> + Sized {
     where
         V: Into<EmbedPrelim<V>> + Prelim,
     {
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             let item = insert(this, txn, &mut pos, embed.into(), attributes)
                 .expect("cannot insert empty value");
@@ -359,7 +359,7 @@ pub trait Text: AsRef<Branch> + Sized {
     /// This method panics in case when not all expected characters were removed (due to
     /// insufficient number of characters to remove) or `index` is outside of the bounds of text.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             remove(txn, &mut pos, len)
         } else {
@@ -370,7 +370,7 @@ pub trait Text: AsRef<Branch> + Sized {
     /// Wraps an existing piece of text within a range described by `index`-`len` parameters with
     /// formatting blocks containing provided `attributes` metadata.
     fn format(&self, txn: &mut TransactionMut, index: u32, len: u32, attributes: Attrs) {
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         if let Some(mut pos) = find_position(this, txn, index) {
             insert_format(this, txn, &mut pos, len, attributes)
         } else {
@@ -451,14 +451,14 @@ pub trait Text: AsRef<Branch> + Sized {
     }
 }
 
-impl From<BranchPtr> for TextRef {
-    fn from(inner: BranchPtr) -> Self {
+impl From<NodePtr> for TextRef {
+    fn from(inner: NodePtr) -> Self {
         TextRef(inner)
     }
 }
 
-impl AsRef<Branch> for TextRef {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for TextRef {
+    fn as_ref(&self) -> &Node {
         self.0.deref()
     }
 }
@@ -511,7 +511,7 @@ where
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         self.0.integrate(txn, inner_ref)
     }
 }
@@ -659,7 +659,7 @@ where
                             }
                         }
                     }
-                    ItemContent::Type(_) | ItemContent::Embed(_) => {
+                    ItemContent::Node(_) | ItemContent::Embed(_) => {
                         self.pack_str();
                         if let Some(value) = item.content.get_first() {
                             let attrs = self.attrs_boxed();
@@ -701,7 +701,7 @@ where
 }
 
 fn insert<P: Prelim>(
-    branch: BranchPtr,
+    branch: NodePtr,
     txn: &mut TransactionMut,
     pos: &mut ItemPosition,
     value: P,
@@ -731,7 +731,7 @@ pub(crate) fn update_current_attributes(attrs: &mut Attrs, key: &str, value: &An
     }
 }
 
-fn find_position(this: BranchPtr, txn: &mut TransactionMut, index: u32) -> Option<ItemPosition> {
+fn find_position(this: NodePtr, txn: &mut TransactionMut, index: u32) -> Option<ItemPosition> {
     let mut pos = {
         ItemPosition {
             parent: this.into(),
@@ -815,7 +815,7 @@ fn remove(txn: &mut TransactionMut, pos: &mut ItemPosition, len: u32) {
 
         if !item.is_deleted() {
             match &item.content {
-                ItemContent::Embed(_) | ItemContent::String(_) | ItemContent::Type(_) => {
+                ItemContent::Embed(_) | ItemContent::String(_) | ItemContent::Node(_) => {
                     let content_len = item.content_len(encoding);
                     let ptr = pos.right.unwrap();
                     if remaining < content_len {
@@ -871,7 +871,7 @@ fn is_valid_target(item: ItemPtr) -> bool {
 }
 
 fn insert_format(
-    this: BranchPtr,
+    this: NodePtr,
     txn: &mut TransactionMut,
     pos: &mut ItemPosition,
     mut len: u32,
@@ -956,7 +956,7 @@ fn minimize_attr_changes(pos: &mut ItemPosition, attrs: &Attrs) {
 }
 
 fn insert_attributes(
-    this: BranchPtr,
+    this: NodePtr,
     txn: &mut TransactionMut,
     pos: &mut ItemPosition,
     attrs: Attrs,
@@ -996,7 +996,7 @@ fn insert_attributes(
 }
 
 fn insert_negated_attributes(
-    this: BranchPtr,
+    this: NodePtr,
     txn: &mut TransactionMut,
     pos: &mut ItemPosition,
     mut attrs: Attrs,
@@ -1136,10 +1136,10 @@ impl Prelim for DeltaPrelim {
     type Return = TextRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        (ItemContent::Type(Branch::new(TypeRef::Text)), Some(self))
+        (ItemContent::Node(Node::new(TypeRef::Text)), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let text_ref = TextRef::from(inner_ref);
         text_ref.apply_delta(txn, self.0);
     }
@@ -1197,13 +1197,13 @@ pub enum ChangeKind {
 
 /// Event generated by [Text::observe] method. Emitted during transaction commit phase.
 pub struct TextEvent {
-    pub(crate) current_target: BranchPtr,
+    pub(crate) current_target: NodePtr,
     target: TextRef,
     delta: UnsafeCell<Option<Vec<Delta>>>,
 }
 
 impl TextEvent {
-    pub(crate) fn new(branch_ref: BranchPtr) -> Self {
+    pub(crate) fn new(branch_ref: NodePtr) -> Self {
         let current_target = branch_ref.clone();
         let target = TextRef::from(branch_ref);
         TextEvent {
@@ -1220,7 +1220,7 @@ impl TextEvent {
 
     /// Returns a path from root type down to [Text] instance which emitted this event.
     pub fn path(&self) -> Path {
-        Branch::path(self.current_target, self.target.0)
+        Node::path(self.current_target, self.target.0)
     }
 
     /// Returns a summary of text changes made over corresponding [Text] collection within
@@ -1233,7 +1233,7 @@ impl TextEvent {
     }
 
     pub(crate) fn get_delta<D: Deref<Target = Doc>>(
-        target: BranchPtr,
+        target: NodePtr,
         txn: &Transaction<D>,
     ) -> Vec<Delta> {
         #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1314,7 +1314,7 @@ impl TextEvent {
 
         while let Some(item) = current.as_deref() {
             match &item.content {
-                ItemContent::Type(_) | ItemContent::Embed(_) => {
+                ItemContent::Node(_) | ItemContent::Embed(_) => {
                     if txn.has_added(&item.id) {
                         if !txn.has_deleted(&item.id) {
                             asm.add_op();
@@ -1471,11 +1471,11 @@ impl Prelim for TextPrelim {
     type Return = TextRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Branch::new(TypeRef::Text);
-        (ItemContent::Type(inner), Some(self))
+        let inner = Node::new(TypeRef::Text);
+        (ItemContent::Node(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         if !self.0.is_empty() {
             let text = TextRef::from(inner_ref);
             text.push(txn, &self.0);

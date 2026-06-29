@@ -12,7 +12,7 @@ use crate::iter::{
     AsIter, BlockIter, BlockIterator, BlockSliceIterator, IntoBlockIter, RangeIter, TxnIterator,
     Values,
 };
-use crate::types::{AsPrelim, Branch, BranchPtr, Out, Path, SharedRef, TypeRef};
+use crate::types::{AsPrelim, Node, NodePtr, Out, Path, SharedRef, TypeRef};
 use crate::{
     Array, Assoc, DeepObservable, Doc, GetString, In, IndexScope, Map, Observable, StickyIndex,
     TextRef, Transaction, TransactionMut, XmlTextRef, ID,
@@ -77,18 +77,18 @@ use crate::{
 pub struct WeakRef<P>(P);
 
 impl<P: SharedRef> SharedRef for WeakRef<P> {}
-impl SharedRef for WeakRef<BranchPtr> {}
-impl<P: SharedRef> From<WeakRef<BranchPtr>> for WeakRef<P> {
-    fn from(value: WeakRef<BranchPtr>) -> Self {
+impl SharedRef for WeakRef<NodePtr> {}
+impl<P: SharedRef> From<WeakRef<NodePtr>> for WeakRef<P> {
+    fn from(value: WeakRef<NodePtr>) -> Self {
         WeakRef(P::from(value.0))
     }
 }
-impl<P: AsRef<Branch>> AsRef<Branch> for WeakRef<P> {
-    fn as_ref(&self) -> &Branch {
+impl<P: AsRef<Node>> AsRef<Node> for WeakRef<P> {
+    fn as_ref(&self) -> &Node {
         self.0.as_ref()
     }
 }
-impl<P: AsRef<Branch>> WeakRef<P> {
+impl<P: AsRef<Node>> WeakRef<P> {
     /// Returns a [LinkSource] corresponding with current [WeakRef].
     /// Returns `None` if underlying branch reference was not meant to be used as [WeakRef].
     pub fn try_source(&self) -> Option<&Arc<LinkSource>> {
@@ -125,8 +125,8 @@ impl<P: AsRef<Branch>> WeakRef<P> {
     }
 }
 
-impl<P: From<BranchPtr>> From<BranchPtr> for WeakRef<P> {
-    fn from(inner: BranchPtr) -> Self {
+impl<P: From<NodePtr>> From<NodePtr> for WeakRef<P> {
+    fn from(inner: NodePtr) -> Self {
         WeakRef(P::from(inner))
     }
 }
@@ -142,7 +142,7 @@ impl<P: TryFrom<ItemPtr>> TryFrom<ItemPtr> for WeakRef<P> {
     }
 }
 
-impl<P: From<BranchPtr>> TryFrom<Out> for WeakRef<P> {
+impl<P: From<NodePtr>> TryFrom<Out> for WeakRef<P> {
     type Error = Out;
 
     fn try_from(value: Out) -> Result<Self, Self::Error> {
@@ -153,17 +153,17 @@ impl<P: From<BranchPtr>> TryFrom<Out> for WeakRef<P> {
     }
 }
 
-impl<P: AsRef<Branch>> Eq for WeakRef<P> {}
-impl<P: AsRef<Branch>> PartialEq for WeakRef<P> {
+impl<P: AsRef<Node>> Eq for WeakRef<P> {}
+impl<P: AsRef<Node>> PartialEq for WeakRef<P> {
     fn eq(&self, other: &Self) -> bool {
         self.as_ref().id() == other.as_ref().id()
     }
 }
 
-impl<P> DeepObservable for WeakRef<P> where P: AsRef<Branch> {}
+impl<P> DeepObservable for WeakRef<P> where P: AsRef<Node> {}
 impl<P> Observable for WeakRef<P>
 where
-    P: AsRef<Branch>,
+    P: AsRef<Node>,
 {
     type Event = WeakEvent;
 }
@@ -229,9 +229,9 @@ impl GetString for WeakRef<XmlTextRef> {
     }
 }
 
-impl<P: AsRef<Branch>> WeakRef<P> {
-    pub fn into_inner(self) -> WeakRef<BranchPtr> {
-        WeakRef(BranchPtr::from(self.0.as_ref()))
+impl<P: AsRef<Node>> WeakRef<P> {
+    pub fn into_inner(self) -> WeakRef<NodePtr> {
+        WeakRef(NodePtr::from(self.0.as_ref()))
     }
 }
 
@@ -311,7 +311,7 @@ where
 
 impl<V> AsPrelim for WeakRef<V>
 where
-    V: AsRef<Branch> + TryFrom<ItemPtr>,
+    V: AsRef<Node> + TryFrom<ItemPtr>,
 {
     type Prelim = WeakPrelim<V>;
 
@@ -344,7 +344,7 @@ impl<P> WeakPrelim<P> {
         }
     }
 
-    pub fn into_inner(&self) -> WeakPrelim<BranchPtr> {
+    pub fn into_inner(&self) -> WeakPrelim<NodePtr> {
         WeakPrelim {
             source: self.source.clone(),
             _marker: PhantomData::default(),
@@ -403,7 +403,7 @@ impl GetString for WeakPrelim<XmlTextRef> {
     }
 }
 
-impl<P: AsRef<Branch>> From<WeakRef<P>> for WeakPrelim<P> {
+impl<P: AsRef<Node>> From<WeakRef<P>> for WeakPrelim<P> {
     fn from(value: WeakRef<P>) -> Self {
         let branch = value.0.as_ref();
         if let TypeRef::WeakLink(source) = &branch.type_ref {
@@ -417,8 +417,8 @@ impl<P: AsRef<Branch>> From<WeakRef<P>> for WeakPrelim<P> {
     }
 }
 
-impl<P: AsRef<Branch>> WeakPrelim<P> {
-    pub fn upcast(self) -> WeakPrelim<BranchPtr> {
+impl<P: AsRef<Node>> WeakPrelim<P> {
+    pub fn upcast(self) -> WeakPrelim<NodePtr> {
         WeakPrelim {
             source: self.source,
             _marker: Default::default(),
@@ -430,15 +430,15 @@ impl<P: TryFrom<ItemPtr>> Prelim for WeakPrelim<P> {
     type Return = WeakRef<P>;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Branch::new(TypeRef::WeakLink(self.source.clone()));
-        (ItemContent::Type(inner), Some(self))
+        let inner = Node::new(TypeRef::WeakLink(self.source.clone()));
+        (ItemContent::Node(inner), Some(self))
     }
 
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: BranchPtr) {}
+    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
 }
 
-impl<P: SharedRef> From<WeakPrelim<BranchPtr>> for WeakPrelim<P> {
-    fn from(value: WeakPrelim<BranchPtr>) -> Self {
+impl<P: SharedRef> From<WeakPrelim<NodePtr>> for WeakPrelim<P> {
+    fn from(value: WeakPrelim<NodePtr>) -> Self {
         WeakPrelim {
             source: value.source,
             _marker: Default::default(),
@@ -460,12 +460,12 @@ impl<T> From<WeakPrelim<T>> for In {
 }
 
 pub struct WeakEvent {
-    pub(crate) current_target: BranchPtr,
-    target: BranchPtr,
+    pub(crate) current_target: NodePtr,
+    target: NodePtr,
 }
 
 impl WeakEvent {
-    pub(crate) fn new(branch_ref: BranchPtr) -> Self {
+    pub(crate) fn new(branch_ref: NodePtr) -> Self {
         let current_target = branch_ref.clone();
         WeakEvent {
             target: branch_ref,
@@ -473,13 +473,13 @@ impl WeakEvent {
         }
     }
 
-    pub fn as_target<T: From<BranchPtr>>(&self) -> WeakRef<T> {
+    pub fn as_target<T: From<NodePtr>>(&self) -> WeakRef<T> {
         WeakRef(T::from(self.target))
     }
 
     /// Returns a path from root type down to [Text] instance which emitted this event.
     pub fn path(&self) -> Path {
-        Branch::path(self.current_target, self.target)
+        Node::path(self.current_target, self.target)
     }
 }
 
@@ -506,7 +506,7 @@ impl LinkSource {
     }
 
     /// Remove reference to current weak link from all items it quotes.
-    pub(crate) fn unlink_all(&self, txn: &mut TransactionMut, branch_ptr: BranchPtr) {
+    pub(crate) fn unlink_all(&self, txn: &mut TransactionMut, branch_ptr: NodePtr) {
         let item = self.quote_start.get_item(txn.doc());
         let mut i = item.to_iter();
         while let Some(item) = Iterator::next(&mut i) {
@@ -516,7 +516,10 @@ impl LinkSource {
         }
     }
 
-    pub(crate) fn unquote<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a, D> {
+    pub(crate) fn unquote<'a, D: Deref<Target = Doc>>(
+        &self,
+        txn: &'a Transaction<D>,
+    ) -> Unquote<'a, D> {
         let mut current = self.quote_start.get_item(txn.doc());
         if let Some(ptr) = &mut current {
             if Self::try_right_most(ptr) {
@@ -524,7 +527,7 @@ impl LinkSource {
             }
         }
         if let Some(item) = current.as_deref() {
-            let parent = *item.parent.as_branch().unwrap();
+            let parent = *item.parent.as_node().unwrap();
             Unquote::new(
                 txn,
                 parent,
@@ -549,7 +552,7 @@ impl LinkSource {
         false
     }
 
-    pub(crate) fn materialize(&self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    pub(crate) fn materialize(&self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let curr = if let Some(ptr) = self.quote_start.get_item(txn.doc()) {
             ptr
         } else {
@@ -614,7 +617,7 @@ impl LinkSource {
     pub fn to_xml_string<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> String {
         let curr = self.quote_start.get_item(txn.doc());
         if let Some(item) = curr.as_deref() {
-            if let Some(branch) = item.parent.as_branch() {
+            if let Some(branch) = item.parent.as_node() {
                 return XmlTextRef::get_string_fragment(
                     branch.start,
                     Some(&self.quote_start),
@@ -630,7 +633,7 @@ impl LinkSource {
 pub struct Unquote<'a, D>(Option<AsIter<'a, D, Values<RangeIter<BlockIter>>>>);
 
 impl<'a, D: Deref<Target = Doc>> Unquote<'a, D> {
-    fn new(txn: &'a Transaction<D>, parent: BranchPtr, from: StickyIndex, to: StickyIndex) -> Self {
+    fn new(txn: &'a Transaction<D>, parent: NodePtr, from: StickyIndex, to: StickyIndex) -> Self {
         let iter = BlockIter::new(parent.start).within_range(from, to).values();
         Unquote(Some(AsIter::new(iter, txn)))
     }
@@ -651,7 +654,7 @@ impl<'a, D: Deref<Target = Doc>> Iterator for Unquote<'a, D> {
 
 /// Trait which defines a capability to quote a range of elements from implementing collection
 /// and referencing them later in other collections.
-pub trait Quotable: AsRef<Branch> + Sized {
+pub trait Quotable: AsRef<Node> + Sized {
     /// Returns [WeakPrelim] to a given range of elements, if it's in a boundaries of a current
     /// quotable collection.
     ///
@@ -691,7 +694,7 @@ pub trait Quotable: AsRef<Branch> + Sized {
         D: Deref<Target = Doc>,
         R: RangeBounds<u32>,
     {
-        let this = BranchPtr::from(self.as_ref());
+        let this = NodePtr::from(self.as_ref());
         let start = match range.start_bound() {
             Bound::Included(&i) => Some((i, Assoc::Before)),
             Bound::Excluded(&i) => Some((i, Assoc::After)),
@@ -740,7 +743,7 @@ pub trait Quotable: AsRef<Branch> + Sized {
             StickyIndex::new(IndexScope::Relative(start_id), assoc_start)
         } else {
             curr = i.next();
-            StickyIndex::new(IndexScope::from_branch(this), Assoc::Before)
+            StickyIndex::new(IndexScope::from_node(this), Assoc::Before)
         };
 
         let end = if let Some((end_index, assoc_end)) = end {
@@ -769,7 +772,7 @@ pub trait Quotable: AsRef<Branch> + Sized {
             };
             StickyIndex::new(IndexScope::Relative(end_id), assoc_end)
         } else {
-            StickyIndex::new(IndexScope::from_branch(this), Assoc::After)
+            StickyIndex::new(IndexScope::from_node(this), Assoc::After)
         };
 
         let source = LinkSource::new(start, end);
@@ -871,7 +874,6 @@ mod test {
     use crate::types::text::YChange;
     use crate::types::weak::{WeakPrelim, WeakRef};
     use crate::types::{Attrs, EntryChange, Event, Out, ToJson};
-    use crate::Assoc::{After, Before};
     use crate::{
         Array, ArrayRef, DeepObservable, Doc, GetString, Map, MapPrelim, MapRef, Observable,
         Quotable, Text, TextRef, XmlTextRef,

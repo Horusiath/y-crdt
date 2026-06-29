@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::block::{Block, ClientID, Item, ItemContent};
-use crate::branch::Branch;
 use crate::encoding::read::Read;
 use crate::id_set::IdSet;
+use crate::node::Node;
 use crate::test_utils::Blocks;
 use crate::types::xml::XmlFragment;
 use crate::types::{ToJson, TypePtr, TypeRef};
@@ -16,8 +16,8 @@ use crate::update::Update;
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::Encode;
 use crate::{
-    Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, StateVector, Xml,
-    XmlElementRef, XmlTextRef, ID,
+    Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, StateVector, Xml, XmlElementRef,
+    XmlTextRef, ID,
 };
 
 #[test]
@@ -261,7 +261,7 @@ fn xml_fragment_insert() {
             None,
             TypePtr::Named("fragment-name".into()),
             None,
-            ItemContent::Type(Branch::new(TypeRef::XmlText)),
+            ItemContent::Node(Node::new(TypeRef::XmlText)),
         )
         .unwrap()
         .into(),
@@ -273,7 +273,7 @@ fn xml_fragment_insert() {
             None,
             TypePtr::Unknown,
             None,
-            ItemContent::Type(Branch::new(TypeRef::XmlElement("node-name".into()))),
+            ItemContent::Node(Node::new(TypeRef::XmlElement("node-name".into()))),
         )
         .unwrap()
         .into(),

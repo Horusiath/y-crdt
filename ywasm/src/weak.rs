@@ -5,22 +5,21 @@ use crate::{ImplicitTransaction, Result};
 use std::sync::Arc;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
-use yrs::branch::BranchPtr;
+use yrs::node::NodePtr;
 use yrs::types::weak::{LinkSource, WeakEvent};
 use yrs::types::TYPE_REFS_WEAK;
 use yrs::{
-    DeepObservable, Doc, GetString, Observable, SharedRef, Transact, TransactionMut, WeakPrelim,
-    WeakRef,
+    DeepObservable, Doc, GetString, Observable, SharedRef, TransactionMut, WeakPrelim, WeakRef,
 };
 
 pub(crate) struct PrelimWrapper {
-    prelim: WeakPrelim<BranchPtr>,
+    prelim: WeakPrelim<NodePtr>,
     doc: Doc,
 }
 
 #[wasm_bindgen]
 #[repr(transparent)]
-pub struct YWeakLink(pub(crate) SharedCollection<PrelimWrapper, WeakRef<BranchPtr>>);
+pub struct YWeakLink(pub(crate) SharedCollection<PrelimWrapper, WeakRef<NodePtr>>);
 
 impl YWeakLink {
     pub(crate) fn from_prelim<S: SharedRef>(prelim: WeakPrelim<S>, doc: Doc) -> Self {
@@ -300,7 +299,7 @@ impl YWeakLinkEvent {
     /// Returns a current shared type instance, that current event changes refer to.
     #[wasm_bindgen(getter)]
     pub fn target(&mut self) -> JsValue {
-        let target: WeakRef<BranchPtr> = self.inner.as_target();
+        let target: WeakRef<NodePtr> = self.inner.as_target();
         let doc = self.txn.doc();
         let js = self.target.get_or_insert_with(|| {
             let target = target.clone();

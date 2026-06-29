@@ -10,11 +10,11 @@ use crate::block_iter::BlockIter;
 use crate::transaction::TransactionMut;
 use crate::types::text::{diff_between, TextEvent, YChange};
 use crate::types::{
-    event_change_set, event_keys, AsPrelim, Branch, BranchPtr, Change, ChangeSet, DefaultPrelim,
-    Delta, EntryChange, MapRef, Out, Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
+    event_change_set, event_keys, AsPrelim, Change, ChangeSet, DefaultPrelim, Delta, EntryChange,
+    MapRef, Node, NodePtr, Out, Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
 };
 use crate::{
-    Any, ArrayRef, BranchID, DeepObservable, Doc, GetString, In, IndexedSequence, Map, Observable,
+    Any, ArrayRef, DeepObservable, Doc, GetString, In, IndexedSequence, Map, NodeID, Observable,
     StickyIndex, Text, TextRef, Transaction, ID,
 };
 
@@ -68,10 +68,10 @@ impl Prelim for XmlIn {
             XmlIn::Element(prelim) => TypeRef::XmlElement(prelim.tag.clone()),
             XmlIn::Fragment(_) => TypeRef::XmlFragment,
         };
-        (ItemContent::Type(Branch::new(type_ref)), Some(self))
+        (ItemContent::Node(Node::new(type_ref)), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         match self {
             XmlIn::Text(prelim) => prelim.integrate(txn, inner_ref),
             XmlIn::Element(prelim) => prelim.integrate(txn, inner_ref),
@@ -91,7 +91,7 @@ pub enum XmlOut {
 }
 
 impl XmlOut {
-    pub fn as_ptr(&self) -> BranchPtr {
+    pub fn as_ptr(&self) -> NodePtr {
         match self {
             XmlOut::Element(n) => n.0,
             XmlOut::Fragment(n) => n.0,
@@ -99,7 +99,7 @@ impl XmlOut {
         }
     }
 
-    pub fn id(&self) -> BranchID {
+    pub fn id(&self) -> NodeID {
         self.as_ptr().id()
     }
 
@@ -131,8 +131,8 @@ impl XmlOut {
     }
 }
 
-impl AsRef<Branch> for XmlOut {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for XmlOut {
+    fn as_ref(&self) -> &Node {
         match self {
             XmlOut::Element(n) => n.as_ref(),
             XmlOut::Fragment(n) => n.as_ref(),
@@ -174,10 +174,10 @@ impl TryInto<XmlFragmentRef> for XmlOut {
     }
 }
 
-impl TryFrom<BranchPtr> for XmlOut {
-    type Error = BranchPtr;
+impl TryFrom<NodePtr> for XmlOut {
+    type Error = NodePtr;
 
-    fn try_from(value: BranchPtr) -> Result<Self, Self::Error> {
+    fn try_from(value: NodePtr) -> Result<Self, Self::Error> {
         match value.type_ref {
             TypeRef::XmlElement(_) => Ok(XmlOut::Element(XmlElementRef::from(value))),
             TypeRef::XmlFragment => Ok(XmlOut::Fragment(XmlFragmentRef::from(value))),
@@ -214,7 +214,7 @@ impl TryFrom<ItemPtr> for XmlOut {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(branch) = value.clone().as_branch() {
+        if let Some(branch) = value.clone().as_node() {
             match branch.type_ref {
                 TypeRef::XmlElement(_) => Ok(XmlOut::Element(XmlElementRef::from(branch))),
                 TypeRef::XmlFragment => Ok(XmlOut::Fragment(XmlFragmentRef::from(branch))),
@@ -242,7 +242,7 @@ impl TryFrom<ItemPtr> for XmlOut {
 ///   is established using peer's document id seniority.
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct XmlElementRef(BranchPtr);
+pub struct XmlElementRef(NodePtr);
 
 impl SharedRef for XmlElementRef {}
 impl Xml for XmlElementRef {}
@@ -310,8 +310,8 @@ impl Observable for XmlElementRef {
     type Event = XmlEvent;
 }
 
-impl AsRef<Branch> for XmlElementRef {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for XmlElementRef {
+    fn as_ref(&self) -> &Node {
         &self.0
     }
 }
@@ -323,8 +323,8 @@ impl PartialEq for XmlElementRef {
     }
 }
 
-impl From<BranchPtr> for XmlElementRef {
-    fn from(inner: BranchPtr) -> Self {
+impl From<NodePtr> for XmlElementRef {
+    fn from(inner: NodePtr) -> Self {
         XmlElementRef(inner)
     }
 }
@@ -333,7 +333,7 @@ impl TryFrom<ItemPtr> for XmlElementRef {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(branch) = value.clone().as_branch() {
+        if let Some(branch) = value.clone().as_node() {
             Ok(Self::from(branch))
         } else {
             Err(value)
@@ -426,11 +426,11 @@ impl Prelim for XmlElementPrelim {
     type Return = XmlElementRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Branch::new(TypeRef::XmlElement(self.tag.clone()));
-        (ItemContent::Type(inner), Some(self))
+        let inner = Node::new(TypeRef::XmlElement(self.tag.clone()));
+        (ItemContent::Node(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let xml = XmlElementRef::from(inner_ref);
         for (key, value) in self.attributes {
             xml.insert_attribute(txn, key, value);
@@ -525,7 +525,7 @@ impl From<XmlElementPrelim> for In {
 /// ```
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct XmlTextRef(BranchPtr);
+pub struct XmlTextRef(NodePtr);
 
 impl XmlTextRef {
     pub(crate) fn get_string_fragment(
@@ -594,8 +594,8 @@ impl GetString for XmlTextRef {
     }
 }
 
-impl AsRef<Branch> for XmlTextRef {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for XmlTextRef {
+    fn as_ref(&self) -> &Node {
         &self.0
     }
 }
@@ -607,8 +607,8 @@ impl PartialEq for XmlTextRef {
     }
 }
 
-impl From<BranchPtr> for XmlTextRef {
-    fn from(inner: BranchPtr) -> Self {
+impl From<NodePtr> for XmlTextRef {
+    fn from(inner: NodePtr) -> Self {
         XmlTextRef(inner)
     }
 }
@@ -617,7 +617,7 @@ impl TryFrom<ItemPtr> for XmlTextRef {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(branch) = value.clone().as_branch() {
+        if let Some(branch) = value.clone().as_node() {
             Ok(Self::from(branch))
         } else {
             Err(value)
@@ -707,11 +707,11 @@ impl Prelim for XmlTextPrelim {
     type Return = XmlTextRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Branch::new(TypeRef::XmlText);
-        (ItemContent::Type(inner), Some(self))
+        let inner = Node::new(TypeRef::XmlText);
+        (ItemContent::Node(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         if !self.is_empty() {
             let text = XmlTextRef::from(inner_ref);
             text.push(txn, &self.0);
@@ -752,10 +752,10 @@ impl Prelim for XmlDeltaPrelim {
     type Return = XmlTextRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        (ItemContent::Type(Branch::new(TypeRef::XmlText)), Some(self))
+        (ItemContent::Node(Node::new(TypeRef::XmlText)), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let text_ref = XmlTextRef::from(inner_ref);
         for (key, value) in self.attributes {
             text_ref.insert_attribute(txn, key, value);
@@ -783,7 +783,7 @@ impl From<XmlDeltaPrelim> for In {
 /// A XML fragment, which works as an untagged collection of XML nodes.
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct XmlFragmentRef(BranchPtr);
+pub struct XmlFragmentRef(NodePtr);
 
 impl RootRef for XmlFragmentRef {
     fn type_ref() -> TypeRef {
@@ -797,7 +797,7 @@ impl IndexedSequence for XmlFragmentRef {}
 impl XmlFragmentRef {
     pub fn parent(&self) -> Option<XmlOut> {
         let item = self.0.item?;
-        let parent = item.parent.as_branch()?;
+        let parent = item.parent.as_node()?;
         XmlOut::try_from(*parent).ok()
     }
 }
@@ -831,8 +831,8 @@ impl Observable for XmlFragmentRef {
     type Event = XmlEvent;
 }
 
-impl AsRef<Branch> for XmlFragmentRef {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for XmlFragmentRef {
+    fn as_ref(&self) -> &Node {
         self.0.deref()
     }
 }
@@ -844,8 +844,8 @@ impl PartialEq for XmlFragmentRef {
     }
 }
 
-impl From<BranchPtr> for XmlFragmentRef {
-    fn from(inner: BranchPtr) -> Self {
+impl From<NodePtr> for XmlFragmentRef {
+    fn from(inner: NodePtr) -> Self {
         XmlFragmentRef(inner)
     }
 }
@@ -854,7 +854,7 @@ impl TryFrom<ItemPtr> for XmlFragmentRef {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(branch) = value.clone().as_branch() {
+        if let Some(branch) = value.clone().as_node() {
             Ok(Self::from(branch))
         } else {
             Err(value)
@@ -916,11 +916,11 @@ impl Prelim for XmlFragmentPrelim {
     type Return = XmlFragmentRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Branch::new(TypeRef::XmlFragment);
-        (ItemContent::Type(inner), Some(self))
+        let inner = Node::new(TypeRef::XmlFragment);
+        (ItemContent::Node(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let xml = XmlFragmentRef::from(inner_ref);
         for value in self.0 {
             xml.push_back(txn, value);
@@ -944,7 +944,7 @@ impl From<XmlFragmentPrelim> for In {
 
 /// (Obsolete) an Yjs-compatible XML node used for nesting Map elements.
 #[derive(Debug, Clone)]
-pub struct XmlHookRef(BranchPtr);
+pub struct XmlHookRef(NodePtr);
 
 impl Map for XmlHookRef {}
 
@@ -955,8 +955,8 @@ impl ToJson for XmlHookRef {
     }
 }
 
-impl AsRef<Branch> for XmlHookRef {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for XmlHookRef {
+    fn as_ref(&self) -> &Node {
         self.0.deref()
     }
 }
@@ -968,8 +968,8 @@ impl PartialEq for XmlHookRef {
     }
 }
 
-impl From<BranchPtr> for XmlHookRef {
-    fn from(inner: BranchPtr) -> Self {
+impl From<NodePtr> for XmlHookRef {
+    fn from(inner: NodePtr) -> Self {
         XmlHookRef(inner)
     }
 }
@@ -981,10 +981,10 @@ impl AsRef<MapRef> for XmlHookRef {
     }
 }
 
-pub trait Xml: AsRef<Branch> {
+pub trait Xml: AsRef<Node> {
     fn parent(&self) -> Option<XmlOut> {
         let item = self.as_ref().item?;
-        let parent = item.parent.as_branch()?;
+        let parent = item.parent.as_node()?;
         XmlOut::try_from(*parent).ok()
     }
 
@@ -1007,7 +1007,7 @@ pub trait Xml: AsRef<Branch> {
             let inner = self.as_ref();
             let left = inner.map.get(&key);
             ItemPosition {
-                parent: BranchPtr::from(inner).into(),
+                parent: NodePtr::from(inner).into(),
                 left: left.cloned(),
                 right: None,
                 index: 0,
@@ -1027,7 +1027,11 @@ pub trait Xml: AsRef<Branch> {
 
     /// Returns a value of an attribute given its `attr_name`. Returns `None` if no such attribute
     /// can be found inside of a current XML element.
-    fn get_attribute<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>, attr_name: &str) -> Option<Out> {
+    fn get_attribute<D: Deref<Target = Doc>>(
+        &self,
+        txn: &Transaction<D>,
+        attr_name: &str,
+    ) -> Option<Out> {
         let branch = self.as_ref();
         branch.get(txn.doc(), attr_name)
     }
@@ -1039,17 +1043,17 @@ pub trait Xml: AsRef<Branch> {
     }
 
     fn siblings<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> Siblings<'a> {
-        let ptr = BranchPtr::from(self.as_ref());
+        let ptr = NodePtr::from(self.as_ref());
         Siblings::new(ptr.item, txn.doc())
     }
 }
 
-pub trait XmlFragment: AsRef<Branch> {
+pub trait XmlFragment: AsRef<Node> {
     fn first_child(&self) -> Option<XmlOut> {
         let first = self.as_ref().first()?;
         match &first.content {
-            ItemContent::Type(c) => {
-                let ptr = BranchPtr::from(c);
+            ItemContent::Node(c) => {
+                let ptr = NodePtr::from(c);
                 XmlOut::try_from(ptr).ok()
             }
             _ => None,
@@ -1060,7 +1064,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// It does NOT include nested children of its children - for such cases use [Self::successors]
     /// iterator.
     fn children<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> XmlNodes<'a> {
-        let iter = BlockIter::new(BranchPtr::from(self.as_ref()));
+        let iter = BlockIter::new(NodePtr::from(self.as_ref()));
         XmlNodes::new(iter, txn.doc())
     }
 
@@ -1113,7 +1117,7 @@ pub trait XmlFragment: AsRef<Branch> {
     /// not all expected elements were removed (due to insufficient number of elements in an array)
     /// or `index` is outside the bounds of an array.
     fn remove_range(&self, txn: &mut TransactionMut, index: u32, len: u32) {
-        let mut walker = BlockIter::new(BranchPtr::from(self.as_ref()));
+        let mut walker = BlockIter::new(NodePtr::from(self.as_ref()));
         if walker.try_forward(txn.doc(), index) {
             walker.delete(txn, len)
         } else {
@@ -1126,8 +1130,8 @@ pub trait XmlFragment: AsRef<Branch> {
     fn get<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>, index: u32) -> Option<XmlOut> {
         let branch = self.as_ref();
         let (content, _) = branch.get_at(index)?;
-        if let ItemContent::Type(inner) = content {
-            let ptr: BranchPtr = inner.into();
+        if let ItemContent::Node(inner) = content {
+            let ptr: NodePtr = inner.into();
             XmlOut::try_from(ptr).ok()
         } else {
             None
@@ -1186,7 +1190,7 @@ pub struct Attributes<'a> {
 }
 
 impl<'a> Attributes<'a> {
-    pub fn new(branch: &'a Branch, doc: &'a Doc) -> Self {
+    pub fn new(branch: &'a Node, doc: &'a Doc) -> Self {
         Attributes {
             iter: branch.map.iter(),
             _doc: doc,
@@ -1240,10 +1244,10 @@ pub struct TreeWalker<'a> {
 }
 
 impl<'a> TreeWalker<'a> {
-    pub fn new(root: &'a Branch, doc: &'a Doc) -> Self {
+    pub fn new(root: &'a Node, doc: &'a Doc) -> Self {
         TreeWalker {
             current: root.start.as_deref(),
-            root: TypePtr::Branch(BranchPtr::from(root)),
+            root: TypePtr::Node(NodePtr::from(root)),
             first_call: true,
             _doc: doc,
         }
@@ -1256,7 +1260,7 @@ impl<'a> Iterator for TreeWalker<'a> {
     /// Tree walker used depth-first search to move over the xml tree.
     fn next(&mut self) -> Option<Self::Item> {
         fn try_descend(item: &Item) -> Option<&Item> {
-            if let ItemContent::Type(t) = &item.content {
+            if let ItemContent::Node(t) = &item.content {
                 let inner = t.as_ref();
                 match inner.type_ref() {
                     TypeRef::XmlElement(_) | TypeRef::XmlFragment if !item.is_deleted() => {
@@ -1287,7 +1291,7 @@ impl<'a> Iterator for TreeWalker<'a> {
                                 } else if current.parent == self.root {
                                     n = None;
                                 } else {
-                                    let ptr = current.parent.as_branch().unwrap();
+                                    let ptr = current.parent.as_node().unwrap();
                                     n = ptr.item.as_deref();
                                 }
                             }
@@ -1304,8 +1308,8 @@ impl<'a> Iterator for TreeWalker<'a> {
             self.current = n;
         }
         if let Some(current) = self.current {
-            if let ItemContent::Type(t) = &current.content {
-                result = XmlOut::try_from(BranchPtr::from(t)).ok();
+            if let ItemContent::Node(t) = &current.content {
+                result = XmlOut::try_from(NodePtr::from(t)).ok();
             }
         }
         result
@@ -1314,14 +1318,14 @@ impl<'a> Iterator for TreeWalker<'a> {
 
 /// Event generated by [XmlText::observe] method. Emitted during transaction commit phase.
 pub struct XmlTextEvent {
-    pub(crate) current_target: BranchPtr,
+    pub(crate) current_target: NodePtr,
     target: XmlTextRef,
     delta: UnsafeCell<Option<Vec<Delta>>>,
     keys: UnsafeCell<Result<HashMap<Arc<str>, EntryChange>, HashSet<Option<Arc<str>>>>>,
 }
 
 impl XmlTextEvent {
-    pub(crate) fn new(branch_ref: BranchPtr, key_changes: HashSet<Option<Arc<str>>>) -> Self {
+    pub(crate) fn new(branch_ref: NodePtr, key_changes: HashSet<Option<Arc<str>>>) -> Self {
         let current_target = branch_ref.clone();
         let target = XmlTextRef::from(branch_ref);
         XmlTextEvent {
@@ -1339,7 +1343,7 @@ impl XmlTextEvent {
 
     /// Returns a path from root type down to [XmlText] instance which emitted this event.
     pub fn path(&self) -> Path {
-        Branch::path(self.current_target, self.target.0)
+        Node::path(self.current_target, self.target.0)
     }
 
     /// Returns a summary of text changes made over corresponding [XmlText] collection within
@@ -1353,7 +1357,10 @@ impl XmlTextEvent {
 
     /// Returns a summary of attribute changes made over corresponding [XmlText] collection within
     /// bounds of current transaction.
-    pub fn keys<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashMap<Arc<str>, EntryChange> {
+    pub fn keys<D: Deref<Target = Doc>>(
+        &self,
+        txn: &Transaction<D>,
+    ) -> &HashMap<Arc<str>, EntryChange> {
         let keys = unsafe { self.keys.get().as_mut().unwrap() };
 
         match keys {
@@ -1392,8 +1399,8 @@ impl<'a> Iterator for Siblings<'a> {
             self.current = item.right;
             if let Some(right) = self.current.as_deref() {
                 if !right.is_deleted() {
-                    if let ItemContent::Type(inner) = &right.content {
-                        let ptr = BranchPtr::from(inner);
+                    if let ItemContent::Node(inner) = &right.content {
+                        let ptr = NodePtr::from(inner);
                         return XmlOut::try_from(ptr).ok();
                     }
                 }
@@ -1410,8 +1417,8 @@ impl<'a> DoubleEndedIterator for Siblings<'a> {
             self.current = item.left;
             if let Some(left) = self.current.as_deref() {
                 if !left.is_deleted() {
-                    if let ItemContent::Type(inner) = &left.content {
-                        let ptr = BranchPtr::from(inner);
+                    if let ItemContent::Node(inner) = &left.content {
+                        let ptr = NodePtr::from(inner);
                         return XmlOut::try_from(ptr).ok();
                     }
                 }
@@ -1424,7 +1431,7 @@ impl<'a> DoubleEndedIterator for Siblings<'a> {
 
 /// Event generated by [XmlElement::observe] method. Emitted during transaction commit phase.
 pub struct XmlEvent {
-    pub(crate) current_target: BranchPtr,
+    pub(crate) current_target: NodePtr,
     target: XmlOut,
     change_set: UnsafeCell<Option<Box<ChangeSet<Change>>>>,
     keys: UnsafeCell<Result<HashMap<Arc<str>, EntryChange>, HashSet<Option<Arc<str>>>>>,
@@ -1432,7 +1439,7 @@ pub struct XmlEvent {
 }
 
 impl XmlEvent {
-    pub(crate) fn new(branch_ref: BranchPtr, key_changes: HashSet<Option<Arc<str>>>) -> Self {
+    pub(crate) fn new(branch_ref: NodePtr, key_changes: HashSet<Option<Arc<str>>>) -> Self {
         let current_target = branch_ref.clone();
         let children_changed = key_changes.iter().any(Option::is_none);
         XmlEvent {
@@ -1456,7 +1463,7 @@ impl XmlEvent {
 
     /// Returns a path from root type down to [XmlElement] instance which emitted this event.
     pub fn path(&self) -> Path {
-        Branch::path(self.current_target, self.target.as_ptr())
+        Node::path(self.current_target, self.target.as_ptr())
     }
 
     /// Returns a summary of XML child nodes changed within corresponding [XmlElement] collection
@@ -1479,7 +1486,10 @@ impl XmlEvent {
 
     /// Returns a summary of attribute changes made over corresponding [XmlElement] collection
     /// within bounds of current transaction.
-    pub fn keys<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashMap<Arc<str>, EntryChange> {
+    pub fn keys<D: Deref<Target = Doc>>(
+        &self,
+        txn: &Transaction<D>,
+    ) -> &HashMap<Arc<str>, EntryChange> {
         let keys = unsafe { self.keys.get().as_mut().unwrap() };
 
         match keys {

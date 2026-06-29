@@ -2,16 +2,16 @@ use crate::block::{
     Block, BlockRange, ClientID, Item, ItemContent, BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER,
     HAS_ORIGIN, HAS_PARENT_SUB, HAS_RIGHT_ORIGIN,
 };
-use crate::branch::BranchPtr;
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
 use crate::id_set::IdSet;
-use crate::Doc;
+use crate::node::NodePtr;
 use crate::transaction::TransactionMut;
 use crate::types::{TypePtr, TypeRef};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
+use crate::Doc;
 use crate::{StateVector, ID};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -340,11 +340,8 @@ impl Update {
                         .or_insert_with(|| txn.doc.blocks.get_clock(&id.client));
                     let offset = (*local_clock as i32) - (id.clock as i32);
 
-                    if let Some(missing) =
-                        Self::missing_dependency(&mut stack_head, txn.doc)?
-                    {
-                        next =
-                            picker.switch(stack_head, &missing, |c| txn.doc.blocks.get_clock(c));
+                    if let Some(missing) = Self::missing_dependency(&mut stack_head, txn.doc)? {
+                        next = picker.switch(stack_head, &missing, |c| txn.doc.blocks.get_clock(c));
                         continue;
                     } else {
                         // block has no missing dependencies, therefore we can integrate it right away
@@ -396,7 +393,7 @@ impl Update {
             }
 
             match &item.parent {
-                TypePtr::Branch(parent) => {
+                TypePtr::Node(parent) => {
                     if let Some(block) = &parent.item {
                         let parent_id = block.id();
                         if store.blocks.is_missing(parent_id) {
@@ -414,7 +411,7 @@ impl Update {
 
             #[cfg(feature = "weak")]
             match &item.content {
-                ItemContent::Type(branch) => {
+                ItemContent::Node(branch) => {
                     if let crate::types::TypeRef::WeakLink(source) = &branch.type_ref {
                         let start = source.quote_start.id();
                         let end = source.quote_end.id();
@@ -460,7 +457,7 @@ impl Update {
             // the block store during decoding. Therefore, we retroactively reattach it here.
 
             item.parent = match &item.parent {
-                TypePtr::Branch(branch_ptr) => TypePtr::Branch(*branch_ptr),
+                TypePtr::Node(branch_ptr) => TypePtr::Node(*branch_ptr),
                 TypePtr::Unknown => match (item.left, item.right) {
                     (Some(left), _) if left.parent != TypePtr::Unknown => {
                         item.parent_sub = left.parent_sub.clone();
@@ -474,14 +471,14 @@ impl Update {
                 },
                 TypePtr::Named(name) => {
                     let branch = store.get_or_create_type(name.clone(), TypeRef::Undefined);
-                    TypePtr::Branch(branch)
+                    TypePtr::Node(branch)
                 }
                 TypePtr::ID(id) => {
                     let ptr = store.blocks.get_item(id);
                     if let Some(item) = ptr {
                         match &item.content {
-                            ItemContent::Type(branch) => {
-                                TypePtr::Branch(BranchPtr::from(branch.as_ref()))
+                            ItemContent::Node(branch) => {
+                                TypePtr::Node(NodePtr::from(branch.as_ref()))
                             }
                             ItemContent::Deleted(_) => TypePtr::Unknown,
                             other => {
@@ -1078,8 +1075,8 @@ mod test {
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
     use crate::{
-        merge_updates_v1, Any, Doc, GetString, IdSet, Options, StateVector, Text,
-        XmlFragment, XmlOut, ID,
+        merge_updates_v1, Any, Doc, GetString, IdSet, Options, StateVector, Text, XmlFragment,
+        XmlOut, ID,
     };
 
     #[test]

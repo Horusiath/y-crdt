@@ -19,8 +19,8 @@ use yrs::types::TypeRef;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    ArrayRef, BranchID, JsonPath, JsonPathEval, MapRef, ReadTxn, TextRef, TransactionMut, Update,
-    WeakRef, XmlElementRef, XmlFragmentRef, XmlTextRef,
+    ArrayRef, NodeID, JsonPath, JsonPathEval, MapRef, TextRef, TransactionMut, Update, WeakRef,
+    XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 
 #[wasm_bindgen]
@@ -187,11 +187,11 @@ impl YTransaction {
     /// has been deleted.
     #[wasm_bindgen(js_name = get)]
     pub fn get(&self, id: JsValue) -> crate::Result<JsValue> {
-        let branch_id: BranchID =
+        let node_id: NodeID =
             serde_wasm_bindgen::from_value(id).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let txn = self.as_ref();
         let doc = txn.doc().clone();
-        Ok(match branch_id.get_branch(txn) {
+        Ok(match node_id.get_node(txn) {
             None => JsValue::UNDEFINED,
             Some(b) if b.is_deleted() => JsValue::UNDEFINED,
             Some(b) => match b.type_ref() {

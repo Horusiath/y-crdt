@@ -443,7 +443,7 @@
 //!   to make conflict resolution algorithm deterministic.
 //! - Yrs also provides support fo XML nodes in form of [XmlElementRef], [XmlTextRef] and [XmlFragmentRef].
 //!
-//! Underneath all of these types are represented by the same abstract [types::Branch] type. Each
+//! Underneath all of these types are represented by the same abstract [types::Node] type. Each
 //! branch is always capable of working as both indexed sequence of elements and a map. In practice
 //! specialized shared types are actually projections over branch type and can be used interchangeably
 //! if needed, i.e.: [XmlElementRef] can be also interpreted as [MapRef], in which case the collection
@@ -631,7 +631,7 @@ mod utils;
 pub mod any;
 pub mod atomic;
 mod block_iter;
-pub mod branch;
+pub mod node;
 pub mod cell;
 pub mod encoding;
 pub mod error;
@@ -660,10 +660,10 @@ pub use crate::alt::{
 pub use crate::any::Any;
 pub use crate::block::ClientID;
 pub use crate::block::ID;
-pub use crate::branch::BranchID;
-pub use crate::branch::Hook;
-pub use crate::branch::Nested;
-pub use crate::branch::Root;
+pub use crate::node::NodeID;
+pub use crate::node::Hook;
+pub use crate::node::Nested;
+pub use crate::node::Root;
 pub use crate::doc::Doc;
 pub use crate::doc::OffsetKind;
 pub use crate::doc::Options;

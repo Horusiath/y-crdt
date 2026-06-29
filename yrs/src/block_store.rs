@@ -197,7 +197,7 @@ impl ClientBlockList {
                     let left = ItemPtr::from(left);
                     let right = ItemPtr::from(right.as_ref());
                     if let Some(key) = right.parent_sub.as_deref() {
-                        if let TypePtr::Branch(mut parent) = right.parent {
+                        if let TypePtr::Node(mut parent) = right.parent {
                             if let Some(e) = parent.map.get_mut(key) {
                                 if right == *e {
                                     *e = ItemPtr::from(left);
@@ -231,7 +231,7 @@ impl ClientBlockList {
                 // update parent's map entry if necessary
                 if let Block::Item(right) = right {
                     if let Some(parent_sub) = &right.parent_sub {
-                        if let Some(mut parent) = right.parent.as_branch().copied() {
+                        if let Some(mut parent) = right.parent.as_node().copied() {
                             let e = parent.map.get_mut(parent_sub).unwrap();
                             if &**e == &**right {
                                 *e = left.as_item().unwrap(); // already confirmed they're the same_type

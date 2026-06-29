@@ -1,5 +1,5 @@
 use crate::block::{ItemContent, ItemPtr};
-use crate::branch::{Branch, BranchPtr};
+use crate::node::{Node, NodePtr};
 use crate::types::{AsPrelim, ToJson};
 use crate::updates::decoder::Decode;
 use crate::{
@@ -33,11 +33,11 @@ pub enum Out {
     YDoc(Uuid),
     /// Instance of a [WeakRef] or unspecified type (requires manual casting).
     #[cfg(feature = "weak")]
-    YWeakLink(crate::WeakRef<BranchPtr>),
+    YWeakLink(crate::WeakRef<NodePtr>),
     /// Instance of a shared collection of undefined type. Usually happens when it refers to a root
     /// type that has not been defined locally. Can also refer to a [WeakRef] if "weak" feature flag
     /// was not set.
-    UndefinedRef(BranchPtr),
+    UndefinedRef(NodePtr),
 }
 
 impl Default for Out {
@@ -77,7 +77,7 @@ impl Out {
         }
     }
 
-    pub fn try_branch(&self) -> Option<&Branch> {
+    pub fn try_node(&self) -> Option<&Node> {
         match self {
             Out::YText(b) => Some(b.as_ref()),
             Out::YArray(b) => Some(b.as_ref()),
@@ -138,7 +138,7 @@ impl AsPrelim for Out {
     }
 }
 
-fn infer_type_from_content<D: Deref<Target = Doc>>(branch: BranchPtr, txn: &Transaction<D>) -> In {
+fn infer_type_from_content<D: Deref<Target = Doc>>(branch: NodePtr, txn: &Transaction<D>) -> In {
     let has_map = !branch.map.is_empty();
     let mut ptr = branch.start;
     let has_list = ptr.is_some();

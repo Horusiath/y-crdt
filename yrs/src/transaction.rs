@@ -1,18 +1,18 @@
 use crate::block::{Item, ItemContent, ItemPosition, ItemPtr, Prelim, ID};
-use crate::branch::{Branch, BranchPtr};
 use crate::doc::DocEvents;
 use crate::error::{Error, UpdateError};
 use crate::event::SubdocsEvent;
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
+use crate::node::{Node, NodePtr};
 use crate::slice::BlockSlice;
 use crate::types::{Event, Events, RootRef, TypePtr, TypeRef};
 use crate::update::Update;
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::utils::OptionExt;
 use crate::{
-    merge_updates_v1, merge_updates_v2, Any, ArrayRef, BranchID, Doc, IdSet, MapRef, Out, Snapshot,
+    merge_updates_v1, merge_updates_v2, Any, ArrayRef, Doc, IdSet, MapRef, NodeID, Out, Snapshot,
     StateVector, TextRef, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 use smallvec::SmallVec;
@@ -101,7 +101,7 @@ pub struct TransactionState {
     /// All types that were directly modified (property added or child inserted/deleted).
     /// New types are not included in this Set.
     pub(crate) changed: HashMap<TypePtr, HashSet<Option<Arc<str>>>>,
-    pub(crate) changed_parent_types: Vec<BranchPtr>,
+    pub(crate) changed_parent_types: Vec<NodePtr>,
     pub(crate) subdocs: Option<Box<Subdocs>>,
     pub(crate) origin: Option<Origin>,
     pub(crate) local: bool,
@@ -255,7 +255,7 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
 
     pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
         let value = self.doc().types.get(name.as_ref())?;
-        let ptr = BranchPtr::from(&*value);
+        let ptr = NodePtr::from(&*value);
         match &ptr.type_ref {
             TypeRef::Array => Some(Out::YArray(ArrayRef::from(ptr))),
             TypeRef::Map => Some(Out::YMap(MapRef::from(ptr))),
@@ -286,10 +286,10 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
         None
     }
 
-    /// If current document has been inserted as a sub-document, returns its [BranchID].
-    pub fn branch_id(&self) -> Option<BranchID> {
+    /// If current document has been inserted as a sub-document, returns its [NodeID].
+    pub fn node_id(&self) -> Option<NodeID> {
         if let Some(item) = self.doc().parent {
-            Some(BranchID::Nested(item.id))
+            Some(NodeID::Nested(item.id))
         } else {
             None
         }
@@ -324,7 +324,7 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
     }
 
     /// Returns a list of root level types changed in a scope of the current transaction.
-    pub fn changed_parent_types(&self) -> &[BranchPtr] {
+    pub fn changed_parent_types(&self) -> &[NodePtr] {
         self.state.as_ref().map_or(&[], |s| &s.changed_parent_types)
     }
 
@@ -598,7 +598,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
         if !item.is_deleted() {
             if item.parent_sub.is_none() && item.is_countable() {
-                if let TypePtr::Branch(mut parent) = item.parent {
+                if let TypePtr::Node(mut parent) = item.parent {
                     parent.block_len -= item.len();
                     parent.content_len -= item.content_len(self.doc.options.offset_kind);
                 }
@@ -608,7 +608,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
             ensure_state(&mut self.state)
                 .delete_set
                 .insert(item.id.clone(), item.len());
-            if let Some(parent) = item.parent.as_branch() {
+            if let Some(parent) = item.parent.as_node() {
                 self.add_changed_type(*parent, item.parent_sub.clone());
             } else {
                 // parent has been GC'ed
@@ -622,8 +622,8 @@ impl<'doc> Transaction<&'doc mut Doc> {
                         subdocs.removed.insert(guid);
                     }
                 }
-                ItemContent::Type(inner) => {
-                    let branch_ptr = BranchPtr::from(inner);
+                ItemContent::Node(inner) => {
+                    let branch_ptr = NodePtr::from(inner);
                     #[cfg(feature = "weak")]
                     if let crate::types::TypeRef::WeakLink(source) = &branch_ptr.type_ref {
                         source.unlink_all(self, branch_ptr);
@@ -631,7 +631,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
                     let mut ptr = branch_ptr.start;
                     ensure_state(&mut self.state)
                         .changed
-                        .remove(&TypePtr::Branch(branch_ptr));
+                        .remove(&TypePtr::Node(branch_ptr));
 
                     while let Some(item) = ptr.as_deref() {
                         if !item.is_deleted() {
@@ -770,8 +770,8 @@ impl<'doc> Transaction<&'doc mut Doc> {
             (left, right, origin, id)
         };
         let (mut content, remainder) = value.into_content(self);
-        let inner_ref = if let ItemContent::Type(inner_ref) = &mut content {
-            Some(BranchPtr::from(inner_ref))
+        let inner_ref = if let ItemContent::Node(inner_ref) = &mut content {
+            Some(NodePtr::from(inner_ref))
         } else {
             None
         };
@@ -795,12 +795,12 @@ impl<'doc> Transaction<&'doc mut Doc> {
     }
 
     fn call_type_observers(
-        changed_parent_types: &mut Vec<BranchPtr>,
-        all_links: &HashMap<ItemPtr, HashSet<BranchPtr>>,
-        branch: BranchPtr,
-        changed_parents: &mut HashMap<BranchPtr, Vec<usize>>,
+        changed_parent_types: &mut Vec<NodePtr>,
+        all_links: &HashMap<ItemPtr, HashSet<NodePtr>>,
+        branch: NodePtr,
+        changed_parents: &mut HashMap<NodePtr, Vec<usize>>,
         event_cache: &Vec<Event>,
-        visited: &mut HashSet<BranchPtr>,
+        visited: &mut HashSet<NodePtr>,
     ) {
         let mut current = branch;
         loop {
@@ -827,7 +827,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
                         }
                     }
                 }
-                if let TypePtr::Branch(parent) = item.parent {
+                if let TypePtr::Node(parent) = item.parent {
                     current = parent;
                     continue;
                 }
@@ -838,7 +838,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
     }
 
     fn call_observers(&mut self) {
-        let mut changed_parents: HashMap<BranchPtr, Vec<usize>> = HashMap::new();
+        let mut changed_parents: HashMap<NodePtr, Vec<usize>> = HashMap::new();
         let mut event_cache = Vec::new();
 
         // Take changed out to avoid holding a mutable borrow on self.state during iteration
@@ -846,7 +846,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         let changed = std::mem::take(&mut state.changed);
         let local = state.local;
         for (ptr, subs) in changed.iter() {
-            if let TypePtr::Branch(branch) = ptr {
+            if let TypePtr::Node(branch) = ptr {
                 if branch.has_formatting && !local {
                     self.state.as_mut().unwrap().needs_cleanup = true;
                 }
@@ -1036,7 +1036,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
             if let Some(item) = item.as_item() {
                 if !item.is_deleted() {
                     if let ItemContent::Format(_, _) = &item.content {
-                        needs_cleanup.insert(*item.parent.as_branch().unwrap());
+                        needs_cleanup.insert(*item.parent.as_node().unwrap());
                     }
                 }
             }
@@ -1048,7 +1048,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
             .iter_blocks(&self.doc.blocks)
             .filter_map(|slice| {
                 let item = slice.as_item()?;
-                let parent = item.parent.as_branch()?;
+                let parent = item.parent.as_node()?;
                 if parent.has_formatting && !needs_cleanup.contains(&parent) {
                     if let ItemContent::Format(_, _) = &item.content {
                         needs_cleanup.insert(*parent);
@@ -1073,7 +1073,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         }
     }
 
-    fn cleanup_text_fmt(&mut self, text_ref: BranchPtr) -> usize {
+    fn cleanup_text_fmt(&mut self, text_ref: NodePtr) -> usize {
         if !self.doc.options.cleanup_formatting {
             return 0;
         }
@@ -1216,7 +1216,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         GCCollector::collect_all(self, delete_set);
     }
 
-    pub(crate) fn add_changed_type(&mut self, parent: BranchPtr, parent_sub: Option<Arc<str>>) {
+    pub(crate) fn add_changed_type(&mut self, parent: NodePtr, parent_sub: Option<Arc<str>>) {
         let trigger = if let Some(ptr) = parent.item {
             (ptr.id().clock < self.before_state().get(&ptr.id().client)) && !ptr.is_deleted()
         } else {
@@ -1262,7 +1262,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
     }
 
     #[cfg(feature = "weak")]
-    pub(crate) fn unlink(&mut self, mut source: ItemPtr, link: BranchPtr) {
+    pub(crate) fn unlink(&mut self, mut source: ItemPtr, link: NodePtr) {
         let all_links = &mut self.doc.linked_by;
         let prune = if let Some(linked_by) = all_links.get_mut(&source) {
             linked_by.remove(&link) && linked_by.is_empty()
@@ -1297,7 +1297,7 @@ impl<D> Drop for Transaction<D> {
 }
 
 /// Iterator struct used to traverse over all of the root level types defined in a corresponding [Doc].
-pub struct RootRefs<'doc>(std::collections::hash_map::Iter<'doc, Arc<str>, Box<Branch>>);
+pub struct RootRefs<'doc>(std::collections::hash_map::Iter<'doc, Arc<str>, Box<Node>>);
 
 impl<'doc> Iterator for RootRefs<'doc> {
     type Item = (&'doc str, Out);
@@ -1305,7 +1305,7 @@ impl<'doc> Iterator for RootRefs<'doc> {
     fn next(&mut self) -> Option<Self::Item> {
         let (key, branch) = self.0.next()?;
         let key = key.as_ref();
-        let ptr = BranchPtr::from(branch);
+        let ptr = NodePtr::from(branch);
         Some((key, ptr.into()))
     }
 }

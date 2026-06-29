@@ -1,8 +1,8 @@
 use crate::block_store::BlockStore;
-use crate::branch::{Branch, BranchPtr};
 use crate::doc::OffsetKind;
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
+use crate::node::{Node, NodePtr};
 use crate::slice::{BlockSlice, ItemSlice};
 use crate::transaction::{ensure_state, TransactionMut};
 use crate::types::text::update_current_attributes;
@@ -461,7 +461,7 @@ impl ItemPtr {
             return Some(txn.doc.materialize(slice));
         }
 
-        let mut parent_block = item.parent.as_branch().and_then(|b| b.item);
+        let mut parent_block = item.parent.as_node().and_then(|b| b.item);
         // make sure that parent is redone
         if let Some(mut parent) = parent_block.clone() {
             if parent.is_deleted() {
@@ -485,14 +485,14 @@ impl ItemPtr {
                 }
             }
         }
-        let parent_branch = BranchPtr::from(if let Some(item) = parent_block.as_deref() {
-            if let ItemContent::Type(b) = &item.content {
+        let parent_branch = NodePtr::from(if let Some(item) = parent_block.as_deref() {
+            if let ItemContent::Node(b) = &item.content {
                 b.as_ref()
             } else {
-                item.parent.as_branch().unwrap()
+                item.parent.as_node().unwrap()
             }
         } else {
-            item.parent.as_branch().unwrap()
+            item.parent.as_node().unwrap()
         });
 
         let mut left = None;
@@ -552,7 +552,7 @@ impl ItemPtr {
             while let Some(left_item) = left.clone().as_deref() {
                 let mut left_trace = left;
                 while let Some(trace) = left_trace.as_deref() {
-                    let p = trace.parent.as_branch().and_then(|p| p.item);
+                    let p = trace.parent.as_node().and_then(|p| p.item);
                     if parent_block != p {
                         left_trace = if let Some(redone) = trace.redone.as_ref() {
                             let slice = txn.doc.blocks.get_item_clean_start(redone);
@@ -565,7 +565,7 @@ impl ItemPtr {
                     }
                 }
                 if let Some(trace) = left_trace.as_deref() {
-                    let p = trace.parent.as_branch().and_then(|p| p.item);
+                    let p = trace.parent.as_node().and_then(|p| p.item);
                     if parent_block == p {
                         left = left_trace;
                         break;
@@ -578,7 +578,7 @@ impl ItemPtr {
                 let mut right_trace = right;
                 // trace redone until parent matches
                 while let Some(trace) = right_trace.as_deref() {
-                    let p = trace.parent.as_branch().and_then(|p| p.item);
+                    let p = trace.parent.as_node().and_then(|p| p.item);
                     if parent_block != p {
                         right_trace = if let Some(redone) = trace.redone.as_ref() {
                             let slice = txn.doc.blocks.get_item_clean_start(redone);
@@ -591,7 +591,7 @@ impl ItemPtr {
                     }
                 }
                 if let Some(trace) = right_trace.as_deref() {
-                    let p = trace.parent.as_branch().and_then(|p| p.item);
+                    let p = trace.parent.as_node().and_then(|p| p.item);
                     if parent_block == p {
                         right = right_trace;
                         break;
@@ -609,7 +609,7 @@ impl ItemPtr {
             left.map(|p| p.last_id()),
             right,
             right.map(|p| *p.id()),
-            TypePtr::Branch(parent_branch),
+            TypePtr::Node(parent_branch),
             item.parent_sub.clone(),
             item.content.clone(),
         )?;
@@ -629,7 +629,7 @@ impl ItemPtr {
                 } else {
                     item.info.clear_keep();
                 }
-                curr = item.parent.as_branch().and_then(|b| b.item);
+                curr = item.parent.as_node().and_then(|b| b.item);
             }
         }
     }
@@ -671,7 +671,7 @@ impl ItemPtr {
             if let Some(parent_sub) = item.parent_sub.as_ref() {
                 if item.right.is_none() {
                     // update parent.map
-                    if let TypePtr::Branch(mut branch) = item.parent {
+                    if let TypePtr::Node(mut branch) = item.parent {
                         branch.map.insert(parent_sub.clone(), new_ptr);
                     }
                 }
@@ -712,9 +712,9 @@ impl ItemPtr {
         }
     }
 
-    pub(crate) fn as_branch(self) -> Option<BranchPtr> {
-        if let ItemContent::Type(branch) = &self.content {
-            Some(BranchPtr::from(branch))
+    pub(crate) fn as_node(self) -> Option<NodePtr> {
+        if let ItemContent::Node(branch) = &self.content {
+            Some(NodePtr::from(branch))
         } else {
             None
         }
@@ -791,7 +791,7 @@ impl Item {
         }
         if cant_copy_parent_info {
             match &self.parent {
-                TypePtr::Branch(branch) => {
+                TypePtr::Node(branch) => {
                     if let Some(block) = branch.item {
                         encoder.write_parent_info(false);
                         encoder.write_left_id(block.id());
@@ -847,7 +847,7 @@ impl Item {
         self.len -= offset;
     }
 
-    fn needs_deletion(&self, parent: BranchPtr) -> bool {
+    fn needs_deletion(&self, parent: NodePtr) -> bool {
         // delete current item if its parent was deleted
         if let Some(item) = parent.item {
             if item.is_deleted() {
@@ -889,11 +889,11 @@ impl Item {
             ItemContent::Format(_, _) => {
                 // @todo searchmarker are currently unsupported for rich text documents
                 // /** @type {AbstractType<any>} */ (item.parent)._searchMarker = null
-                let mut parent = *self.parent.as_branch().unwrap();
+                let mut parent = *self.parent.as_node().unwrap();
                 parent.has_formatting = true;
             }
-            ItemContent::Type(branch) => {
-                let ptr = BranchPtr::from(branch);
+            ItemContent::Node(branch) => {
+                let ptr = NodePtr::from(branch);
                 #[cfg(feature = "weak")]
                 if let TypeRef::WeakLink(source) = &ptr.type_ref {
                     source.materialize(txn, ptr);
@@ -925,7 +925,7 @@ impl Item {
     }
 
     fn resolve_conflict(&mut self, blocks: &mut BlockStore) {
-        let parent = self.parent.as_branch().unwrap();
+        let parent = self.parent.as_node().unwrap();
 
         // set o to the first conflicting item
         let mut o = if let Some(left) = &self.left {
@@ -1018,18 +1018,18 @@ impl<'doc> TransactionMut<'doc> {
         .or(item.parent_sub);
 
         let mut parent = match &item.parent {
-            TypePtr::Branch(branch) => *branch,
+            TypePtr::Node(branch) => *branch,
             TypePtr::Named(name) => {
                 let branch = self
                     .doc
                     .get_or_create_type(name.clone(), TypeRef::Undefined);
-                item.parent = TypePtr::Branch(branch);
+                item.parent = TypePtr::Node(branch);
                 branch
             }
             TypePtr::ID(id)
-                if let Some(branch) = self.doc.blocks.get_item(id).and_then(|i| i.as_branch()) =>
+                if let Some(branch) = self.doc.blocks.get_item(id).and_then(|i| i.as_node()) =>
             {
-                item.parent = TypePtr::Branch(branch);
+                item.parent = TypePtr::Node(branch);
                 branch
             }
             _ => {
@@ -1503,7 +1503,7 @@ impl Item {
             redone: None,
         });
         let item_ptr = ItemPtr::from(&mut item);
-        if let ItemContent::Type(branch) = &mut item.content {
+        if let ItemContent::Node(branch) = &mut item.content {
             branch.item = Some(item_ptr);
             if branch.name.is_none() {
                 branch.name = root_name;
@@ -1731,9 +1731,9 @@ pub enum ItemContent {
     /// A chunk of text, usually applied by collaborative text insertion.
     String(SplittableString),
 
-    /// A reference of a branch node. Branch nodes define a complex collection types, such as
+    /// A reference of a branch node. Node nodes define a complex collection types, such as
     /// arrays, maps or XML elements.
-    Type(Box<Branch>),
+    Node(Box<Node>),
 }
 
 impl ItemContent {
@@ -1749,7 +1749,7 @@ impl ItemContent {
             ItemContent::Embed(_) => BLOCK_ITEM_EMBED_REF_NUMBER,
             ItemContent::Format(_, _) => BLOCK_ITEM_FORMAT_REF_NUMBER,
             ItemContent::String(_) => BLOCK_ITEM_STRING_REF_NUMBER,
-            ItemContent::Type(_) => BLOCK_ITEM_TYPE_REF_NUMBER,
+            ItemContent::Node(_) => BLOCK_ITEM_TYPE_REF_NUMBER,
         }
     }
 
@@ -1765,7 +1765,7 @@ impl ItemContent {
             ItemContent::JSON(_) => true,
             ItemContent::Embed(_) => true,
             ItemContent::String(_) => true,
-            ItemContent::Type(_) => true,
+            ItemContent::Node(_) => true,
             ItemContent::Deleted(_) => false,
             ItemContent::Format(_, _) => false,
         }
@@ -1838,8 +1838,8 @@ impl ItemContent {
                     buf[0] = Out::YDoc(opts.guid.clone());
                     1
                 }
-                ItemContent::Type(c) => {
-                    let branch_ref = BranchPtr::from(c);
+                ItemContent::Node(c) => {
+                    let branch_ref = NodePtr::from(c);
                     buf[0] = branch_ref.into();
                     1
                 }
@@ -1895,7 +1895,7 @@ impl ItemContent {
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
             ItemContent::String(v) => Some(Out::Any(Any::from(v.clone().as_str()))),
-            ItemContent::Type(c) => Some(BranchPtr::from(c).into()),
+            ItemContent::Node(c) => Some(NodePtr::from(c).into()),
         }
     }
 
@@ -1910,7 +1910,7 @@ impl ItemContent {
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
             ItemContent::String(v) => Some(Out::Any(Any::from(v.as_str()))),
-            ItemContent::Type(c) => Some(BranchPtr::from(c).into()),
+            ItemContent::Node(c) => Some(NodePtr::from(c).into()),
         }
     }
 
@@ -1947,7 +1947,7 @@ impl ItemContent {
                 encoder.write_key(k.as_ref());
                 encoder.write_json(v.as_ref());
             }
-            ItemContent::Type(inner) => {
+            ItemContent::Node(inner) => {
                 inner.type_ref.encode(encoder);
             }
             ItemContent::Any(any) => {
@@ -1976,7 +1976,7 @@ impl ItemContent {
                 encoder.write_key(k.as_ref());
                 encoder.write_json(v.as_ref());
             }
-            ItemContent::Type(inner) => {
+            ItemContent::Node(inner) => {
                 inner.type_ref.encode(encoder);
             }
             ItemContent::Any(any) => {
@@ -2012,8 +2012,8 @@ impl ItemContent {
             )),
             BLOCK_ITEM_TYPE_REF_NUMBER => {
                 let type_ref = TypeRef::decode(decoder)?;
-                let inner = Branch::new(type_ref);
-                Ok(ItemContent::Type(inner))
+                let inner = Node::new(type_ref);
+                Ok(ItemContent::Node(inner))
             }
             BLOCK_ITEM_ANY_REF_NUMBER => {
                 let len = decoder.read_len()? as usize;
@@ -2108,7 +2108,7 @@ impl ItemContent {
 
     pub(crate) fn gc(&mut self, collector: &mut GCCollector) {
         match self {
-            ItemContent::Type(branch) => {
+            ItemContent::Node(branch) => {
                 let mut curr = branch.start.take();
                 while let Some(mut item) = curr {
                     curr = item.right.clone();
@@ -2140,7 +2140,7 @@ impl Clone for ItemContent {
             ItemContent::Embed(json) => ItemContent::Embed(json.clone()),
             ItemContent::Format(key, value) => ItemContent::Format(key.clone(), value.clone()),
             ItemContent::String(chunk) => ItemContent::String(chunk.clone()),
-            ItemContent::Type(branch) => ItemContent::Type(Branch::new(branch.type_ref.clone())),
+            ItemContent::Node(branch) => ItemContent::Node(Node::new(branch.type_ref.clone())),
         }
     }
 }
@@ -2156,7 +2156,7 @@ impl std::fmt::Display for Item {
         write!(f, "({}, len: {}", self.id, self.len)?;
         match &self.parent {
             TypePtr::Unknown => {}
-            TypePtr::Branch(b) => {
+            TypePtr::Node(b) => {
                 if let Some(ptr) = b.item.as_ref() {
                     write!(f, ", parent: {}", ptr.id())?;
                 } else {
@@ -2228,7 +2228,7 @@ impl std::fmt::Display for ItemContent {
             ItemContent::Format(k, v) => write!(f, "<{}={}>", k, v),
             ItemContent::Deleted(s) => write!(f, "deleted({})", s),
             ItemContent::Binary(s) => write!(f, "{:?}", s),
-            ItemContent::Type(inner) => match &inner.type_ref {
+            ItemContent::Node(inner) => match &inner.type_ref {
                 TypeRef::Array => {
                     if let Some(ptr) = inner.start {
                         write!(f, "<array(head: {})>", ptr)
@@ -2301,7 +2301,7 @@ pub trait Prelim: Sized {
     /// Method called once an original item filled with content from [Self::into_content] has been
     /// added to block store. This method is used by complex types such as maps or arrays to append
     /// the original contents of prelim struct into YMap, YArray etc.
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr);
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr);
 }
 
 impl<T> Prelim for T
@@ -2315,7 +2315,7 @@ where
         (ItemContent::Any(vec![value]), None)
     }
 
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: BranchPtr) {}
+    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
 }
 
 #[derive(Debug)]
@@ -2328,7 +2328,7 @@ impl Prelim for PrelimString {
         (ItemContent::String(self.0.into()), None)
     }
 
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: BranchPtr) {}
+    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
 }
 
 /// Empty type marker, which can be used by a [Prelim] trait implementations when no integrated
@@ -2373,7 +2373,7 @@ where
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         if let EmbedPrelim::Shared(carrier) = self {
             carrier.integrate(txn, inner_ref)
         }

@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder};
-use yrs::{Assoc, ReadTxn, StateVector, StickyIndex, Transact, TransactionMut, Update};
+use yrs::{Assoc, StateVector, StickyIndex, TransactionMut, Update};
 
 mod array;
 mod awareness;
@@ -511,11 +511,11 @@ pub fn create_sticky_index_from_type(
         } else {
             Assoc::Before
         };
-        let (branch_id, doc) = shared.try_integrated()?;
+        let (node_id, doc) = shared.try_integrated()?;
         let index = match YTransaction::from_implicit(txn)? {
             Some(txn) => {
                 let txn: &TransactionMut = (&*txn).deref();
-                let ptr = match branch_id.get_branch(txn) {
+                let ptr = match node_id.get_node(txn) {
                     None => return Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),
                     Some(ptr) => ptr,
                 };
@@ -525,7 +525,7 @@ pub fn create_sticky_index_from_type(
                 let txn = doc
                     .try_transact()
                     .map_err(|_| JsValue::from_str(crate::js::errors::ANOTHER_RW_TX))?;
-                let ptr = match branch_id.get_branch(&txn) {
+                let ptr = match node_id.get_node(&txn) {
                     None => return Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),
                     Some(ptr) => ptr,
                 };

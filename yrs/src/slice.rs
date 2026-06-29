@@ -206,7 +206,7 @@ impl ItemSlice {
         }
         if cant_copy_parent_info {
             match &item.parent {
-                TypePtr::Branch(branch) => {
+                TypePtr::Node(branch) => {
                     if let Some(block) = branch.item {
                         encoder.write_parent_info(false);
                         encoder.write_left_id(block.id());

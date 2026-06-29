@@ -13,7 +13,7 @@ pub use text::Text;
 pub use text::TextRef;
 
 use crate::block::{ClientID, Item, ItemPtr, Prelim};
-use crate::branch::{Branch, BranchPtr};
+use crate::node::{Node, NodePtr};
 use crate::encoding::read::Error;
 use crate::transaction::{Transaction, TransactionMut};
 use crate::doc::Doc;
@@ -285,7 +285,7 @@ impl Decode for TypeRef {
 }
 
 #[cfg(feature = "sync")]
-pub trait Observable: AsRef<Branch> {
+pub trait Observable: AsRef<Node> {
     type Event;
 
     /// Subscribes a given callback to be triggered whenever current y-type is changed.
@@ -302,7 +302,7 @@ pub trait Observable: AsRef<Branch> {
         F: FnMut(&Transaction<&Doc>, &Self::Event) + Send + Sync + 'static,
         Event: AsRef<Self::Event>,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe(move |txn, e| {
             let mapped_event = e.as_ref();
             f(txn, mapped_event)
@@ -315,7 +315,7 @@ pub trait Observable: AsRef<Branch> {
         F: FnMut(&Transaction<&Doc>, &Self::Event) + Send + Sync + 'static,
         Event: AsRef<Self::Event>,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe_with(key.into(), move |txn, e| {
             let mapped_event = e.as_ref();
             f(txn, mapped_event)
@@ -323,13 +323,13 @@ pub trait Observable: AsRef<Branch> {
     }
 
     fn unobserve<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.unobserve(&key.into())
     }
 }
 
 #[cfg(not(feature = "sync"))]
-pub trait Observable: AsRef<Branch> {
+pub trait Observable: AsRef<Node> {
     type Event;
 
     fn observe<F>(&self, mut f: F) -> Subscription
@@ -337,7 +337,7 @@ pub trait Observable: AsRef<Branch> {
         F: FnMut(&Transaction<&Doc>, &Self::Event) + 'static,
         Event: AsRef<Self::Event>,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe(move |txn, e| {
             let mapped_event = e.as_ref();
             f(txn, mapped_event)
@@ -350,7 +350,7 @@ pub trait Observable: AsRef<Branch> {
         F: FnMut(&Transaction<&Doc>, &Self::Event) + 'static,
         Event: AsRef<Self::Event>,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe_with(key.into(), move |txn, e| {
             let mapped_event = e.as_ref();
             f(txn, mapped_event)
@@ -358,7 +358,7 @@ pub trait Observable: AsRef<Branch> {
     }
 
     fn unobserve<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.unobserve(&key.into())
     }
 }
@@ -389,7 +389,7 @@ pub trait RootRef: SharedRef {
 }
 
 /// Common trait for shared collaborative collection types in Yrs.
-pub trait SharedRef: From<BranchPtr> + AsRef<Branch> {
+pub trait SharedRef: From<NodePtr> + AsRef<Node> {
     /// Returns a logical descriptor of a current shared collection.
     fn hook(&self) -> Hook<Self> {
         let branch = self.as_ref();
@@ -420,12 +420,12 @@ pub trait DefaultPrelim {
 /// Trait implemented by all Y-types, allowing for observing events which are emitted by
 /// nested types.
 #[cfg(feature = "sync")]
-pub trait DeepObservable: AsRef<Branch> {
+pub trait DeepObservable: AsRef<Node> {
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
         F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep(f)
     }
 
@@ -434,23 +434,23 @@ pub trait DeepObservable: AsRef<Branch> {
         K: Into<Origin>,
         F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep_with(key.into(), f)
     }
 
     fn unobserve_deep<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.deep_observers.unsubscribe(&key.into())
     }
 }
 
 #[cfg(not(feature = "sync"))]
-pub trait DeepObservable: AsRef<Branch> {
+pub trait DeepObservable: AsRef<Node> {
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
         F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep(f)
     }
 
@@ -459,17 +459,17 @@ pub trait DeepObservable: AsRef<Branch> {
         K: Into<Origin>,
         F: FnMut(&Transaction<&Doc>, &Events) + 'static,
     {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep_with(key.into(), f)
     }
 
     fn unobserve_deep<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = BranchPtr::from(self.as_ref());
+        let mut branch = NodePtr::from(self.as_ref());
         branch.deep_observers.unsubscribe(&key.into())
     }
 }
 
-impl std::fmt::Display for Branch {
+impl std::fmt::Display for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.type_ref() {
             TypeRef::Array => {
@@ -600,7 +600,7 @@ impl<'a> Iterator for Entries<'a> {
     }
 }
 
-/// Type pointer - used to localize a complex [Branch] node within a scope of a document store.
+/// Type pointer - used to localize a complex [Node] node within a scope of a document store.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum TypePtr {
     /// Temporary value - used only when block is deserialized right away, but had not been
@@ -609,7 +609,7 @@ pub(crate) enum TypePtr {
     Unknown,
 
     /// Pointer to another block. Used in nested data types ie. YMap containing another YMap.
-    Branch(BranchPtr),
+    Node(NodePtr),
 
     /// Temporary state representing top-level type.
     Named(Arc<str>),
@@ -619,8 +619,8 @@ pub(crate) enum TypePtr {
 }
 
 impl TypePtr {
-    pub(crate) fn as_branch(&self) -> Option<&BranchPtr> {
-        if let TypePtr::Branch(ptr) = self {
+    pub(crate) fn as_node(&self) -> Option<&NodePtr> {
+        if let TypePtr::Node(ptr) = self {
             Some(ptr)
         } else {
             None
@@ -632,7 +632,7 @@ impl std::fmt::Display for TypePtr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             TypePtr::Unknown => write!(f, "unknown"),
-            TypePtr::Branch(ptr) => {
+            TypePtr::Node(ptr) => {
                 if let Some(i) = ptr.item {
                     write!(f, "{}", i.id())
                 } else {
@@ -800,7 +800,7 @@ pub type Attrs = HashMap<Arc<str>, Any>;
 
 pub(crate) fn event_keys<D: Deref<Target = Doc>>(
     txn: &Transaction<D>,
-    target: BranchPtr,
+    target: NodePtr,
     keys_changed: &HashSet<Option<Arc<str>>>,
 ) -> HashMap<Arc<str>, EntryChange> {
     let mut keys = HashMap::new();
@@ -1029,7 +1029,7 @@ impl AsRef<WeakEvent> for Event {
 }
 
 impl Event {
-    pub(crate) fn set_current_target(&mut self, target: BranchPtr) {
+    pub(crate) fn set_current_target(&mut self, target: NodePtr) {
         match self {
             Event::Text(e) => e.current_target = target,
             Event::Array(e) => e.current_target = target,

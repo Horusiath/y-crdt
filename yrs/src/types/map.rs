@@ -3,8 +3,8 @@ use crate::encoding::read::Error;
 use crate::encoding::serde::from_any;
 use crate::transaction::{Transaction, TransactionMut};
 use crate::types::{
-    event_keys, AsPrelim, Branch, BranchPtr, DefaultPrelim, EntryChange, In, Out, Path,
-    RootRef, SharedRef, ToJson, TypeRef,
+    event_keys, AsPrelim, DefaultPrelim, EntryChange, In, Node, NodePtr, Out, Path, RootRef,
+    SharedRef, ToJson, TypeRef,
 };
 use crate::*;
 use serde::de::DeserializeOwned;
@@ -58,7 +58,7 @@ use std::sync::Arc;
 /// ```
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct MapRef(BranchPtr);
+pub struct MapRef(NodePtr);
 
 impl RootRef for MapRef {
     fn type_ref() -> TypeRef {
@@ -87,8 +87,8 @@ impl ToJson for MapRef {
     }
 }
 
-impl AsRef<Branch> for MapRef {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for MapRef {
+    fn as_ref(&self) -> &Node {
         self.0.deref()
     }
 }
@@ -104,7 +104,7 @@ impl TryFrom<ItemPtr> for MapRef {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(branch) = value.clone().as_branch() {
+        if let Some(branch) = value.clone().as_node() {
             Ok(MapRef::from(branch))
         } else {
             Err(value)
@@ -148,7 +148,7 @@ impl DefaultPrelim for MapRef {
     }
 }
 
-pub trait Map: AsRef<Branch> + Sized {
+pub trait Map: AsRef<Node> + Sized {
     /// Returns a number of entries stored within current map.
     fn len<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> u32 {
         let mut len = 0;
@@ -180,7 +180,7 @@ pub trait Map: AsRef<Branch> + Sized {
     }
 
     fn into_iter<'a, D: Deref<Target = Doc>>(self, txn: &'a Transaction<D>) -> MapIntoIter<'a> {
-        let branch_ptr = BranchPtr::from(self.as_ref());
+        let branch_ptr = NodePtr::from(self.as_ref());
         MapIntoIter::new(branch_ptr, txn.doc())
     }
 
@@ -195,7 +195,7 @@ pub trait Map: AsRef<Branch> + Sized {
             let inner = self.as_ref();
             let left = inner.map.get(&key);
             ItemPosition {
-                parent: BranchPtr::from(inner).into(),
+                parent: NodePtr::from(inner).into(),
                 left: left.cloned(),
                 right: None,
                 index: 0,
@@ -287,14 +287,18 @@ pub trait Map: AsRef<Branch> + Sized {
     /// reference to a current removed shared type (which will be empty due to all of its elements
     /// being deleted), **not** the content prior the removal.
     fn remove(&self, txn: &mut TransactionMut, key: &str) -> Option<Out> {
-        let ptr = BranchPtr::from(self.as_ref());
+        let ptr = NodePtr::from(self.as_ref());
         ptr.remove(txn, key)
     }
 
     /// Returns [WeakPrelim] to a given `key`, if it exists in a current map.
     #[cfg(feature = "weak")]
-    fn link<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>, key: &str) -> Option<crate::WeakPrelim<Self>> {
-        let ptr = BranchPtr::from(self.as_ref());
+    fn link<D: Deref<Target = Doc>>(
+        &self,
+        _txn: &Transaction<D>,
+        key: &str,
+    ) -> Option<crate::WeakPrelim<Self>> {
+        let ptr = NodePtr::from(self.as_ref());
         let block = ptr.map.get(key)?;
         let start = StickyIndex::from_id(block.id().clone(), Assoc::Before);
         let end = StickyIndex::from_id(block.id().clone(), Assoc::After);
@@ -305,7 +309,7 @@ pub trait Map: AsRef<Branch> + Sized {
     /// Returns a value stored under a given `key` within current map, or `None` if no entry
     /// with such `key` existed.
     fn get<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>, key: &str) -> Option<Out> {
-        let ptr = BranchPtr::from(self.as_ref());
+        let ptr = NodePtr::from(self.as_ref());
         ptr.get(txn.doc(), key)
     }
 
@@ -367,7 +371,7 @@ pub trait Map: AsRef<Branch> + Sized {
         D: Deref<Target = Doc>,
         V: DeserializeOwned,
     {
-        let ptr = BranchPtr::from(self.as_ref());
+        let ptr = NodePtr::from(self.as_ref());
         let out = ptr.get(txn.doc(), key).unwrap_or(Out::Any(Any::Null));
         //TODO: we could probably optimize this step by not serializing to intermediate Any value
         let any = out.to_json(txn);
@@ -397,7 +401,7 @@ pub struct MapIter<'a> {
 }
 
 impl<'a> MapIter<'a> {
-    pub fn new(branch: &'a Branch, doc: &'a Doc) -> Self {
+    pub fn new(branch: &'a Node, doc: &'a Doc) -> Self {
         MapIter {
             iter: branch.map.iter(),
             _doc: doc,
@@ -427,7 +431,7 @@ pub struct MapIntoIter<'a> {
 }
 
 impl<'a> MapIntoIter<'a> {
-    fn new(map: BranchPtr, doc: &'a Doc) -> Self {
+    fn new(map: NodePtr, doc: &'a Doc) -> Self {
         let entries = map.map.clone().into_iter();
         MapIntoIter { _doc: doc, entries }
     }
@@ -473,8 +477,8 @@ impl<'a> Iterator for Values<'a> {
     }
 }
 
-impl From<BranchPtr> for MapRef {
-    fn from(inner: BranchPtr) -> Self {
+impl From<NodePtr> for MapRef {
+    fn from(inner: NodePtr) -> Self {
         MapRef(inner)
     }
 }
@@ -540,11 +544,11 @@ impl Prelim for MapPrelim {
     type Return = MapRef;
 
     fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Branch::new(TypeRef::Map);
-        (ItemContent::Type(inner), Some(self))
+        let inner = Node::new(TypeRef::Map);
+        (ItemContent::Node(inner), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let map = MapRef::from(inner_ref);
         for (key, value) in self.0 {
             map.insert(txn, key, value);
@@ -561,13 +565,13 @@ impl Into<EmbedPrelim<MapPrelim>> for MapPrelim {
 
 /// Event generated by [Map::observe] method. Emitted during transaction commit phase.
 pub struct MapEvent {
-    pub(crate) current_target: BranchPtr,
+    pub(crate) current_target: NodePtr,
     target: MapRef,
     keys: UnsafeCell<Result<HashMap<Arc<str>, EntryChange>, HashSet<Option<Arc<str>>>>>,
 }
 
 impl MapEvent {
-    pub(crate) fn new(branch_ref: BranchPtr, key_changes: HashSet<Option<Arc<str>>>) -> Self {
+    pub(crate) fn new(branch_ref: NodePtr, key_changes: HashSet<Option<Arc<str>>>) -> Self {
         let current_target = branch_ref.clone();
         MapEvent {
             target: MapRef::from(branch_ref),
@@ -583,12 +587,15 @@ impl MapEvent {
 
     /// Returns a path from root type down to [Map] instance which emitted this event.
     pub fn path(&self) -> Path {
-        Branch::path(self.current_target, self.target.0)
+        Node::path(self.current_target, self.target.0)
     }
 
     /// Returns a summary of key-value changes made over corresponding [Map] collection within
     /// bounds of current transaction.
-    pub fn keys<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> &HashMap<Arc<str>, EntryChange> {
+    pub fn keys<D: Deref<Target = Doc>>(
+        &self,
+        txn: &Transaction<D>,
+    ) -> &HashMap<Arc<str>, EntryChange> {
         let keys = unsafe { self.keys.get().as_mut().unwrap() };
 
         match keys {

@@ -1,5 +1,5 @@
 use crate::block::ItemPtr;
-use crate::branch::{Branch, BranchPtr};
+use crate::node::{Node, NodePtr};
 use crate::cell::{Acquire, AcquireMut};
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
@@ -114,7 +114,7 @@ impl<M> Meta for M where M: Default {}
 
 struct Inner<M> {
     docs: HashMap<Arc<str>, Cell<Doc>>,
-    scope: HashSet<BranchPtr>,
+    scope: HashSet<NodePtr>,
     options: Options<M>,
     undo_stack: UndoStack<M>,
     redo_stack: UndoStack<M>,
@@ -167,7 +167,7 @@ where
     /// Extends a list of shared types tracked by current undo manager by a given `scope`.
     pub fn expand_scope<T>(&mut self, doc: &Cell<Doc>, scope: &T)
     where
-        T: AsRef<Branch>,
+        T: AsRef<Node>,
     {
         let origin = Origin::from(Arc::as_ptr(&self.state) as usize);
         let inner_mut = Arc::get_mut(&mut self.state).unwrap();
@@ -195,7 +195,7 @@ where
 
             inner_mut.docs.insert(guid, doc.clone());
         }
-        let ptr = BranchPtr::from(scope.as_ref());
+        let ptr = NodePtr::from(scope.as_ref());
         let inner = Arc::get_mut(&mut self.state).unwrap();
         inner.scope.insert(ptr);
     }
@@ -437,7 +437,7 @@ where
     }
 
     fn clear_stack(
-        scope: &HashSet<BranchPtr>,
+        scope: &HashSet<NodePtr>,
         docs: &HashMap<Uuid, Cell<Doc>>,
         stack: &mut UndoStack<M>,
     ) -> bool {
@@ -639,7 +639,7 @@ where
         mut txn: TransactionMut,
         stack: &mut UndoStack<M>,
         other: &UndoStack<M>,
-        scope: &HashSet<BranchPtr>,
+        scope: &HashSet<NodePtr>,
         observer_popped: &mut Observer<UndoFn<M>>,
         undoing: bool,
         origin: Origin,
@@ -912,11 +912,11 @@ pub struct Event<M> {
     meta: M,
     origin: Option<Origin>,
     kind: EventKind,
-    changed_parent_types: Vec<BranchPtr>,
+    changed_parent_types: Vec<NodePtr>,
 }
 
 impl<M> Event<M> {
-    fn undo(meta: M, origin: Option<Origin>, changed_parent_types: Vec<BranchPtr>) -> Self {
+    fn undo(meta: M, origin: Option<Origin>, changed_parent_types: Vec<NodePtr>) -> Self {
         Event {
             meta,
             origin,
@@ -925,7 +925,7 @@ impl<M> Event<M> {
         }
     }
 
-    fn redo(meta: M, origin: Option<Origin>, changed_parent_types: Vec<BranchPtr>) -> Self {
+    fn redo(meta: M, origin: Option<Origin>, changed_parent_types: Vec<NodePtr>) -> Self {
         Event {
             meta,
             origin,
@@ -943,8 +943,8 @@ impl<M> Event<M> {
     }
 
     /// Checks if given shared collection has changed in the scope of currently notified update.
-    pub fn has_changed<T: AsRef<Branch>>(&self, target: &T) -> bool {
-        let ptr = BranchPtr::from(target.as_ref());
+    pub fn has_changed<T: AsRef<Node>>(&self, target: &T) -> bool {
+        let ptr = NodePtr::from(target.as_ref());
         self.changed_parent_types.contains(&ptr)
     }
 
@@ -959,7 +959,7 @@ impl<M> Event<M> {
     }
 
     /// Returns info about all changed shared collections.
-    pub fn changed_parent_types(&self) -> &[BranchPtr] {
+    pub fn changed_parent_types(&self) -> &[NodePtr] {
         &self.changed_parent_types
     }
 }

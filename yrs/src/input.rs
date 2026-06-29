@@ -1,5 +1,5 @@
 use crate::block::{ItemContent, Prelim};
-use crate::branch::{Branch, BranchPtr};
+use crate::node::{Node, NodePtr};
 use crate::types::text::DeltaPrelim;
 use crate::types::xml::XmlDeltaPrelim;
 use crate::types::TypeRef;
@@ -22,7 +22,7 @@ pub enum In {
     XmlText(XmlDeltaPrelim),
     Doc(Doc),
     #[cfg(feature = "weak")]
-    WeakLink(crate::types::weak::WeakPrelim<BranchPtr>),
+    WeakLink(crate::types::weak::WeakPrelim<NodePtr>),
 }
 
 impl Prelim for In {
@@ -47,12 +47,12 @@ impl Prelim for In {
                     In::WeakLink(v) => TypeRef::WeakLink(v.source().clone()),
                     _ => unreachable!(),
                 };
-                (ItemContent::Type(Branch::new(type_ref)), Some(other))
+                (ItemContent::Node(Node::new(type_ref)), Some(other))
             }
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         match self {
             In::Text(prelim) => prelim.integrate(txn, inner_ref),
             In::Array(prelim) => prelim.integrate(txn, inner_ref),

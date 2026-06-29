@@ -21,16 +21,16 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-/// A wrapper around [Branch] cell, supplied with a bunch of convenience methods to operate on both
-/// map-like and array-like contents of a [Branch].
+/// A wrapper around [Node] cell, supplied with a bunch of convenience methods to operate on both
+/// map-like and array-like contents of a [Node].
 #[repr(transparent)]
 #[derive(Clone, Copy, Hash)]
-pub struct BranchPtr(NonNull<Branch>);
+pub struct NodePtr(NonNull<Node>);
 
-unsafe impl Send for BranchPtr {}
-unsafe impl Sync for BranchPtr {}
+unsafe impl Send for NodePtr {}
+unsafe impl Sync for NodePtr {}
 
-impl BranchPtr {
+impl NodePtr {
     pub(crate) fn trigger(
         &mut self,
         txn: &Transaction<&Doc>,
@@ -46,25 +46,25 @@ impl BranchPtr {
     }
 }
 
-impl TryFrom<ItemPtr> for BranchPtr {
+impl TryFrom<ItemPtr> for NodePtr {
     type Error = ItemPtr;
 
     fn try_from(value: ItemPtr) -> Result<Self, Self::Error> {
-        if let ItemContent::Type(branch) = &value.content {
-            Ok(BranchPtr::from(branch))
+        if let ItemContent::Node(branch) = &value.content {
+            Ok(NodePtr::from(branch))
         } else {
             Err(value)
         }
     }
 }
 
-impl Into<TypePtr> for BranchPtr {
+impl Into<TypePtr> for NodePtr {
     fn into(self) -> TypePtr {
-        TypePtr::Branch(self)
+        TypePtr::Node(self)
     }
 }
 
-impl Into<Origin> for BranchPtr {
+impl Into<Origin> for NodePtr {
     fn into(self) -> Origin {
         let addr = self.0.as_ptr() as usize;
         let bytes = addr.to_be_bytes();
@@ -72,56 +72,56 @@ impl Into<Origin> for BranchPtr {
     }
 }
 
-impl AsRef<Branch> for BranchPtr {
-    fn as_ref(&self) -> &Branch {
+impl AsRef<Node> for NodePtr {
+    fn as_ref(&self) -> &Node {
         self.deref()
     }
 }
 
-impl AsMut<Branch> for BranchPtr {
-    fn as_mut(&mut self) -> &mut Branch {
+impl AsMut<Node> for NodePtr {
+    fn as_mut(&mut self) -> &mut Node {
         self.deref_mut()
     }
 }
 
-impl Deref for BranchPtr {
-    type Target = Branch;
+impl Deref for NodePtr {
+    type Target = Node;
 
     fn deref(&self) -> &Self::Target {
         unsafe { self.0.as_ref() }
     }
 }
 
-impl DerefMut for BranchPtr {
+impl DerefMut for NodePtr {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.0.as_mut() }
     }
 }
 
-impl<'a> From<&'a mut Box<Branch>> for BranchPtr {
-    fn from(branch: &'a mut Box<Branch>) -> Self {
+impl<'a> From<&'a mut Box<Node>> for NodePtr {
+    fn from(branch: &'a mut Box<Node>) -> Self {
         let ptr = NonNull::from(branch.as_ref());
-        BranchPtr(ptr)
+        NodePtr(ptr)
     }
 }
 
-impl<'a> From<&'a Box<Branch>> for BranchPtr {
-    fn from(branch: &'a Box<Branch>) -> Self {
-        let b: &Branch = &*branch;
+impl<'a> From<&'a Box<Node>> for NodePtr {
+    fn from(branch: &'a Box<Node>) -> Self {
+        let b: &Node = &*branch;
 
-        let ptr = unsafe { NonNull::new_unchecked(b as *const Branch as *mut Branch) };
-        BranchPtr(ptr)
+        let ptr = unsafe { NonNull::new_unchecked(b as *const Node as *mut Node) };
+        NodePtr(ptr)
     }
 }
 
-impl<'a> From<&'a Branch> for BranchPtr {
-    fn from(branch: &'a Branch) -> Self {
-        let ptr = unsafe { NonNull::new_unchecked(branch as *const Branch as *mut Branch) };
-        BranchPtr(ptr)
+impl<'a> From<&'a Node> for NodePtr {
+    fn from(branch: &'a Node) -> Self {
+        let ptr = unsafe { NonNull::new_unchecked(branch as *const Node as *mut Node) };
+        NodePtr(ptr)
     }
 }
 
-impl Into<Out> for BranchPtr {
+impl Into<Out> for NodePtr {
     /// Converts current branch data into a [Out]. It uses a type ref information to resolve,
     /// which value variant is a correct one for this branch. Since branch represent only complex
     /// types [Out::Any] will never be returned from this method.
@@ -141,36 +141,36 @@ impl Into<Out> for BranchPtr {
     }
 }
 
-impl Eq for BranchPtr {}
+impl Eq for NodePtr {}
 
 #[cfg(not(test))]
-impl PartialEq for BranchPtr {
+impl PartialEq for NodePtr {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(self.0.as_ptr(), other.0.as_ptr())
     }
 }
 
 #[cfg(test)]
-impl PartialEq for BranchPtr {
+impl PartialEq for NodePtr {
     fn eq(&self, other: &Self) -> bool {
         if NonNull::eq(&self.0, &other.0) {
             true
         } else {
-            let a: &Branch = self.deref();
-            let b: &Branch = other.deref();
+            let a: &Node = self.deref();
+            let b: &Node = other.deref();
             a.eq(b)
         }
     }
 }
 
-impl std::fmt::Debug for BranchPtr {
+impl std::fmt::Debug for NodePtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.id())
     }
 }
 
-/// Branch describes a content of a complex Yrs data structures, such as arrays or maps.
-pub struct Branch {
+/// Node describes a content of a complex Yrs data structures, such as arrays or maps.
+pub struct Node {
     /// A pointer to a first block of a indexed sequence component of this branch node. If `None`,
     /// it means that sequence is empty or a branch doesn't act as an indexed sequence. Indexed
     /// sequences include:
@@ -226,15 +226,15 @@ type ObserveFn = Box<dyn FnMut(&Transaction<&Doc>, &Event) + 'static>;
 #[cfg(not(feature = "sync"))]
 type DeepObserveFn = Box<dyn FnMut(&Transaction<&Doc>, &Events) + 'static>;
 
-impl std::fmt::Debug for Branch {
+impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
     }
 }
 
-impl Eq for Branch {}
+impl Eq for Node {}
 
-impl PartialEq for Branch {
+impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         self.item == other.item
             && self.start == other.start
@@ -244,7 +244,7 @@ impl PartialEq for Branch {
     }
 }
 
-impl Branch {
+impl Node {
     pub fn new(type_ref: TypeRef) -> Box<Self> {
         Box::new(Self {
             start: None,
@@ -267,11 +267,11 @@ impl Branch {
         }
     }
 
-    pub fn id(&self) -> BranchID {
+    pub fn id(&self) -> NodeID {
         if let Some(ptr) = self.item {
-            BranchID::Nested(ptr.id)
+            NodeID::Nested(ptr.id)
         } else if let Some(name) = &self.name {
-            BranchID::Root(name.clone())
+            NodeID::Root(name.clone())
         } else {
             unreachable!("Could not get ID for branch")
         }
@@ -422,7 +422,7 @@ impl Branch {
         let (_, mut ptr) = if index == 0 {
             (None, start)
         } else {
-            Branch::index_to_ptr(txn, start, index)
+            Node::index_to_ptr(txn, start, index)
         };
         while remaining > 0 {
             if let Some(item) = ptr {
@@ -465,7 +465,7 @@ impl Branch {
     ) -> Option<ItemPtr> {
         let (start, parent) = {
             if index <= self.len() {
-                (self.start, BranchPtr::from(self))
+                (self.start, NodePtr::from(self))
             } else {
                 panic!("Cannot insert item at index over the length of an array")
             }
@@ -473,7 +473,7 @@ impl Branch {
         let (left, right) = if index == 0 {
             (None, self.start)
         } else {
-            Branch::index_to_ptr(txn, start, index)
+            Node::index_to_ptr(txn, start, index)
         };
         let pos = ItemPosition {
             parent: parent.into(),
@@ -486,7 +486,7 @@ impl Branch {
         txn.create_item(&pos, value, None)
     }
 
-    pub(crate) fn path(from: BranchPtr, to: BranchPtr) -> Path {
+    pub(crate) fn path(from: NodePtr, to: NodePtr) -> Path {
         let parent = from;
         let mut child = to;
         let mut path = VecDeque::default();
@@ -496,7 +496,7 @@ impl Branch {
             }
             let item_id = item.id.clone();
             let parent_sub = item.parent_sub.clone();
-            child = *item.parent.as_branch().unwrap();
+            child = *item.parent.as_node().unwrap();
             if let Some(parent_sub) = parent_sub {
                 // parent is map-ish
                 path.push_front(PathSegment::Key(parent_sub));
@@ -589,7 +589,7 @@ impl Branch {
 
     pub(crate) fn is_parent_of(&self, mut ptr: Option<ItemPtr>) -> bool {
         while let Some(i) = ptr.as_deref() {
-            if let Some(parent) = i.parent.as_branch() {
+            if let Some(parent) = i.parent.as_node() {
                 if parent.deref() == self {
                     return true;
                 }
@@ -602,7 +602,7 @@ impl Branch {
     }
 
     pub(crate) fn make_event(&self, keys: HashSet<Option<Arc<str>>>) -> Option<Event> {
-        let self_ptr = BranchPtr::from(self);
+        let self_ptr = NodePtr::from(self);
         let event = match self.type_ref() {
             TypeRef::Array => Event::Array(ArrayEvent::new(self_ptr)),
             TypeRef::Map => Event::Map(MapEvent::new(self_ptr, keys)),
@@ -700,9 +700,9 @@ impl<S: SharedRef> Root<S> {
     }
 }
 
-impl<S> Into<BranchID> for Root<S> {
-    fn into(self) -> BranchID {
-        BranchID::Root(self.name)
+impl<S> Into<NodeID> for Root<S> {
+    fn into(self) -> NodeID {
+        NodeID::Root(self.name)
     }
 }
 
@@ -760,10 +760,10 @@ impl<S: SharedRef> Nested<S> {
         let store = txn.doc();
         let block = store.blocks.get_block(&self.id)?;
         if let Block::Item(block) = block.as_ref() {
-            if let ItemContent::Type(branch) = &block.content {
+            if let ItemContent::Node(branch) = &block.content {
                 if let Some(ptr) = branch.item {
                     if !ptr.is_deleted() {
-                        return Some(S::from(BranchPtr::from(&*branch)));
+                        return Some(S::from(NodePtr::from(&*branch)));
                     }
                 }
             }
@@ -772,9 +772,9 @@ impl<S: SharedRef> Nested<S> {
     }
 }
 
-impl<S> Into<BranchID> for Nested<S> {
-    fn into(self) -> BranchID {
-        BranchID::Nested(self.id)
+impl<S> Into<NodeID> for Nested<S> {
+    fn into(self) -> NodeID {
+        NodeID::Nested(self.id)
     }
 }
 
@@ -783,14 +783,14 @@ impl<S> Into<BranchID> for Nested<S> {
 /// It can be resolved from any shared reference using [SharedRef::hook].
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Hook<S> {
-    id: BranchID,
+    id: NodeID,
     _tag: PhantomData<S>,
 }
 
 impl<S> Hook<S> {
     /// Unique logical identifier of a shared collection.
     #[inline]
-    pub fn id(&self) -> &BranchID {
+    pub fn id(&self) -> &NodeID {
         &self.id
     }
 }
@@ -843,7 +843,7 @@ impl<S: SharedRef> Hook<S> {
     /// assert_eq!(root_hook.get(&txn), Some(root));
     /// ```
     pub fn get<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
-        let branch = self.id.get_branch(txn.doc())?;
+        let branch = self.id.get_node(txn.doc())?;
         match branch.item {
             Some(ptr) if ptr.is_deleted() => None,
             _ => Some(S::from(branch)),
@@ -854,8 +854,8 @@ impl<S: SharedRef> Hook<S> {
     /// Returns `None` if current descriptor doesn't reference a nested shared collection.  
     pub fn into_nested(self) -> Option<Nested<S>> {
         match self.id {
-            BranchID::Nested(id) => Some(Nested::new(id)),
-            BranchID::Root(_) => None,
+            NodeID::Nested(id) => Some(Nested::new(id)),
+            NodeID::Root(_) => None,
         }
     }
 }
@@ -865,8 +865,8 @@ impl<S: RootRef> Hook<S> {
     /// Returns `None` if current descriptor doesn't reference a root-level shared collection.
     pub fn into_root(self) -> Option<Root<S>> {
         match self.id {
-            BranchID::Root(name) => Some(Root::new(name)),
-            BranchID::Nested(_) => None,
+            NodeID::Root(name) => Some(Root::new(name)),
+            NodeID::Nested(_) => None,
         }
     }
 }
@@ -889,8 +889,8 @@ impl<S> From<Nested<S>> for Hook<S> {
     }
 }
 
-impl<S> From<BranchID> for Hook<S> {
-    fn from(id: BranchID) -> Self {
+impl<S> From<NodeID> for Hook<S> {
+    fn from(id: NodeID) -> Self {
         Hook {
             id,
             _tag: PhantomData::default(),
@@ -898,8 +898,8 @@ impl<S> From<BranchID> for Hook<S> {
     }
 }
 
-impl<S> Into<BranchID> for Hook<S> {
-    fn into(self) -> BranchID {
+impl<S> Into<NodeID> for Hook<S> {
+    fn into(self) -> NodeID {
         self.id
     }
 }
@@ -907,40 +907,40 @@ impl<S> Into<BranchID> for Hook<S> {
 /// An unique logical identifier of a shared collection. Can be shared across document boundaries
 /// to reference to the same logical entity across different replicas of a document.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum BranchID {
+pub enum NodeID {
     Nested(ID),
     Root(Arc<str>),
 }
 
-impl BranchID {
+impl NodeID {
     #[inline]
-    pub fn get_root<K: Borrow<str>>(doc: &Doc, name: K) -> Option<BranchPtr> {
+    pub fn get_root<K: Borrow<str>>(doc: &Doc, name: K) -> Option<NodePtr> {
         doc.get_type(name)
     }
 
-    pub fn get_nested(doc: &Doc, id: &ID) -> Option<BranchPtr> {
+    pub fn get_nested(doc: &Doc, id: &ID) -> Option<NodePtr> {
         let block = doc.blocks.get_block(id)?;
         if let Block::Item(block) = block.as_ref() {
-            if let ItemContent::Type(branch) = &block.content {
-                return Some(BranchPtr::from(&*branch));
+            if let ItemContent::Node(branch) = &block.content {
+                return Some(NodePtr::from(&*branch));
             }
         }
         None
     }
 
-    pub fn get_branch(&self, doc: &Doc) -> Option<BranchPtr> {
+    pub fn get_node(&self, doc: &Doc) -> Option<NodePtr> {
         match self {
-            BranchID::Root(name) => Self::get_root(doc, name.as_ref()),
-            BranchID::Nested(id) => Self::get_nested(doc, id),
+            NodeID::Root(name) => Self::get_root(doc, name.as_ref()),
+            NodeID::Nested(id) => Self::get_nested(doc, id),
         }
     }
 }
 
-impl std::fmt::Debug for BranchID {
+impl std::fmt::Debug for NodeID {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            BranchID::Nested(id) => write!(f, "{}", id),
-            BranchID::Root(name) => write!(f, "'{}'", name),
+            NodeID::Nested(id) => write!(f, "{}", id),
+            NodeID::Root(name) => write!(f, "'{}'", name),
         }
     }
 }

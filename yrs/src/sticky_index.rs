@@ -1,10 +1,10 @@
 use crate::block::{ItemContent, ItemPtr};
 use crate::block_iter::BlockIter;
-use crate::branch::{Branch, BranchPtr};
 use crate::encoding::read::Error;
+use crate::node::{Node, NodePtr};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{BranchID, ClientID, Doc, Transaction, ID};
+use crate::{ClientID, Doc, NodeID, Transaction, ID};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -132,9 +132,9 @@ impl StickyIndex {
     /// # Examples
     ///
     /// ```rust
-    /// use yrs::{Assoc, Doc, IndexedSequence, Text, Transact};
+    /// use yrs::{Assoc, Doc, IndexedSequence, Text};
     ///
-    /// let doc = Doc::new();
+    /// let mut doc = Doc::new();
     /// let text = doc.get_or_insert_text("text");
     /// let mut txn = doc.transact_mut();
     ///
@@ -166,7 +166,7 @@ impl StickyIndex {
                 }
                 let right = store.follow_redone(right_id);
                 if let Some(right) = right {
-                    if let Some(b) = right.ptr.parent.as_branch() {
+                    if let Some(b) = right.ptr.parent.as_node() {
                         branch = Some(b.clone());
                         match b.item {
                             Some(i) if i.is_deleted() => { /* do nothing */ }
@@ -179,7 +179,7 @@ impl StickyIndex {
                                 } else {
                                     right.start + 1
                                 };
-                                let encoding = store.offset_kind;
+                                let encoding = store.options.offset_kind;
                                 let mut n = right.ptr.left;
                                 while let Some(item) = n.as_deref() {
                                     if !item.is_deleted() && item.is_countable() {
@@ -199,9 +199,9 @@ impl StickyIndex {
                     return None;
                 }
                 let item = store.follow_redone(id)?; // early return if item is GC'ed
-                if let ItemContent::Type(b) = &item.ptr.content {
+                if let ItemContent::Node(b) = &item.ptr.content {
                     // we don't need to materilized ItemContent::Type - they are always 1-length
-                    let ptr = BranchPtr::from(b.as_ref());
+                    let ptr = NodePtr::from(b.as_ref());
                     branch = Some(ptr);
                     index = if self.assoc == Assoc::After {
                         ptr.content_len
@@ -231,13 +231,13 @@ impl StickyIndex {
 
     pub fn at<D: Deref<Target = Doc>>(
         txn: &Transaction<D>,
-        branch: BranchPtr,
+        branch: NodePtr,
         mut index: u32,
         assoc: Assoc,
     ) -> Option<Self> {
         if assoc == Assoc::Before {
             if index == 0 {
-                let context = IndexScope::from_branch(branch);
+                let context = IndexScope::from_node(branch);
                 return Some(StickyIndex::new(context, assoc));
             }
             index -= 1;
@@ -642,17 +642,17 @@ mod test {
     use crate::sticky_index::Assoc;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, Transact, ID};
+    use crate::{Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, ID};
     use serde::{Deserialize, Serialize};
 
     fn check_sticky_indexes(doc: &Doc, text: &TextRef) {
         // test if all positions are encoded and restored correctly
-        let mut txn = doc.transact_mut();
+        let txn = doc.transact();
         let len = text.len(&txn);
         for i in 0..len {
             // for all types of associations..
             for assoc in [Assoc::After, Assoc::Before] {
-                let rel_pos = text.sticky_index(&mut txn, i, assoc).unwrap();
+                let rel_pos = text.sticky_index(&txn, i, assoc).unwrap();
                 let encoded = rel_pos.encode_v1();
                 let decoded = StickyIndex::decode_v1(&encoded).unwrap();
                 let abs_pos = decoded
@@ -666,7 +666,7 @@ mod test {
 
     #[test]
     fn sticky_index_case_1() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         {
@@ -683,7 +683,7 @@ mod test {
 
     #[test]
     fn sticky_index_case_2() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         txt.insert(&mut doc.transact_mut(), 0, "abc");
@@ -692,7 +692,7 @@ mod test {
 
     #[test]
     fn sticky_index_case_3() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         {
@@ -707,7 +707,7 @@ mod test {
 
     #[test]
     fn sticky_index_case_4() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         txt.insert(&mut doc.transact_mut(), 0, "1");
@@ -716,7 +716,7 @@ mod test {
 
     #[test]
     fn sticky_index_case_5() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         {
@@ -730,14 +730,14 @@ mod test {
 
     #[test]
     fn sticky_index_case_6() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
         check_sticky_indexes(&doc, &txt);
     }
 
     #[test]
     fn sticky_index_association_difference() {
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let txt = doc.get_or_insert_text("test");
 
         let mut txn = doc.transact_mut();
@@ -812,7 +812,7 @@ mod test {
     #[test]
     fn sticky_index_nested_type_scope_resolves_to_type_end_when_right_associated() {
         // example of tiptap published collaborative cursor at the end of line of text, which is represented as a nested type
-        let doc = Doc::with_client_id(1);
+        let mut doc = Doc::with_client_id(1);
         let fragment = doc.get_or_insert_xml_fragment("prosemirror");
         let mut txn = doc.transact_mut();
         let paragraph = fragment.insert(&mut txn, 0, XmlElementPrelim::empty("paragraph"));

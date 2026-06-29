@@ -6,11 +6,10 @@ use wasm_bindgen::convert::TryFromJsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
-use yrs::branch::BranchPtr;
+use yrs::node::NodePtr;
 use yrs::undo::{EventKind, UndoManager};
-use yrs::{Doc, Transact};
+use yrs::Doc;
 
-use crate::doc::YDoc;
 use crate::js::{Callback, Js, Shared};
 use crate::transaction::YTransaction;
 use crate::Result;
@@ -20,15 +19,15 @@ use crate::Result;
 pub struct YUndoManager(UndoManager<JsValue>);
 
 impl YUndoManager {
-    fn get_scope(doc: &Doc, js: &JsValue) -> Result<BranchPtr> {
+    fn get_scope(doc: &Doc, js: &JsValue) -> Result<NodePtr> {
         let shared = Shared::from_ref(js)?;
-        let branch_id = if let Some(id) = shared.branch_id() {
+        let node_id = if let Some(id) = shared.node_id() {
             id
         } else {
             return Err(JsValue::from_str(crate::js::errors::INVALID_PRELIM_OP));
         };
         let txn = doc.transact();
-        match branch_id.get_branch(&txn) {
+        match node_id.get_node(&txn) {
             Some(branch) if !branch.is_deleted() => Ok(branch),
             _ => Err(JsValue::from_str(crate::js::errors::REF_DISPOSED)),
         }

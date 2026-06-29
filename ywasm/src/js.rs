@@ -26,14 +26,14 @@ use wasm_bindgen::__rt::RcRefMut;
 use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
 use wasm_bindgen::JsValue;
 use yrs::block::{EmbedPrelim, ItemContent, Prelim, Unused};
-use yrs::branch::{Branch, BranchPtr};
+use yrs::node::{Node, NodePtr};
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
     TypeRef, TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
     TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_FRAGMENT, TYPE_REFS_XML_TEXT,
 };
 use yrs::{
-    Any, ArrayRef, BranchID, Doc, Map, MapRef, Origin, Out, Text, TextRef, TransactionMut, WeakRef,
+    Any, ArrayRef, Doc, Map, MapRef, NodeID, Origin, Out, Text, TextRef, TransactionMut, WeakRef,
     Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef,
 };
 
@@ -260,13 +260,13 @@ impl Prelim for Js {
                     _ => { /* good to go */ }
                 }
                 let type_ref = shared.type_ref(txn);
-                let branch = Branch::new(type_ref);
-                (ItemContent::Type(branch), Some(self))
+                let branch = Node::new(type_ref);
+                (ItemContent::Node(branch), Some(self))
             }
         }
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         match self.as_value().unwrap() {
             ValueRef::Any(_) => { /* nothing to do */ }
             ValueRef::Shared(shared) => shared.integrate(txn, inner_ref),
@@ -332,20 +332,20 @@ impl Shared {
         }
     }
 
-    pub fn branch_id(&self) -> Option<&BranchID> {
+    pub fn node_id(&self) -> Option<&NodeID> {
         match self {
-            Shared::Text(v) => v.0.branch_id(),
-            Shared::Map(v) => v.0.branch_id(),
-            Shared::Array(v) => v.0.branch_id(),
-            Shared::Weak(v) => v.0.branch_id(),
-            Shared::XmlText(v) => v.0.branch_id(),
-            Shared::XmlElement(v) => v.0.branch_id(),
-            Shared::XmlFragment(v) => v.0.branch_id(),
+            Shared::Text(v) => v.0.node_id(),
+            Shared::Map(v) => v.0.node_id(),
+            Shared::Array(v) => v.0.node_id(),
+            Shared::Weak(v) => v.0.node_id(),
+            Shared::XmlText(v) => v.0.node_id(),
+            Shared::XmlElement(v) => v.0.node_id(),
+            Shared::XmlFragment(v) => v.0.node_id(),
             Shared::Doc(_) => None,
         }
     }
 
-    pub fn try_integrated(&self) -> Result<(&BranchID, &Doc)> {
+    pub fn try_integrated(&self) -> Result<(&NodeID, &Doc)> {
         match self {
             Shared::Text(v) => v.0.try_integrated(),
             Shared::Map(v) => v.0.try_integrated(),
@@ -383,11 +383,11 @@ impl Prelim for Shared {
 
     fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
         let type_ref = self.type_ref(txn);
-        let branch = Branch::new(type_ref);
-        (ItemContent::Type(branch), Some(self))
+        let branch = Node::new(type_ref);
+        (ItemContent::Node(branch), Some(self))
     }
 
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: BranchPtr) {
+    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
         let doc = txn.doc().clone();
         match self {
             Shared::Text(mut cell) => {
@@ -475,7 +475,7 @@ impl Prelim for Shared {
                 }
             }
             Shared::Weak(mut cell) => {
-                let weak_link: WeakRef<BranchPtr> = WeakRef::from(inner_ref);
+                let weak_link: WeakRef<NodePtr> = WeakRef::from(inner_ref);
                 let _ = std::mem::replace(
                     &mut *cell,
                     YWeakLink(SharedCollection::Integrated(Integrated::new(

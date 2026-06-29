@@ -14,7 +14,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use yrs::block::ClientID;
 use yrs::types::TYPE_REFS_DOC;
-use yrs::{Doc, OffsetKind, Options, ReadTxn, Transact};
+use yrs::{Doc, OffsetKind, Options};
 
 /// A ywasm document type. Documents are most important units of collaborative resources management.
 /// All shared collections live within a scope of their corresponding documents. All updates are
