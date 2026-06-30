@@ -1,4 +1,4 @@
-use crate::block::{Item, ItemContent, ItemPosition, ItemPtr, Prelim, ID};
+use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::doc::DocEvents;
 use crate::error::{Error, UpdateError};
 use crate::event::SubdocsEvent;
@@ -7,13 +7,13 @@ use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::node::{Node, NodePtr};
 use crate::slice::BlockSlice;
-use crate::types::{Event, Events, RootRef, TypePtr, TypeRef};
+use crate::types::{Event, Events, TypePtr, TypeRef};
 use crate::update::Update;
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::utils::OptionExt;
 use crate::{
-    merge_updates_v1, merge_updates_v2, Any, ArrayRef, Doc, IdSet, MapRef, NodeID, Out, Snapshot,
-    StateVector, TextRef, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef,
+    Any, ArrayRef, Doc, IdSet, In, MapRef, NodeID, NodeRef, Out, Snapshot, StateVector, TextRef,
+    Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef, merge_updates_v1, merge_updates_v2,
 };
 use smallvec::SmallVec;
 use std::cell::OnceCell;
@@ -234,23 +234,22 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
     }
 
     #[inline]
-    pub fn get_text<N: Into<Arc<str>>>(&self, name: N) -> Option<TextRef> {
-        TextRef::root(name).get(self)
-    }
-
-    #[inline]
-    pub fn get_array<N: Into<Arc<str>>>(&self, name: N) -> Option<ArrayRef> {
-        ArrayRef::root(name).get(self)
-    }
-
-    #[inline]
-    pub fn get_map<N: Into<Arc<str>>>(&self, name: N) -> Option<MapRef> {
-        MapRef::root(name).get(self)
-    }
-
-    #[inline]
-    pub fn get_xml_fragment<N: Into<Arc<str>>>(&self, name: N) -> Option<XmlFragmentRef> {
-        XmlFragmentRef::root(name).get(self)
+    pub fn node<N: Into<NodeID>>(&self, id: N) -> Option<NodeRef<&Self>> {
+        let node = match id.into() {
+            NodeID::Root(name) => self.doc.types.get(name.as_ref())?,
+            NodeID::Nested(id) => {
+                let item = self.doc.blocks.get_item(&id)?;
+                if item.is_deleted() {
+                    return None;
+                }
+                if let ItemContent::Node(node) = &item.content {
+                    node
+                } else {
+                    return None;
+                }
+            }
+        };
+        Some(NodeRef::new(NodePtr::from(node), self))
     }
 
     pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
@@ -267,7 +266,7 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
             TypeRef::SubDoc => {
                 let item = ptr.item?;
                 let guid = item.content.as_subdoc_guid()?;
-                Some(Out::YDoc(guid.clone()))
+                Some(Out::Doc(guid.clone()))
             }
             #[cfg(feature = "weak")]
             TypeRef::WeakLink(_) => Some(Out::YWeakLink(crate::WeakRef::from(ptr))),
@@ -404,20 +403,25 @@ impl<'doc> Transaction<&'doc mut Doc> {
         ensure_state(&mut self.state).subdocs.get_or_init()
     }
 
-    pub fn get_or_insert_text<N: Into<Arc<str>>>(&mut self, name: N) -> TextRef {
-        TextRef::root(name).get_or_create(self)
-    }
-
-    pub fn get_or_insert_map<N: Into<Arc<str>>>(&mut self, name: N) -> MapRef {
-        MapRef::root(name).get_or_create(self)
-    }
-
-    pub fn get_or_insert_array<N: Into<Arc<str>>>(&mut self, name: N) -> ArrayRef {
-        ArrayRef::root(name).get_or_create(self)
-    }
-
-    pub fn get_or_insert_xml_fragment<N: Into<Arc<str>>>(&mut self, name: N) -> XmlFragmentRef {
-        XmlFragmentRef::root(name).get_or_create(self)
+    pub fn node_mut<N: Into<NodeID>>(&mut self, id: N) -> Option<NodeRef<&mut Self>> {
+        let node = match id.into() {
+            NodeID::Root(name) => {
+                let mut e = self.doc.types.entry(name);
+                e.or_insert_with(|| Node::new(None))
+            }
+            NodeID::Nested(id) => {
+                let item = self.doc.blocks.get_item(&id)?;
+                if item.is_deleted() {
+                    return None;
+                }
+                if let ItemContent::Node(node) = &mut item.content {
+                    node
+                } else {
+                    return None;
+                }
+            }
+        };
+        Some(NodeRef::new(NodePtr::from(node), self))
     }
 
     /// Prunes pending updates from the current document and returns them.
@@ -750,10 +754,10 @@ impl<'doc> Transaction<&'doc mut Doc> {
         Ok(())
     }
 
-    pub(crate) fn create_item<T: Prelim>(
+    pub(crate) fn create_item(
         &mut self,
         pos: &ItemPosition,
-        value: T,
+        value: In,
         parent_sub: Option<Arc<str>>,
     ) -> Option<ItemPtr> {
         let (left, right, origin, id) = {

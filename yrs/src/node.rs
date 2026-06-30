@@ -7,8 +7,8 @@ use crate::types::{
     Entries, Event, Events, Path, PathSegment, RootRef, SharedRef, TypePtr, TypeRef,
 };
 use crate::{
-    ArrayRef, Doc, MapRef, Observer, Origin, Out, Subscription, TextRef, Transaction,
-    TransactionMut, XmlElementRef, XmlFragmentRef, XmlTextRef, ID,
+    ArrayRef, Doc, ID, MapRef, Observer, Origin, Out, Subscription, TextRef, Transaction,
+    TransactionMut, XmlElementRef, XmlFragmentRef, XmlTextRef,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
@@ -245,15 +245,15 @@ impl PartialEq for Node {
 }
 
 impl Node {
-    pub fn new(type_ref: TypeRef) -> Box<Self> {
+    pub fn new(name: Option<Arc<str>>) -> Box<Self> {
         Box::new(Self {
             start: None,
             map: HashMap::default(),
             block_len: 0,
             content_len: 0,
             item: None,
-            name: None,
-            type_ref,
+            name,
+            type_ref: TypeRef::Undefined,
             observers: Observer::default(),
             deep_observers: Observer::default(),
             has_formatting: false,
@@ -641,269 +641,6 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
-/// A logical reference to a root-level shared collection. It can be shared across different
-/// documents to reference the same logical type.
-///
-/// # Example
-///
-/// ```rust
-/// use yrs::{Doc, RootRef, SharedRef, TextRef};
-///
-/// let root = TextRef::root("hello");
-///
-/// let mut doc1 = Doc::new();
-/// let txt1 = root.get_or_create(&mut doc1.transact_mut());
-///
-/// let mut doc2 = Doc::new();
-/// let txt2 = root.get_or_create(&mut doc2.transact_mut());
-///
-/// // instances of TextRef point to different heap objects
-/// assert_ne!(&txt1 as *const _, &txt2 as *const _);
-///
-/// // logical descriptors of both TextRef are the same as they refer to the
-/// // same logical entity
-/// assert_eq!(txt1.hook(), txt2.hook());
-/// ```
-#[repr(transparent)]
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct Root<S> {
-    /// Unique identifier of root-level shared collection.
-    pub name: Arc<str>,
-    _tag: PhantomData<S>,
-}
-
-impl<S: RootRef> Root<S> {
-    /// Creates a new logical reference for a root-level shared collection of a given name and type.
-    /// Returned value can be used to resolve instances of root-level types by calling [Root::get]
-    /// or [Root::get_or_create].
-    pub fn new<N: Into<Arc<str>>>(name: N) -> Self {
-        Root {
-            name: name.into(),
-            _tag: PhantomData::default(),
-        }
-    }
-
-    /// Returns a reference to a shared root-level collection current [Root] represents, or creates
-    /// it if it wasn't instantiated before.
-    pub fn get_or_create(&self, txn: &mut TransactionMut) -> S {
-        let store = txn.doc_mut();
-        let branch = store.get_or_create_type(self.name.clone(), S::type_ref());
-        S::from(branch)
-    }
-}
-
-impl<S: SharedRef> Root<S> {
-    /// Returns a reference to a shared collection current [Root] represents, or returns `None` if
-    /// that collection hasn't been instantiated yet.
-    pub fn get<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
-        txn.doc().get_type(self.name.clone()).map(S::from)
-    }
-}
-
-impl<S> Into<NodeID> for Root<S> {
-    fn into(self) -> NodeID {
-        NodeID::Root(self.name)
-    }
-}
-
-/// A logical reference used to represent a shared collection nested within another one. Unlike
-/// [Root]-level types which cannot be deleted and exist eternally, [Nested] collections can be
-/// added (therefore don't exist prior their instantiation) and deleted (so that any [SharedRef]
-/// values referencing them become unsafe and can point to objects that no longer exists!).
-///
-/// Use [Nested::get] in order to materialize current nested logical reference into shared ref type.
-///
-/// # Example
-///
-/// ```rust
-/// use yrs::{Doc, Map, Nested, SharedRef, TextPrelim, TextRef};
-///
-/// let mut doc = Doc::new();
-/// let mut txn = doc.transact_mut();
-/// let root = txn.get_or_insert_map("root"); // root-level collection
-/// let text = root.insert(&mut txn, "nested", TextPrelim::new("")); // nested collection
-///
-/// // convert nested TextRef into logical pointer
-/// let nested: Nested<TextRef> = text.hook().into_nested().unwrap();
-///
-/// // logical reference can be used to retrieve accessible TextRef when its alive
-/// assert_eq!(nested.get(&txn), Some(text));
-///
-/// // delete nested collection
-/// root.remove(&mut txn, "nested");
-///
-/// // logical reference cannot resolve shared collections that have been deleted already
-/// assert_eq!(nested.get(&txn), None);
-/// ```
-#[repr(transparent)]
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct Nested<S> {
-    pub id: ID,
-    _tag: PhantomData<S>,
-}
-
-impl<S> Nested<S> {
-    pub fn new(id: ID) -> Self {
-        Nested {
-            id,
-            _tag: PhantomData::default(),
-        }
-    }
-}
-
-impl<S: SharedRef> Nested<S> {
-    /// If current [Nested] logical reference points to an instantiated and not-deleted shared
-    /// collection, a reference to that collection will be returned.
-    /// If the referenced collection has been deleted or was not yet present in current transaction
-    /// scope i.e. due to missing update, a `None` will be returned.
-    pub fn get<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
-        let store = txn.doc();
-        let block = store.blocks.get_block(&self.id)?;
-        if let Block::Item(block) = block.as_ref() {
-            if let ItemContent::Node(branch) = &block.content {
-                if let Some(ptr) = branch.item {
-                    if !ptr.is_deleted() {
-                        return Some(S::from(NodePtr::from(&*branch)));
-                    }
-                }
-            }
-        }
-        None
-    }
-}
-
-impl<S> Into<NodeID> for Nested<S> {
-    fn into(self) -> NodeID {
-        NodeID::Nested(self.id)
-    }
-}
-
-/// A descriptor used to reference to shared collections by their unique logical identifiers,
-/// which can be either [Root]-level collections or shared collections [Nested] into each other.
-/// It can be resolved from any shared reference using [SharedRef::hook].
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Hook<S> {
-    id: NodeID,
-    _tag: PhantomData<S>,
-}
-
-impl<S> Hook<S> {
-    /// Unique logical identifier of a shared collection.
-    #[inline]
-    pub fn id(&self) -> &NodeID {
-        &self.id
-    }
-}
-
-impl<S> std::fmt::Debug for Hook<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self.id)
-    }
-}
-
-impl<S> Eq for Hook<S> {}
-
-impl<S> PartialEq for Hook<S> {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl<S> Hash for Hook<S> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state)
-    }
-}
-
-impl<S: SharedRef> Hook<S> {
-    /// Returns a reference to a shared collection current hook points to, if it exists and
-    /// (in case of nested collections) has not been deleted.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use yrs::{Hook, Doc, Map, MapRef, Nested, SharedRef, TextPrelim, TextRef};
-    ///
-    /// let mut doc = Doc::new();
-    /// let mut txn = doc.transact_mut();
-    /// let root = txn.get_or_insert_map("root"); // root-level collection
-    /// let nested = root.insert(&mut txn, "nested", TextPrelim::new("")); // nested collection
-    ///
-    /// let root_hook: Hook<MapRef> = root.hook();
-    /// let nested_hook: Hook<TextRef> = nested.hook();
-    ///
-    /// // hook can be used to retrieve collection reference as long as its alive
-    /// assert_eq!(nested_hook.get(&txn), Some(nested));
-    ///
-    /// // after nested collection is deleted it can no longer be referenced
-    /// root.remove(&mut txn, "nested");
-    /// assert_eq!(nested_hook.get(&txn), None, "wtf");
-    ///
-    /// // descriptors work also for root types
-    /// assert_eq!(root_hook.get(&txn), Some(root));
-    /// ```
-    pub fn get<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<S> {
-        let branch = self.id.get_node(txn.doc())?;
-        match branch.item {
-            Some(ptr) if ptr.is_deleted() => None,
-            _ => Some(S::from(branch)),
-        }
-    }
-
-    /// Attempts to convert current [Hook] type into [Nested] one.
-    /// Returns `None` if current descriptor doesn't reference a nested shared collection.  
-    pub fn into_nested(self) -> Option<Nested<S>> {
-        match self.id {
-            NodeID::Nested(id) => Some(Nested::new(id)),
-            NodeID::Root(_) => None,
-        }
-    }
-}
-
-impl<S: RootRef> Hook<S> {
-    /// Attempts to convert current [Hook] type into [Root] one.
-    /// Returns `None` if current descriptor doesn't reference a root-level shared collection.
-    pub fn into_root(self) -> Option<Root<S>> {
-        match self.id {
-            NodeID::Root(name) => Some(Root::new(name)),
-            NodeID::Nested(_) => None,
-        }
-    }
-}
-
-impl<S> From<Root<S>> for Hook<S> {
-    fn from(root: Root<S>) -> Self {
-        Hook {
-            id: root.into(),
-            _tag: PhantomData::default(),
-        }
-    }
-}
-
-impl<S> From<Nested<S>> for Hook<S> {
-    fn from(nested: Nested<S>) -> Self {
-        Hook {
-            id: nested.into(),
-            _tag: PhantomData::default(),
-        }
-    }
-}
-
-impl<S> From<NodeID> for Hook<S> {
-    fn from(id: NodeID) -> Self {
-        Hook {
-            id,
-            _tag: PhantomData::default(),
-        }
-    }
-}
-
-impl<S> Into<NodeID> for Hook<S> {
-    fn into(self) -> NodeID {
-        self.id
-    }
-}
-
 /// An unique logical identifier of a shared collection. Can be shared across document boundaries
 /// to reference to the same logical entity across different replicas of a document.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -913,6 +650,16 @@ pub enum NodeID {
 }
 
 impl NodeID {
+    #[inline]
+    pub fn root<N: Into<Arc<str>>>(name: N) -> Self {
+        NodeID::Root(name.into())
+    }
+
+    #[inline]
+    pub fn nested(block_id: ID) -> Self {
+        NodeID::Nested(block_id)
+    }
+
     #[inline]
     pub fn get_root<K: Borrow<str>>(doc: &Doc, name: K) -> Option<NodePtr> {
         doc.get_type(name)

@@ -1,10 +1,10 @@
 use std::collections::{Bound, HashMap};
-use std::ffi::{c_char, c_void, CStr, CString};
-use std::mem::{forget, ManuallyDrop, MaybeUninit};
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::mem::{ManuallyDrop, MaybeUninit, forget};
 use std::ops::{Deref, RangeBounds};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use yrs::block::{ClientID, EmbedPrelim, ItemContent, Prelim, Unused};
 use yrs::encoding::read::Error;
 use yrs::error::UpdateError;
@@ -24,10 +24,10 @@ use yrs::undo::EventKind;
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use yrs::{
-    uuid_v4, Any, Array, ArrayRef, Assoc, GetString, IdSet, JsonPath, JsonPathEval, Map, MapRef,
-    NodeID, Observable, OffsetKind, Options, Origin, Out, Quotable, Snapshot, StateVector,
-    StickyIndex, SubdocsEvent, SubdocsEventIter, Text, TextRef, TransactionCleanupEvent, Update,
-    Xml, XmlElementPrelim, XmlElementRef, XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
+    Any, Array, ArrayRef, Assoc, GetString, ID, IdSet, JsonPath, JsonPathEval, Map, MapRef, NodeID,
+    Observable, OffsetKind, Options, Origin, Out, Quotable, Snapshot, StateVector, StickyIndex,
+    SubdocsEvent, SubdocsEventIter, Text, TextRef, TransactionCleanupEvent, Update, Xml,
+    XmlElementPrelim, XmlElementRef, XmlFragmentRef, XmlTextPrelim, XmlTextRef, uuid_v4,
 };
 
 /// Flag used by `YInput` to pass JSON string for an object that should be deserialized and
@@ -3023,7 +3023,7 @@ impl From<Out> for YOutput {
             Out::YXmlElement(v) => Self::from(v),
             Out::YXmlFragment(v) => Self::from(v),
             Out::YXmlText(v) => Self::from(v),
-            Out::YDoc(v) => Self::from(v),
+            Out::Doc(v) => Self::from(v),
             Out::YWeakLink(v) => Self::from(v),
             Out::UndefinedRef(v) => Self::from(v),
         }
@@ -4758,11 +4758,7 @@ pub unsafe extern "C" fn yundo_manager_stop(mgr: *mut YUndoManager) {
 pub unsafe extern "C" fn yundo_manager_undo(mgr: *mut YUndoManager) -> u8 {
     let mgr = mgr.as_mut().unwrap();
 
-    if mgr.undo_blocking() {
-        Y_TRUE
-    } else {
-        Y_FALSE
-    }
+    if mgr.undo_blocking() { Y_TRUE } else { Y_FALSE }
 }
 
 /// Performs a redo operations, reapplying changes undone by `yundo_manager_undo` operation.
@@ -4773,11 +4769,7 @@ pub unsafe extern "C" fn yundo_manager_undo(mgr: *mut YUndoManager) -> u8 {
 #[no_mangle]
 pub unsafe extern "C" fn yundo_manager_redo(mgr: *mut YUndoManager) -> u8 {
     let mgr = mgr.as_mut().unwrap();
-    if mgr.redo_blocking() {
-        Y_TRUE
-    } else {
-        Y_FALSE
-    }
+    if mgr.redo_blocking() { Y_TRUE } else { Y_FALSE }
 }
 
 /// Returns number of elements stored on undo stack.
@@ -5601,7 +5593,7 @@ pub unsafe extern "C" fn yweak_read(
         }
     } else {
         assert!(weak.end_id() == None); // both
-                                        // unforunately no Node in this case?
+        // unforunately no Node in this case?
         *out_start_index = 0; // empty text
         *out_end_index = 0; // empty text
     }
@@ -5887,11 +5879,7 @@ pub unsafe extern "C" fn ynode_alive(branch: *mut Node) -> u8 {
         Y_FALSE
     } else {
         let branch = NodePtr::from_raw_node(branch);
-        if branch.is_deleted() {
-            Y_FALSE
-        } else {
-            Y_TRUE
-        }
+        if branch.is_deleted() { Y_FALSE } else { Y_TRUE }
     }
 }
 
@@ -5916,7 +5904,7 @@ pub unsafe extern "C" fn ynode_json(branch: *mut Node, txn: *mut Transaction) ->
             TypeRef::XmlFragment => XmlFragmentRef::from_raw_node(branch).get_string(txn).into(),
             TypeRef::XmlText => XmlTextRef::from_raw_node(branch).get_string(txn).into(),
             TypeRef::SubDoc | TypeRef::XmlHook | TypeRef::WeakLink(_) | TypeRef::Undefined => {
-                return std::ptr::null_mut()
+                return std::ptr::null_mut();
             }
         };
         let json = match serde_json::to_string(&any) {

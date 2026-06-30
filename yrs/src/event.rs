@@ -1,5 +1,7 @@
 use crate::transaction::Subdocs;
-use crate::{IdSet, StateVector, TransactionMut, Uuid};
+use crate::{
+    Doc, IdSet, NodeRef, StateVector, Transaction, TransactionMut, TransactionState, Uuid,
+};
 use std::collections::HashSet;
 
 /// An update event passed to a callback subscribed with [Doc::observe_update_v1]/[Doc::observe_update_v2].
@@ -90,5 +92,51 @@ impl<'a> Iterator for SubdocsEventIter<'a> {
 impl<'a> ExactSizeIterator for SubdocsEventIter<'a> {
     fn len(&self) -> usize {
         self.0.len()
+    }
+}
+
+pub struct Event<'txn> {
+    doc: &'txn Doc,
+    state: &'txn TransactionState,
+}
+
+impl<'txn> Event<'txn> {
+    pub fn transaction(&self) -> Transaction<&'txn Doc> {
+        todo!()
+    }
+
+    /// Node, where the change has occurred. For shallow events
+    /// it's the same as [Event::current_target], but may differ for deep observers.
+    pub fn target(&self) -> NodeRef<Transaction<&'txn Doc>> {
+        todo!()
+    }
+
+    /// Node where the observer of this event is registered.
+    pub fn current_target(&self) -> NodeRef<Transaction<&'txn Doc>> {
+        todo!()
+    }
+
+    /// Whether children changed.
+    pub fn children_changed(&self) -> bool {
+        todo!()
+    }
+
+    /// Attribute keys that changed.
+    pub fn keys_changed(&self) -> bool {
+        todo!()
+    }
+
+    pub fn delta(&self, options: /* todo */ ()) -> impl Iterator<Item = Delta> {
+        todo!()
+    }
+
+    /// Was this node deleted?
+    pub fn is_deleted(&self) -> bool {
+        todo!()
+    }
+
+    /// Was this node added?
+    pub fn is_added(&self) -> bool {
+        todo!()
     }
 }

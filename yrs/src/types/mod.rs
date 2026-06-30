@@ -13,10 +13,10 @@ pub use text::Text;
 pub use text::TextRef;
 
 use crate::block::{ClientID, Item, ItemPtr, Prelim};
-use crate::node::{Node, NodePtr};
-use crate::encoding::read::Error;
-use crate::transaction::{Transaction, TransactionMut};
 use crate::doc::Doc;
+use crate::encoding::read::Error;
+use crate::node::{Node, NodePtr};
+use crate::transaction::Transaction;
 use crate::types::array::{ArrayEvent, ArrayRef};
 use crate::types::map::MapEvent;
 use crate::types::text::TextEvent;
@@ -363,60 +363,6 @@ pub trait Observable: AsRef<Node> {
     }
 }
 
-/// Trait implemented by shared types to display their contents in string format.
-pub trait GetString {
-    /// Displays the content of a current collection in string format.
-    fn get_string<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> String;
-}
-
-/// A subset of [SharedRef] used to mark collaborative collections that can be used as a
-/// root level collections. This includes common types like [ArrayRef], [MapRef], [TextRef] and
-/// [XmlFragmentRef].
-///
-/// Some types like [XmlTextRef] and [XmlElementRef] are not bound to be used as root-level types
-/// since they have limited capabilities (i.e. cannot propagate XML node name).
-///
-/// Other types like [WeakRef] are not supposed to be used at root-level since they refer to
-/// elements created prior to them, while root-level types are virtually immortal and technically
-/// exist for the whole lifespan of their document.
-pub trait RootRef: SharedRef {
-    fn type_ref() -> TypeRef;
-
-    /// Create a logical collaborative collection reference to a root-level type with a given `name`
-    fn root<N: Into<Arc<str>>>(name: N) -> Root<Self> {
-        Root::new(name)
-    }
-}
-
-/// Common trait for shared collaborative collection types in Yrs.
-pub trait SharedRef: From<NodePtr> + AsRef<Node> {
-    /// Returns a logical descriptor of a current shared collection.
-    fn hook(&self) -> Hook<Self> {
-        let branch = self.as_ref();
-        Hook::from(branch.id())
-    }
-}
-
-/// Trait which allows conversion back to a prelim type that can be used to create a new shared
-/// that's a deep copy equivalent of a current type.
-pub trait AsPrelim {
-    type Prelim: Prelim<Return = Self>;
-
-    /// Converts current type contents into a [Prelim] type that can be used to create a new
-    /// type that's a deep copy equivalent of a current type.
-    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim;
-}
-
-/// Trait which allows to generate a [Prelim]-compatible type that - when integrated - will be
-/// converted into an instance of a current type.
-pub trait DefaultPrelim {
-    type Prelim: Prelim<Return = Self>;
-
-    /// Returns an instance of [Prelim]-compatible type, which will turn into reference of a current
-    /// type after being integrated into the document store.
-    fn default_prelim() -> Self::Prelim;
-}
-
 /// Trait implemented by all Y-types, allowing for observing events which are emitted by
 /// nested types.
 #[cfg(feature = "sync")]
@@ -737,7 +683,7 @@ impl std::fmt::Debug for EntryChange {
                     Out::YXmlElement(_) => write!(f, "YXmlElement")?,
                     Out::YXmlFragment(_) => write!(f, "YXmlFragment")?,
                     Out::YXmlText(_) => write!(f, "YXmlText")?,
-                    Out::YDoc(_) => write!(f, "YDoc")?,
+                    Out::Doc(_) => write!(f, "YDoc")?,
                     #[cfg(feature = "weak")]
                     Out::YWeakLink(_) => write!(f, "YWeakLink")?,
                     Out::UndefinedRef(_) => write!(f, "UndefinedRef")?,
@@ -745,53 +691,6 @@ impl std::fmt::Debug for EntryChange {
                 f.write_str(")")
             }
         }
-    }
-}
-
-/// A single change done over a text-like types: [Text] or [XmlText].
-#[derive(Debug, Clone, PartialEq)]
-pub enum Delta<T = Out> {
-    /// Determines a change that resulted in insertion of a piece of text, which optionally could
-    /// have been formatted with provided set of attributes.
-    Inserted(T, Option<Box<Attrs>>),
-
-    /// Determines a change that resulted in removing a consecutive range of characters.
-    Deleted(u32),
-
-    /// Determines a number of consecutive unchanged characters. Used to recognize non-edited spaces
-    /// between [Delta::Inserted] and/or [Delta::Deleted] chunks. Can contain an optional set of
-    /// attributes, which have been used to format an existing piece of text.
-    Retain(u32, Option<Box<Attrs>>),
-}
-
-impl<T> Delta<T> {
-    pub fn map<U, F>(self, f: F) -> Delta<U>
-    where
-        F: FnOnce(T) -> U,
-    {
-        match self {
-            Delta::Inserted(value, attrs) => Delta::Inserted(f(value), attrs),
-            Delta::Deleted(len) => Delta::Deleted(len),
-            Delta::Retain(len, attrs) => Delta::Retain(len, attrs),
-        }
-    }
-}
-
-impl Delta<In> {
-    pub fn retain(len: u32) -> Self {
-        Delta::Retain(len, None)
-    }
-
-    pub fn insert<T: Into<In>>(value: T) -> Self {
-        Delta::Inserted(value.into(), None)
-    }
-
-    pub fn insert_with<T: Into<In>>(value: T, attrs: Attrs) -> Self {
-        Delta::Inserted(value.into(), Some(Box::new(attrs)))
-    }
-
-    pub fn delete(len: u32) -> Self {
-        Delta::Deleted(len)
     }
 }
 
@@ -851,7 +750,10 @@ pub(crate) fn event_keys<D: Deref<Target = Doc>>(
     keys
 }
 
-pub(crate) fn event_change_set<D: Deref<Target = Doc>>(txn: &Transaction<D>, start: Option<ItemPtr>) -> ChangeSet<Change> {
+pub(crate) fn event_change_set<D: Deref<Target = Doc>>(
+    txn: &Transaction<D>,
+    start: Option<ItemPtr>,
+) -> ChangeSet<Change> {
     let mut added = HashSet::new();
     let mut deleted = HashSet::new();
     let mut delta = Vec::new();

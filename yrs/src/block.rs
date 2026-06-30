@@ -4,7 +4,7 @@ use crate::encoding::read::Error;
 use crate::gc::GCCollector;
 use crate::node::{Node, NodePtr};
 use crate::slice::{BlockSlice, ItemSlice};
-use crate::transaction::{ensure_state, TransactionMut};
+use crate::transaction::{TransactionMut, ensure_state};
 use crate::types::text::update_current_attributes;
 use crate::types::{Attrs, TypePtr, TypeRef};
 use crate::undo::UndoStack;
@@ -1835,7 +1835,7 @@ impl ItemContent {
                     1
                 }
                 ItemContent::Doc(_, opts) => {
-                    buf[0] = Out::YDoc(opts.guid.clone());
+                    buf[0] = Out::Doc(opts.guid.clone());
                     1
                 }
                 ItemContent::Node(c) => {
@@ -1859,11 +1859,7 @@ impl ItemContent {
         let len = self.len(OffsetKind::Utf16) as usize;
         let mut values = vec![Out::default(); len];
         let read = self.read(0, &mut values);
-        if read == len {
-            values
-        } else {
-            Vec::default()
-        }
+        if read == len { values } else { Vec::default() }
     }
 
     /// Returns the subdoc guid if this content is a `Doc` variant.
@@ -1890,7 +1886,7 @@ impl ItemContent {
             ItemContent::Any(v) => v.first().map(|a| Out::Any(a.clone())),
             ItemContent::Binary(v) => Some(Out::Any(Any::from(v.deref()))),
             ItemContent::Deleted(_) => None,
-            ItemContent::Doc(_, opts) => Some(Out::YDoc(opts.guid.clone())),
+            ItemContent::Doc(_, opts) => Some(Out::Doc(opts.guid.clone())),
             ItemContent::JSON(v) => v.first().map(|v| Out::Any(Any::from(v.deref()))),
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
@@ -1905,7 +1901,7 @@ impl ItemContent {
             ItemContent::Any(v) => v.last().map(|a| Out::Any(a.clone())),
             ItemContent::Binary(v) => Some(Out::Any(Any::from(v.deref()))),
             ItemContent::Deleted(_) => None,
-            ItemContent::Doc(_, opts) => Some(Out::YDoc(opts.guid.clone())),
+            ItemContent::Doc(_, opts) => Some(Out::Doc(opts.guid.clone())),
             ItemContent::JSON(v) => v.last().map(|v| Out::Any(Any::from(v.as_str()))),
             ItemContent::Embed(v) => Some(Out::Any(v.clone())),
             ItemContent::Format(_, _) => None,
@@ -2283,41 +2279,6 @@ impl std::fmt::Display for ItemPosition {
     }
 }
 
-/// A trait used for preliminary types, that can be inserted into shared Yrs collections.
-pub trait Prelim: Sized {
-    /// Type of a value to be returned as a result of inserting this [Prelim] type instance.
-    /// Use [Unused] if none is necessary.
-    type Return: TryFrom<ItemPtr>;
-
-    /// This method is used to create initial content required in order to create a block item.
-    /// A supplied `ptr` can be used to identify block that is about to be created to store
-    /// the returned content.
-    ///
-    /// Since this method may decide to consume `self` or not, a second optional return parameter
-    /// is used when `self` was not consumed - which is the case for complex types creation such as
-    /// YMap or YArray. In such case it will be passed later on to [Self::integrate] method.
-    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>);
-
-    /// Method called once an original item filled with content from [Self::into_content] has been
-    /// added to block store. This method is used by complex types such as maps or arrays to append
-    /// the original contents of prelim struct into YMap, YArray etc.
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr);
-}
-
-impl<T> Prelim for T
-where
-    T: Into<Any>,
-{
-    type Return = Unused;
-
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let value: Any = self.into();
-        (ItemContent::Any(vec![value]), None)
-    }
-
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
-}
-
 #[derive(Debug)]
 pub(crate) struct PrelimString(pub SmallString<[u8; 8]>);
 
@@ -2410,7 +2371,7 @@ impl std::fmt::Display for ItemPtr {
 
 #[cfg(test)]
 mod test {
-    use crate::block::{split_str, SplittableString};
+    use crate::block::{SplittableString, split_str};
     use crate::doc::OffsetKind;
     use std::ops::Deref;
 

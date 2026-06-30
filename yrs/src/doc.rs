@@ -1,4 +1,4 @@
-use crate::block::{Block, ClientID, ItemContent, ItemPtr, Prelim};
+use crate::block::{Block, ClientID, ItemContent, ItemPtr};
 use crate::block_store::BlockStore;
 use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
@@ -7,17 +7,17 @@ use crate::node::{Node, NodePtr};
 use crate::slice::ItemSlice;
 use crate::transaction::TransactionState;
 use crate::transaction::{Origin, TransactionMut};
-use crate::types::{Path, PathSegment, RootRef, ToJson, TypeRef};
+use crate::types::{Path, PathSegment, ToJson, TypeRef};
 use crate::update::PendingUpdate;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
-use crate::{error, Observer};
-use crate::{
-    uuid_v4, uuid_v4_from, ArrayRef, IdSet, MapRef, NodeID, Snapshot, StateVector, TextRef,
-    Transaction, Uuid, XmlFragmentRef, ID,
-};
 use crate::{Any, Subscription};
+use crate::{
+    ArrayRef, ID, IdSet, MapRef, NodeID, Snapshot, StateVector, TextRef, Transaction, Uuid,
+    XmlFragmentRef, uuid_v4, uuid_v4_from,
+};
+use crate::{Observer, error};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -239,26 +239,6 @@ impl Doc {
     /// Returns encoding used to count offsets and lengths in text operations.
     pub fn offset_kind(&self) -> OffsetKind {
         self.options.offset_kind
-    }
-
-    /// Returns a [TextRef] data structure stored under a given `name`.
-    pub fn get_or_insert_text<N: Into<Arc<str>>>(&mut self, name: N) -> TextRef {
-        TextRef::root(name).get_or_create(&mut self.transact_mut())
-    }
-
-    /// Returns a [MapRef] data structure stored under a given `name`.
-    pub fn get_or_insert_map<N: Into<Arc<str>>>(&mut self, name: N) -> MapRef {
-        MapRef::root(name).get_or_create(&mut self.transact_mut())
-    }
-
-    /// Returns an [ArrayRef] data structure stored under a given `name`.
-    pub fn get_or_insert_array<N: Into<Arc<str>>>(&mut self, name: N) -> ArrayRef {
-        ArrayRef::root(name).get_or_create(&mut self.transact_mut())
-    }
-
-    /// Returns a [XmlFragmentRef] data structure stored under a given `name`.
-    pub fn get_or_insert_xml_fragment<N: Into<Arc<str>>>(&mut self, name: N) -> XmlFragmentRef {
-        XmlFragmentRef::root(name).get_or_create(&mut self.transact_mut())
     }
 
     define_doc_observer!(
@@ -979,49 +959,21 @@ pub enum OffsetKind {
     Utf16,
 }
 
-impl Prelim for Doc {
-    type Return = Uuid;
-
-    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        if txn.parent_doc().is_some() {
-            panic!("Cannot integrate the document, because it's already being used as a sub-document elsewhere");
-        }
-        let options = self.options().clone();
-        let guid = options.guid.clone();
-        txn.doc.subdocs.insert(guid, self);
-        (ItemContent::Doc(None, options), None)
-    }
-
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
-}
-
-impl TryFrom<ItemPtr> for Uuid {
-    type Error = ItemPtr;
-
-    fn try_from(item: ItemPtr) -> Result<Self, Self::Error> {
-        if let Some(guid) = item.content.as_subdoc_guid() {
-            Ok(guid.clone())
-        } else {
-            Err(item)
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::block::{Block, BlockRange, ClientID, ItemContent};
     use crate::error::Error;
-    use crate::test_utils::{exchange_updates, Blocks};
+    use crate::test_utils::{Blocks, exchange_updates};
     use crate::transaction::TransactionMut;
     use crate::types::ToJson;
     use crate::update::Update;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        any, uuid_v4, Any, Array, ArrayPrelim, ArrayRef, Doc, GetString, IdSet, Map, MapRef,
-        OffsetKind, Options, Snapshot, StateVector, Subscription, Text, TextPrelim, TextRef,
-        Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, XmlElementPrelim, XmlFragment,
-        XmlFragmentRef, XmlTextPrelim, XmlTextRef, ID,
+        Any, Array, ArrayPrelim, ArrayRef, Doc, ID, IdSet, Map, MapRef, OffsetKind, Options,
+        Snapshot, StateVector, Subscription, Text, TextPrelim, TextRef, Transaction,
+        TransactionCleanupEvent, UpdateEvent, Uuid, XmlElementPrelim, XmlFragment, XmlFragmentRef,
+        XmlTextPrelim, XmlTextRef, any, uuid_v4,
     };
     use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
@@ -2025,7 +1977,7 @@ mod test {
             let txn = doc.transact();
             let out = array.get(&txn, 0).unwrap();
             match out {
-                crate::Out::YDoc(uuid) => uuid,
+                crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
         };
@@ -2066,7 +2018,7 @@ mod test {
             let array = doc2.get_or_insert_array("test");
             let txn = doc2.transact();
             match array.get(&txn, 0).unwrap() {
-                crate::Out::YDoc(uuid) => uuid,
+                crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
         };
@@ -2144,7 +2096,7 @@ mod test {
         let uuid_2 = {
             let txn = doc.transact();
             match array.get(&txn, 0).unwrap() {
-                crate::Out::YDoc(uuid) => uuid,
+                crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
         };
@@ -2188,7 +2140,7 @@ mod test {
             let array = doc2.get_or_insert_array("test");
             let txn = doc2.transact();
             match array.get(&txn, 0).unwrap() {
-                crate::Out::YDoc(uuid) => uuid,
+                crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
         };

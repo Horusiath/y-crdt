@@ -5,12 +5,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use fastrand::Rng;
 
-use crate::block::{Block, ClientID};
-use crate::encoding::read::{Cursor, Read};
-use crate::update::BlockSet;
-use crate::updates::decoder::{Decode, Decoder, DecoderV1};
-use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-use crate::{Doc, Options, StateVector, Update};
+use yrs::block::ClientID;
+use yrs::encoding::read::{Cursor, Read};
+use yrs::updates::decoder::{Decode, Decoder, DecoderV1};
+use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
+use yrs::{Doc, Options, StateVector, Update};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";
 
@@ -125,12 +124,10 @@ impl TestConnector {
             let _sub = {
                 let rc = rc.clone();
                 let mut peer_state = instance.state();
-                peer_state
-                    .doc
-                    .observe_update_v1(move |_, e| {
-                        let mut inner = rc.lock().unwrap();
-                        Self::broadcast(&mut inner, client_id, &e.update);
-                    })
+                peer_state.doc.observe_update_v1(move |_, e| {
+                    let mut inner = rc.lock().unwrap();
+                    Self::broadcast(&mut inner, client_id, &e.update);
+                })
             };
             let mut inner = rc.lock().unwrap();
             let idx = inner.peers.len();
@@ -438,8 +435,8 @@ impl TestConnector {
                     assert_eq!(ablock.as_ref(), bblock.as_ref());
                 }
             }
-            assert_eq!(astore.pending, bstore.pending);
-            assert_eq!(astore.pending_ds, bstore.pending_ds);
+            assert_eq!(astore.pending_update(), bstore.pending_update());
+            assert_eq!(astore.pending_ds(), bstore.pending_ds());
         }
     }
 
@@ -546,11 +543,7 @@ impl RngExt for Rng {
     fn between(&mut self, x: u32, y: u32) -> u32 {
         let a = x.min(y);
         let b = x.max(y);
-        if a == b {
-            a
-        } else {
-            self.u32(a..b)
-        }
+        if a == b { a } else { self.u32(a..b) }
     }
 
     fn random_string(&mut self) -> String {

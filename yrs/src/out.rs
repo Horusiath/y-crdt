@@ -3,8 +3,8 @@ use crate::node::{Node, NodePtr};
 use crate::types::{AsPrelim, ToJson};
 use crate::updates::decoder::Decode;
 use crate::{
-    any, Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, StateVector, TextRef,
-    Transaction, Update, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef,
+    Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, NodeID, StateVector, TextRef,
+    Transaction, Update, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef, any,
 };
 use std::convert::TryFrom;
 use std::fmt::Formatter;
@@ -17,27 +17,9 @@ use std::sync::Arc;
 pub enum Out {
     /// Any value that it treated as a single element in its entirety.
     Any(Any),
-    /// Instance of a [TextRef].
-    YText(TextRef),
-    /// Instance of an [ArrayRef].
-    YArray(ArrayRef),
-    /// Instance of a [MapRef].
-    YMap(MapRef),
-    /// Instance of a [XmlElementRef].
-    YXmlElement(XmlElementRef),
-    /// Instance of a [XmlFragmentRef].
-    YXmlFragment(XmlFragmentRef),
-    /// Instance of a [XmlTextRef].
-    YXmlText(XmlTextRef),
+    Node(NodeID),
     /// Subdocument identifier.
-    YDoc(Uuid),
-    /// Instance of a [WeakRef] or unspecified type (requires manual casting).
-    #[cfg(feature = "weak")]
-    YWeakLink(crate::WeakRef<NodePtr>),
-    /// Instance of a shared collection of undefined type. Usually happens when it refers to a root
-    /// type that has not been defined locally. Can also refer to a [WeakRef] if "weak" feature flag
-    /// was not set.
-    UndefinedRef(NodePtr),
+    Doc(Uuid),
 }
 
 impl Default for Out {
@@ -55,42 +37,6 @@ impl Out {
         T: TryFrom<Self, Error = Self>,
     {
         T::try_from(self)
-    }
-
-    /// Converts current value into stringified representation.
-    pub fn to_string<D: Deref<Target = Doc>>(self, txn: &Transaction<D>) -> String {
-        match self {
-            Out::Any(a) => a.to_string(),
-            Out::YText(v) => v.get_string(txn),
-            Out::YArray(v) => v.to_json(txn).to_string(),
-            Out::YMap(v) => v.to_json(txn).to_string(),
-            Out::YXmlElement(v) => v.get_string(txn),
-            Out::YXmlFragment(v) => v.get_string(txn),
-            Out::YXmlText(v) => v.get_string(txn),
-            Out::YDoc(v) => v.as_ref().to_string(),
-            #[cfg(feature = "weak")]
-            Out::YWeakLink(v) => {
-                let text_ref: crate::WeakRef<TextRef> = crate::WeakRef::from(v);
-                text_ref.get_string(txn)
-            }
-            Out::UndefinedRef(_) => "".to_string(),
-        }
-    }
-
-    pub fn try_node(&self) -> Option<&Node> {
-        match self {
-            Out::YText(b) => Some(b.as_ref()),
-            Out::YArray(b) => Some(b.as_ref()),
-            Out::YMap(b) => Some(b.as_ref()),
-            Out::YXmlElement(b) => Some(b.as_ref()),
-            Out::YXmlFragment(b) => Some(b.as_ref()),
-            Out::YXmlText(b) => Some(b.as_ref()),
-            #[cfg(feature = "weak")]
-            Out::YWeakLink(b) => Some(b.as_ref()),
-            Out::UndefinedRef(b) => Some(b.as_ref()),
-            Out::YDoc(_) => None,
-            Out::Any(_) => None,
-        }
     }
 }
 
@@ -120,7 +66,7 @@ impl AsPrelim for Out {
             #[cfg(feature = "weak")]
             Out::YWeakLink(v) => In::WeakLink(v.as_prelim(txn)),
             Out::UndefinedRef(v) => infer_type_from_content(*v, txn),
-            Out::YDoc(guid) => {
+            Out::Doc(guid) => {
                 // deep copy of the document state
                 let subdoc = txn.subdoc(guid).unwrap();
                 let state = subdoc
@@ -224,7 +170,7 @@ impl ToJson for Out {
             Out::YXmlElement(v) => Any::from(v.get_string(txn)),
             Out::YXmlText(v) => Any::from(v.get_string(txn)),
             Out::YXmlFragment(v) => Any::from(v.get_string(txn)),
-            Out::YDoc(guid) => any!({"guid": guid.as_ref()}),
+            Out::Doc(guid) => any!({"guid": guid.as_ref()}),
             #[cfg(feature = "weak")]
             Out::YWeakLink(_) => Any::Undefined,
             Out::UndefinedRef(_) => Any::Undefined,
@@ -244,7 +190,7 @@ impl std::fmt::Display for Out {
             Out::YXmlText(_) => write!(f, "XmlTextRef"),
             #[cfg(feature = "weak")]
             Out::YWeakLink(_) => write!(f, "WeakRef"),
-            Out::YDoc(v) => write!(f, "Doc(guid:{})", v),
+            Out::Doc(v) => write!(f, "Doc(guid:{})", v),
             Out::UndefinedRef(_) => write!(f, "UndefinedRef"),
         }
     }

@@ -1,3 +1,4 @@
+use crate::Result;
 use crate::array::{ArrayExt, YArray};
 use crate::collection::{Integrated, SharedCollection};
 use crate::doc::YDoc;
@@ -7,7 +8,6 @@ use crate::weak::YWeakLink;
 use crate::xml_elem::YXmlElement;
 use crate::xml_frag::YXmlFragment;
 use crate::xml_text::YXmlText;
-use crate::Result;
 use js_sys::Uint8Array;
 use serde::Serialize;
 
@@ -23,14 +23,14 @@ use std::convert::TryInto;
 use std::ops::{Deref, RangeBounds};
 use std::sync::Arc;
 use wasm_bindgen::__rt::RcRefMut;
-use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
 use wasm_bindgen::JsValue;
+use wasm_bindgen::convert::{FromWasmAbi, IntoWasmAbi};
 use yrs::block::{EmbedPrelim, ItemContent, Prelim, Unused};
 use yrs::node::{Node, NodePtr};
 use yrs::types::xml::XmlPrelim;
 use yrs::types::{
-    TypeRef, TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
-    TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_FRAGMENT, TYPE_REFS_XML_TEXT,
+    TYPE_REFS_ARRAY, TYPE_REFS_DOC, TYPE_REFS_MAP, TYPE_REFS_TEXT, TYPE_REFS_WEAK,
+    TYPE_REFS_XML_ELEMENT, TYPE_REFS_XML_FRAGMENT, TYPE_REFS_XML_TEXT, TypeRef,
 };
 use yrs::{
     Any, ArrayRef, Doc, Map, MapRef, NodeID, Origin, Out, Text, TextRef, TransactionMut, WeakRef,
@@ -556,19 +556,20 @@ impl Callback for js_sys::Function {}
 
 pub(crate) mod convert {
     use super::to_js;
+    use crate::Text;
     use crate::array::YArrayEvent;
-    use crate::js::errors::INVALID_DELTA;
     use crate::js::Js;
+    use crate::js::errors::INVALID_DELTA;
     use crate::map::YMapEvent;
     use crate::text::YTextEvent;
     use crate::weak::YWeakLinkEvent;
     use crate::xml_frag::YXmlEvent;
     use crate::xml_text::YXmlTextEvent;
-    use crate::Text;
     use std::iter::FromIterator;
     use wasm_bindgen::__rt::{WasmPtr, WasmRefCell};
     use wasm_bindgen::convert::RefMutFromWasmAbi;
     use wasm_bindgen::JsValue;
+    use wasm_bindgen::convert::RefMutFromWasmAbi;
     use yrs::types::text::{ChangeKind, Diff, YChange};
     use yrs::types::{Change, Delta, EntryChange, Event, Events, Path, PathSegment};
     use yrs::updates::decoder::Decode;

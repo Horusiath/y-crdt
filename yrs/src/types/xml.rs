@@ -8,14 +8,14 @@ use std::sync::Arc;
 use crate::block::{EmbedPrelim, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::block_iter::BlockIter;
 use crate::transaction::TransactionMut;
-use crate::types::text::{diff_between, TextEvent, YChange};
+use crate::types::text::{TextEvent, YChange, diff_between};
 use crate::types::{
-    event_change_set, event_keys, AsPrelim, Change, ChangeSet, DefaultPrelim, Delta, EntryChange,
-    MapRef, Node, NodePtr, Out, Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef,
+    AsPrelim, Change, ChangeSet, DefaultPrelim, Delta, EntryChange, MapRef, Node, NodePtr, Out,
+    Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef, event_change_set, event_keys,
 };
 use crate::{
-    Any, ArrayRef, DeepObservable, Doc, GetString, In, IndexedSequence, Map, NodeID, Observable,
-    StickyIndex, Text, TextRef, Transaction, ID,
+    Any, ArrayRef, DeepObservable, Doc, GetString, ID, In, IndexedSequence, Map, NodeID,
+    Observable, StickyIndex, Text, TextRef, Transaction,
 };
 
 pub trait XmlPrelim: Prelim {}
