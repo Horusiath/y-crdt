@@ -106,8 +106,9 @@ impl TestConnector {
         for client_id in 0..peer_num {
             let peer = tc.create_peer(ClientID::new(client_id));
             let mut peer_state = peer.state();
-            peer_state.doc.get_or_insert_text("text");
-            peer_state.doc.get_or_insert_map("map");
+            let mut txn = peer_state.doc.transact_mut();
+            txn.node_mut("text");
+            txn.node_mut("map");
         }
         tc.sync_all();
         tc

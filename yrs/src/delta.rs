@@ -1,5 +1,5 @@
-use crate::types::Attrs;
-use crate::{In, NodeRef, Out};
+use crate::node::Attrs;
+use crate::{In, Out};
 use std::collections::HashMap;
 use std::sync::Arc;
 

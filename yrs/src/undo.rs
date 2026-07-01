@@ -1,18 +1,18 @@
 use crate::block::ItemPtr;
-use crate::node::{Node, NodePtr};
 use crate::cell::{Acquire, AcquireMut};
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
+use crate::node::{Node, NodePtr};
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{Cell, Doc, IdSet, Observer, Transaction, TransactionMut, Uuid, ID};
+use crate::{Cell, Doc, ID, IdSet, Observer, Transaction, TransactionMut, Uuid};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 macro_rules! define_undo_observer {
     (
@@ -301,9 +301,17 @@ where
         let last_op = stack.last_mut().unwrap();
         let meta = std::mem::take(&mut last_op.meta);
         let mut event = if undoing {
-            Event::redo(meta, txn.origin().cloned(), txn.changed_parent_types().to_vec())
+            Event::redo(
+                meta,
+                txn.origin().cloned(),
+                txn.changed_parent_types().to_vec(),
+            )
         } else {
-            Event::undo(meta, txn.origin().cloned(), txn.changed_parent_types().to_vec())
+            Event::undo(
+                meta,
+                txn.origin().cloned(),
+                txn.changed_parent_types().to_vec(),
+            )
         };
         if !extend {
             if inner.observer_added.has_subscribers() {
@@ -979,21 +987,15 @@ pub enum EventKind {
 mod test {
     use std::collections::HashMap;
     use std::convert::TryInto;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::block::ClientID;
     use crate::cell::{Acquire, AcquireMut};
     use crate::test_utils::exchange_updates;
-    use crate::types::text::{Diff, YChange};
-    use crate::types::{Attrs, ToJson};
     use crate::undo::{Options, StackItem};
     use crate::updates::decoder::Decode;
-    use crate::{
-        any, Any, Array, ArrayPrelim, Cell, Doc, GetString, Map, MapPrelim, MapRef,
-        StateVector, Text, TextPrelim, TextRef, UndoManager, Update, Xml, XmlElementPrelim,
-        XmlElementRef, XmlFragment, XmlTextPrelim,
-    };
+    use crate::{Any, Cell, Doc, StateVector, UndoManager, Update, any};
 
     #[test]
     fn undo_text() {

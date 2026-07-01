@@ -1,15 +1,15 @@
 use crate::encoding::read;
 use crate::encoding::read::Cursor;
 use crate::error::UpdateError;
-use crate::sync::{awareness, Awareness, AwarenessUpdate};
+use crate::sync::{Awareness, AwarenessUpdate, awareness};
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::{StateVector, Update};
 #[cfg(feature = "sync")]
 use async_trait::async_trait;
+use smallvec::SmallVec;
 #[cfg(feature = "sync")]
 use smallvec::smallvec;
-use smallvec::SmallVec;
 use thiserror::Error;
 /*
  Core Yjs defines two message types:
@@ -160,10 +160,7 @@ pub trait Protocol {
 
     /// Returns an [AwarenessUpdate] which is a serializable representation of a current `awareness`
     /// instance.
-    fn handle_awareness_query(
-        &self,
-        awareness: &mut Awareness,
-    ) -> Result<Option<Message>, Error> {
+    fn handle_awareness_query(&self, awareness: &mut Awareness) -> Result<Option<Message>, Error> {
         let update = awareness.update()?;
         Ok(Some(Message::Awareness(update)))
     }
@@ -539,15 +536,16 @@ mod test {
     use crate::sync::{Awareness, Protocol};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-    use crate::{Doc, GetString, StateVector, Text, Update};
+    use crate::{Doc, StateVector, Update};
     use serde_json::json;
     use std::collections::HashMap;
 
     #[test]
     fn message_encoding() {
         let mut doc = Doc::new();
-        let txt = doc.get_or_insert_text("text");
-        txt.push(&mut doc.transact_mut(), "hello world");
+        let mut txn = doc.transact_mut();
+        let mut txt = txn.node_mut("text").unwrap();
+        txt.push_text("hello world");
         let mut awareness = Awareness::new(doc);
         awareness
             .set_local_state(json!({

@@ -1,6 +1,6 @@
 use crate::transaction::Subdocs;
 use crate::{
-    Doc, IdSet, NodeRef, StateVector, Transaction, TransactionMut, TransactionState, Uuid,
+    Delta, Doc, IdSet, NodeRef, StateVector, Transaction, TransactionMut, TransactionState, Uuid,
 };
 use std::collections::HashSet;
 

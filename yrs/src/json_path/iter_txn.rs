@@ -1,6 +1,6 @@
 use crate::any::AnyArrayIter;
 use crate::json_path::JsonPathToken;
-use crate::{Any, Array, Doc, JsonPath, JsonPathEval, Map, Out, Transaction, Xml, XmlFragment};
+use crate::{Any, Doc, JsonPath, JsonPathEval, Out, Transaction};
 use std::ops::Deref;
 
 impl<D> JsonPathEval for Transaction<D>
@@ -60,21 +60,10 @@ fn slice_iter<'a, D: Deref<Target = Doc>>(
                 iter.skip(from).take(to - from).step_by(by).map(Out::Any),
             ))
         }
-        Some(Out::YArray(array)) => {
-            let iter = array.iter(txn);
+        Some(Out::Node(id)) => {
+            let node = txn.node(id)?;
+            let mut iter = node.iter();
             Some(Box::new(iter.skip(from).take(to - from).step_by(by)))
-        }
-        Some(Out::YXmlElement(xml)) => {
-            let iter = xml.children(txn);
-            Some(Box::new(
-                iter.skip(from).take(to - from).step_by(by).map(Out::from),
-            ))
-        }
-        Some(Out::YXmlFragment(xml)) => {
-            let iter = xml.children(txn);
-            Some(Box::new(
-                iter.skip(from).take(to - from).step_by(by).map(Out::from),
-            ))
         }
         _ => None,
     }
@@ -94,6 +83,10 @@ fn any_iter<'a, D: Deref<Target = Doc>>(
         Some(Out::Any(any)) => {
             let iter = any.try_into_iter();
             iter.map(|iter| dyn_iter(iter.map(|(_, v)| Out::Any(v))))
+        }
+        Some(Out::Node(id)) => {
+            let node = txn.node(id)?;
+            Some(dyn_iter(node.iter()))
         }
         Some(Out::YArray(array)) => Some(dyn_iter(array.iter(txn))),
         Some(Out::YXmlElement(elem)) => Some(dyn_iter(elem.children(txn).map(Out::from))),
@@ -338,7 +331,11 @@ where
     }
 }
 
-fn get_member<D: Deref<Target = Doc>>(txn: &Transaction<D>, out: Option<&Out>, key: &str) -> Option<Out> {
+fn get_member<D: Deref<Target = Doc>>(
+    txn: &Transaction<D>,
+    out: Option<&Out>,
+    key: &str,
+) -> Option<Out> {
     match out {
         None => txn.get(key),
         Some(Out::YMap(map)) => map.get(txn, key),
@@ -354,7 +351,11 @@ fn get_member<D: Deref<Target = Doc>>(txn: &Transaction<D>, out: Option<&Out>, k
     }
 }
 
-fn get_index<D: Deref<Target = Doc>>(txn: &Transaction<D>, out: Option<&Out>, idx: i32) -> Option<Out> {
+fn get_index<D: Deref<Target = Doc>>(
+    txn: &Transaction<D>,
+    out: Option<&Out>,
+    idx: i32,
+) -> Option<Out> {
     match out {
         Some(Out::YArray(array)) => {
             let idx = if idx < 0 {
@@ -460,10 +461,7 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = Out> + 'a>;
 #[cfg(test)]
 mod test {
     use crate::updates::decoder::Decode;
-    use crate::{
-        any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out,
-        Update,
-    };
+    use crate::{Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out, Update, any};
 
     fn mixed_sample() -> Doc {
         let mut doc = Doc::new();

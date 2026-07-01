@@ -2,22 +2,21 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::BufReader;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::block::{Block, ClientID, Item, ItemContent};
-use crate::encoding::read::Read;
-use crate::id_set::IdSet;
-use crate::node::Node;
-use crate::test_utils::Blocks;
-use crate::types::xml::XmlFragment;
-use crate::types::{ToJson, TypePtr, TypeRef};
-use crate::update::Update;
-use crate::updates::decoder::{Decode, Decoder, DecoderV1};
-use crate::updates::encoder::Encode;
-use crate::{
-    Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, StateVector, Xml, XmlElementRef,
-    XmlTextRef, ID,
+use yrs::IdSet;
+use yrs::Update;
+use yrs::block::{Block, ClientID, Item, ItemContent};
+use yrs::encoding::read::Read;
+use yrs::node::Node;
+use yrs::test_utils::Blocks;
+use yrs::types::xml::XmlFragment;
+use yrs::types::{TypePtr, TypeRef};
+use yrs::updates::decoder::{Decode, Decoder, DecoderV1};
+use yrs::updates::encoder::Encode;
+use yrs::{
+    Any, ArrayPrelim, Doc, ID, Map, MapPrelim, MapRef, StateVector, Xml, XmlElementRef, XmlTextRef,
 };
 
 #[test]
@@ -208,18 +207,20 @@ fn array_insert() {
     */
     #[allow(non_snake_case)]
     let CLIENT_ID: ClientID = ClientID::new(2525665872);
-    let expected = vec![Item::new(
-        ID::new(CLIENT_ID, 0),
-        None,
-        None,
-        None,
-        None,
-        TypePtr::Named("test".into()),
-        None,
-        ItemContent::Any(vec![Any::String("a".into()), Any::String("b".into())]),
-    )
-    .unwrap()
-    .into()];
+    let expected = vec![
+        Item::new(
+            ID::new(CLIENT_ID, 0),
+            None,
+            None,
+            None,
+            None,
+            TypePtr::Named("test".into()),
+            None,
+            ItemContent::Any(vec![Any::String("a".into()), Any::String("b".into())]),
+        )
+        .unwrap()
+        .into(),
+    ];
 
     let payload = &[
         1, 1, 208, 180, 170, 180, 9, 0, 8, 1, 4, 116, 101, 115, 116, 2, 119, 1, 97, 119, 1, 98, 0,
@@ -349,11 +350,11 @@ fn utf32_lib0_v2_decoding() {
         0, 19, 8, 1, 5, 1, 1, 1, 1, 9, 2, 4, 4, 4, 4, 4,
     ];
     let mut doc = Doc::new();
-    let xml = doc.get_or_insert_xml_fragment("prosemirror");
     let mut txn = doc.transact_mut();
     let update = Update::decode_v2(data).unwrap();
     txn.apply_update(update).unwrap();
-    let actual: XmlElementRef = xml.get(&txn, 0).unwrap().try_into().unwrap();
+    let xml = txn.node("prosemirror").unwrap();
+    let actual: XmlElementRef = xml.get(0).unwrap().try_into().unwrap();
 
     let expected_attrs = HashMap::from([
         ("b_id", "JXbASa-a92j".to_string()),
@@ -363,11 +364,11 @@ fn utf32_lib0_v2_decoding() {
     ]);
     let actual_attrs: HashMap<&str, String> = actual
         .attributes(&txn)
-        .map(|(k, v)| (k, v.to_string(&txn)))
+        .map(|(k, v)| (k, v.to_string()))
         .collect();
     assert_eq!(actual_attrs, expected_attrs);
 
-    let txt: XmlTextRef = actual.get(&txn, 0).unwrap().try_into().unwrap();
+    let txt = actual.get(&txn, 0).unwrap().try_into().unwrap();
 
     assert_eq!(txt.get_string(&txn), "在の韩国🇰🇷🇨🇳🇯🇵");
 }
@@ -454,31 +455,24 @@ fn test_data_set<P: AsRef<std::path::Path>>(path: P) {
     for test_num in 0..test_count {
         let updates_len: u32 = decoder.read_var().unwrap();
         let mut doc = Doc::new();
-        let txt = doc.get_or_insert_text("text");
-        let map = doc.get_or_insert_map("map");
-        let arr = doc.get_or_insert_array("array");
         for _ in 0..updates_len {
             let update = Update::decode_v1(decoder.read_buf().unwrap()).unwrap();
             doc.transact_mut().apply_update(update).unwrap();
         }
-        let expected = decoder.read_string().unwrap();
-        assert_eq!(
-            txt.get_string(&doc.transact()),
-            expected,
-            "failed at {} run",
-            test_num
-        );
+        let txn = doc.transact();
+        let txt = txn.node("text").unwrap();
+        let map = txn.node("map").unwrap();
+        let arr = txn.node("array").unwrap();
 
-        let expected = decoder.read_any().unwrap();
-        let actual = map.to_json(&doc.transact());
+        let expected = decoder.read_string().unwrap();
+        let actual = txt.to_string();
         assert_eq!(actual, expected, "failed at {} run", test_num);
 
         let expected = decoder.read_any().unwrap();
-        assert_eq!(
-            arr.to_json(&doc.transact()),
-            expected,
-            "failed at {} run",
-            test_num
-        );
+        let actual = map.to_json();
+        assert_eq!(actual, expected, "failed at {} run", test_num);
+
+        let expected = decoder.read_any().unwrap();
+        assert_eq!(arr.to_json(), expected, "failed at {} run", test_num);
     }
 }

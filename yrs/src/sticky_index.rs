@@ -4,7 +4,7 @@ use crate::encoding::read::Error;
 use crate::node::{Node, NodePtr};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{ClientID, Doc, NodeID, Transaction, ID};
+use crate::{ClientID, Doc, ID, NodeID, Transaction};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -642,7 +642,7 @@ mod test {
     use crate::sticky_index::Assoc;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{Doc, IndexScope, IndexedSequence, StickyIndex, Text, TextRef, ID};
+    use crate::{Doc, ID, IndexScope, IndexedSequence, StickyIndex};
     use serde::{Deserialize, Serialize};
 
     fn check_sticky_indexes(doc: &Doc, text: &TextRef) {

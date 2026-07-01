@@ -1,5 +1,6 @@
 use crate::block::{ItemContent, ItemPosition, ItemPtr};
 use crate::delta::{AttrOp, Op};
+use crate::event::Event;
 use crate::node::{Node, NodePtr};
 use crate::types::{Attrs, DeepObservable, Event, Observable};
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
@@ -193,9 +194,9 @@ where
 }
 
 // write operations
-impl<'txn, T> NodeRef<T>
+impl<'txn, 'doc, T> NodeRef<T>
 where
-    T: DerefMut<Target = Transaction<&mut Doc>>,
+    T: DerefMut<Target = Transaction<&'doc mut Doc>>,
 {
     pub fn txn_mut(&mut self) -> &mut Transaction<&mut Doc> {
         &mut *self.txn

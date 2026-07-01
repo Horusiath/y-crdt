@@ -1,18 +1,18 @@
+use crate::Doc;
 use crate::block::{
-    Block, BlockRange, ClientID, Item, ItemContent, BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER,
-    HAS_ORIGIN, HAS_PARENT_SUB, HAS_RIGHT_ORIGIN,
+    BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER, Block, BlockRange, ClientID, HAS_ORIGIN,
+    HAS_PARENT_SUB, HAS_RIGHT_ORIGIN, Item, ItemContent,
 };
 use crate::encoding::read::Error;
 use crate::error::UpdateError;
 use crate::id_set::IdSet;
-use crate::node::NodePtr;
+use crate::node::{NodePtr, TypePtr, TypeRef};
 use crate::transaction::TransactionMut;
 use crate::types::{TypePtr, TypeRef};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
-use crate::Doc;
-use crate::{StateVector, ID};
+use crate::{ID, StateVector};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -412,7 +412,7 @@ impl Update {
             #[cfg(feature = "weak")]
             match &item.content {
                 ItemContent::Node(branch) => {
-                    if let crate::types::TypeRef::WeakLink(source) = &branch.type_ref {
+                    if let TypeRef::WeakLink(source) = &branch.type_ref {
                         let start = source.quote_start.id();
                         let end = source.quote_end.id();
                         if let Some(start) = start {
@@ -485,7 +485,7 @@ impl Update {
                                 return Err(UpdateError::InvalidParent(
                                     id.clone(),
                                     other.get_ref_number(),
-                                ))
+                                ));
                             }
                         }
                     } else {
@@ -1070,14 +1070,11 @@ mod test {
 
     use crate::block::{Block, BlockRange, ClientID, Item, ItemContent};
     use crate::encoding::read::Cursor;
-    use crate::types::{Delta, TypePtr};
+    use crate::node::TypePtr;
     use crate::update::{BlockSet, Update};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
-    use crate::{
-        merge_updates_v1, Any, Doc, GetString, IdSet, Options, StateVector, Text, XmlFragment,
-        XmlOut, ID,
-    };
+    use crate::{Any, Delta, Doc, ID, IdSet, Options, StateVector, merge_updates_v1};
 
     #[test]
     fn update_decode() {
@@ -1124,18 +1121,18 @@ mod test {
     #[test]
     fn update_merge() {
         let mut d1 = Doc::with_client_id(1);
-        let txt1 = d1.get_or_insert_text("test");
         let mut t1 = d1.transact_mut();
+        let mut txt1 = t1.node_mut("test").unwrap();
 
         let mut d2 = Doc::with_client_id(2);
-        let txt2 = d2.get_or_insert_text("test");
         let mut t2 = d2.transact_mut();
+        let mut txt2 = t2.node_mut("test").unwrap();
 
-        txt1.insert(&mut t1, 0, "aaa");
-        txt1.insert(&mut t1, 0, "aaa");
+        txt1.insert_text(0, "aaa");
+        txt1.insert_text(0, "aaa");
 
-        txt2.insert(&mut t2, 0, "bbb");
-        txt2.insert(&mut t2, 2, "bbb");
+        txt2.insert_text(0, "bbb");
+        txt2.insert_text(2, "bbb");
 
         let binary1 = t1.encode_update_v1();
         let binary2 = t2.encode_update_v1();
@@ -1153,13 +1150,13 @@ mod test {
         let u12 = Update::merge_updates(vec![u1, u2]);
 
         let mut d3 = Doc::with_client_id(3);
-        let txt3 = d3.get_or_insert_text("test");
         let mut t3 = d3.transact_mut();
         t3.apply_update(u12).unwrap();
+        let txt3 = t3.node_mut("test").unwrap();
 
-        let str1 = txt1.get_string(&t1);
-        let str2 = txt2.get_string(&t2);
-        let str3 = txt3.get_string(&t3);
+        let str1 = txt1.to_string();
+        let str2 = txt2.to_string();
+        let str3 = txt3.to_string();
 
         assert_eq!(str1, str2);
         assert_eq!(str2, str3);
@@ -1168,9 +1165,9 @@ mod test {
     #[test]
     fn test_duplicate_updates() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
         let mut tr = doc.transact_mut();
-        txt.insert(&mut tr, 0, "aaa");
+        let mut txt = tr.node_mut("test").unwrap();
+        txt.insert_text(0, "aaa");
 
         let binary = tr.encode_update_v1();
         let u1 = decode_update(&binary);
@@ -1185,16 +1182,16 @@ mod test {
     fn test_multiple_clients_in_one_update() {
         let binary1 = {
             let mut doc = Doc::with_client_id(1);
-            let txt = doc.get_or_insert_text("test");
             let mut tr = doc.transact_mut();
-            txt.insert(&mut tr, 0, "aaa");
+            let mut txt = tr.node_mut("test").unwrap();
+            txt.insert(0, "aaa");
             tr.encode_update_v1()
         };
         let binary2 = {
             let mut doc = Doc::with_client_id(2);
-            let txt = doc.get_or_insert_text("test");
             let mut tr = doc.transact_mut();
-            txt.insert(&mut tr, 0, "bbb");
+            let mut txt = tr.node_mut("test").unwrap();
+            txt.insert(0, "bbb");
             tr.encode_update_v1()
         };
 
@@ -1241,12 +1238,12 @@ mod test {
             client_id: ClientID::new(1),
             ..Default::default()
         });
-        let prosemirror = doc.get_or_insert_xml_fragment("prosemirror");
         {
             let mut txn = doc.transact_mut();
+            let prosemirror = txn.node("prosemirror").unwrap();
             let u = Update::decode_v2(&before).unwrap();
             txn.apply_update(u).unwrap();
-            let linknote = prosemirror.get(&txn, 0);
+            let linknote = prosemirror.get(0);
             let actual = linknote.and_then(|xml| match xml {
                 XmlOut::Element(elem) => Some(elem.tag().clone()),
                 _ => None,
@@ -1258,11 +1255,13 @@ mod test {
             let u = Update::decode_v2(&update).unwrap();
             txn.apply_update(u).unwrap();
 
+            let prosemirror = txn.node("prosemirror").unwrap();
+
             // this should not panic
             let binary = txn.encode_update_v2();
             let _ = Update::decode_v2(&binary).unwrap();
 
-            let linknote = prosemirror.get(&txn, 0);
+            let linknote = prosemirror.get(0);
             assert!(linknote.is_none());
         }
     }
@@ -1278,12 +1277,26 @@ mod test {
                 lock.push(update.update.clone());
             })
         };
-        let txt = d0.get_or_insert_text("textBlock");
-        txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("r")]);
-        txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("o")]);
-        txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("n")]);
-        txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("e")]);
-        txt.apply_delta(&mut d0.transact_mut(), [Delta::insert("n")]);
+        d0.transact_mut()
+            .node_mut("textBlock")
+            .unwrap()
+            .apply_delta([Delta::new().insert("r")]);
+        d0.transact_mut()
+            .node_mut("textBlock")
+            .unwrap()
+            .apply_delta([Delta::new().insert("o")]);
+        d0.transact_mut()
+            .node_mut("textBlock")
+            .unwrap()
+            .apply_delta([Delta::new().insert("n")]);
+        d0.transact_mut()
+            .node_mut("textBlock")
+            .unwrap()
+            .apply_delta([Delta::new().insert("e")]);
+        d0.transact_mut()
+            .node_mut("textBlock")
+            .unwrap()
+            .apply_delta([Delta::new().insert("n")]);
         drop(sub);
         drop(d0);
 
@@ -1339,8 +1352,8 @@ mod test {
             .apply_update(Update::decode_v1(&updates[4]).unwrap())
             .unwrap();
 
-        let txt5 = d5.get_or_insert_text("textBlock");
-        let str = txt5.get_string(&d5.transact());
+        let txt5 = d5.transact().node("textBlock").unwrap();
+        let str = txt5.to_string();
         assert_eq!(str, "nenor");
     }
 
@@ -1377,8 +1390,8 @@ mod test {
             }
         }
 
-        let txt = doc.get_or_insert_text("t");
-        assert_eq!(txt.get_string(&doc.transact()), "mddpc");
+        let txt = doc.transact().node("t").unwrap().to_string();
+        assert_eq!(txt, "mddpc");
     }
 
     #[test]
@@ -1386,10 +1399,10 @@ mod test {
         // Anchor client D builds "PQ".
         let mut d = Doc::with_client_id(100);
         {
-            let txt = d.get_or_insert_text("t");
             let mut txn = d.transact_mut();
-            txt.insert(&mut txn, 0, "P");
-            txt.insert(&mut txn, 1, "Q");
+            let mut txt = txn.node_mut("t").unwrap();
+            txt.insert(0, "P");
+            txt.insert(1, "Q");
         }
         let d_state = d
             .transact()
@@ -1410,11 +1423,11 @@ mod test {
             let updates = updates.clone();
             c.observe_update_v1(move |_, e| updates.lock().unwrap().push(e.update.clone()))
         };
-        let txt = c.get_or_insert_text("t");
-        txt.insert(&mut c.transact_mut(), 1, "a"); // C:0  "PaQ"    left D:0, right D:1
-        txt.insert(&mut c.transact_mut(), 2, "b"); // C:1  "PabQ"   left C:0, right D:1
-        txt.insert(&mut c.transact_mut(), 1, "c"); // C:2  "PcabQ"  left D:0, right C:0
-        txt.insert(&mut c.transact_mut(), 5, "d"); // C:3  "PcabQd" left D:1, right none
+
+        c.transact_mut().node_mut("t").unwrap().insert_text(1, "a"); // C:0  "PaQ"    left D:0, right D:1
+        c.transact_mut().node_mut("t").unwrap().insert_text(2, "b"); // C:1  "PabQ"   left C:0, right D:1
+        c.transact_mut().node_mut("t").unwrap().insert_text(1, "c"); // C:2  "PcabQ"  left D:0, right C:0
+        c.transact_mut().node_mut("t").unwrap().insert_text(5, "d"); // C:3  "PcabQd" left D:1, right none
         drop(sub);
 
         let mut msgs = vec![d_state];
@@ -1430,9 +1443,7 @@ mod test {
                         .unwrap();
                 }
             }
-            let txt = doc.get_or_insert_text("t");
-            let s = txt.get_string(&doc.transact());
-            s
+            doc.transact().node("t").unwrap().to_string()
         };
 
         // ground truth: full causal delivery order

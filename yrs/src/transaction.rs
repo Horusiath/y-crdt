@@ -252,28 +252,6 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
         Some(NodeRef::new(NodePtr::from(node), self))
     }
 
-    pub fn get<S: AsRef<str>>(&self, name: S) -> Option<Out> {
-        let value = self.doc().types.get(name.as_ref())?;
-        let ptr = NodePtr::from(&*value);
-        match &ptr.type_ref {
-            TypeRef::Array => Some(Out::YArray(ArrayRef::from(ptr))),
-            TypeRef::Map => Some(Out::YMap(MapRef::from(ptr))),
-            TypeRef::Text => Some(Out::YText(TextRef::from(ptr))),
-            TypeRef::XmlElement(_) => Some(Out::YXmlElement(XmlElementRef::from(ptr))),
-            TypeRef::XmlFragment => Some(Out::YXmlFragment(XmlFragmentRef::from(ptr))),
-            TypeRef::XmlHook => None,
-            TypeRef::XmlText => Some(Out::YXmlText(XmlTextRef::from(ptr))),
-            TypeRef::SubDoc => {
-                let item = ptr.item?;
-                let guid = item.content.as_subdoc_guid()?;
-                Some(Out::Doc(guid.clone()))
-            }
-            #[cfg(feature = "weak")]
-            TypeRef::WeakLink(_) => Some(Out::YWeakLink(crate::WeakRef::from(ptr))),
-            TypeRef::Undefined => Some(Out::UndefinedRef(ptr)),
-        }
-    }
-
     /// If current document has been inserted as a sub-document, returns the guid of its parent
     /// document.
     pub fn parent_doc(&self) -> Option<crate::Uuid> {
@@ -772,6 +750,11 @@ impl<'doc> Transaction<&'doc mut Doc> {
             let id = ID::new(client_id, self.doc.get_local_state());
 
             (left, right, origin, id)
+        };
+        let content = match value {
+            In::Any(value) => ItemContent::Any(vec![value]),
+            In::Node(node) => ItemContent::Node(Node::new(node.name)),
+            In::Doc(doc) => ItemContent::Doc(),
         };
         let (mut content, remainder) = value.into_content(self);
         let inner_ref = if let ItemContent::Node(inner_ref) = &mut content {

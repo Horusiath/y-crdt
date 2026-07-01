@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Doc, Out, StateVector, Update, any};
+use yrs::{Any, Doc, NodeRef, Out, StateVector, Transaction, Update, any};
 
 #[test]
 fn map_basic() {
@@ -38,14 +38,14 @@ fn map_basic() {
     //m1m.insert(&mut t1, "y-text".to_owned(), m1a);
 
     //TODO: YArray within YMap
-    fn compare_all<D: std::ops::Deref<Target = Doc>>(m: &MapRef, txn: &Transaction<D>) {
-        assert_eq!(m.len(txn), 5);
-        assert_eq!(m.get(txn, &"number".to_owned()), Some(Out::from(1f64)));
-        assert_eq!(m.get(txn, &"boolean0".to_owned()), Some(Out::from(false)));
-        assert_eq!(m.get(txn, &"boolean1".to_owned()), Some(Out::from(true)));
-        assert_eq!(m.get(txn, &"string".to_owned()), Some(Out::from("hello Y")));
+    fn compare_all<D: std::ops::Deref<Target = Doc>>(m: &NodeRef<&Transaction<D>>) {
+        assert_eq!(m.len(), 5);
+        assert_eq!(m.attr("number"), Some(Out::from(1f64)));
+        assert_eq!(m.attr("boolean0"), Some(Out::from(false)));
+        assert_eq!(m.attr("boolean1"), Some(Out::from(true)));
+        assert_eq!(m.attr("string"), Some(Out::from("hello Y")));
         assert_eq!(
-            m.get(txn, &"object".to_owned()),
+            m.attr("object"),
             Some(Out::from(any!({
                 "key": {
                     "key2": "value"
@@ -54,13 +54,13 @@ fn map_basic() {
         );
     }
 
-    compare_all(&m1, &t1);
+    compare_all(&m1);
 
     let update = t1.encode_state_as_update_v1(&StateVector::default());
     t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
         .unwrap();
 
-    compare_all(&m2, &t2);
+    compare_all(&m2);
 }
 
 #[test]
@@ -75,21 +75,22 @@ fn map_get_set() {
     let update = t1.encode_state_as_update_v1(&StateVector::default());
 
     let mut d2 = Doc::with_client_id(2);
-    let m2 = d2.get_or_insert_map("map");
     let mut t2 = d2.transact_mut();
 
     t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
         .unwrap();
 
-    assert_eq!(m2.get(&t2, &"stuff".to_owned()), Some(Out::from("stuffy")));
-    assert_eq!(m2.get(&t2, &"null".to_owned()), Some(Out::Any(Any::Null)));
+    let m2 = t2.node_mut("map").unwrap();
+
+    assert_eq!(m2.attr("stuff"), Some(Out::from("stuffy")));
+    assert_eq!(m2.attr("null"), Some(Out::Any(Any::Null)));
 }
 
 #[test]
 fn map_get_set_sync_with_conflicts() {
     let mut d1 = Doc::with_client_id(1);
-    let m1 = d1.get_or_insert_map("map");
     let mut t1 = d1.transact_mut();
+    let m1 = d1.get_or_insert_map("map");
 
     let mut d2 = Doc::with_client_id(2);
     let m2 = d2.get_or_insert_map("map");

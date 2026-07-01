@@ -1,7 +1,10 @@
 mod array;
+mod compatibility;
+mod edit_traces;
 mod map;
-pub mod test_utils;
 mod text;
 #[cfg(feature = "weak")]
-mod weak;mod xml;
+mod weak;
+mod xml;
 
+use yrs::test_utils::*;

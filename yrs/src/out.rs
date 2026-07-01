@@ -1,14 +1,7 @@
-use crate::block::{ItemContent, ItemPtr};
-use crate::node::{Node, NodePtr};
-use crate::types::{AsPrelim, ToJson};
-use crate::updates::decoder::Decode;
-use crate::{
-    Any, ArrayRef, Doc, GetString, In, MapPrelim, MapRef, NodeID, StateVector, TextRef,
-    Transaction, Update, Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef, any,
-};
+use crate::block::ItemPtr;
+use crate::{Any, NodeID, Uuid};
 use std::convert::TryFrom;
 use std::fmt::Formatter;
-use std::ops::Deref;
 use std::sync::Arc;
 
 /// Value that can be returned by Yrs data types. This includes [Any] which is an extension
@@ -48,65 +41,6 @@ impl TryFrom<ItemPtr> for Out {
             None => Err(value),
             Some(v) => Ok(v),
         }
-    }
-}
-
-impl AsPrelim for Out {
-    type Prelim = In;
-
-    fn as_prelim<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Self::Prelim {
-        match self {
-            Out::Any(any) => In::Any(any.clone()),
-            Out::YText(v) => In::Text(v.as_prelim(txn)),
-            Out::YArray(v) => In::Array(v.as_prelim(txn)),
-            Out::YMap(v) => In::Map(v.as_prelim(txn)),
-            Out::YXmlElement(v) => In::XmlElement(v.as_prelim(txn)),
-            Out::YXmlFragment(v) => In::XmlFragment(v.as_prelim(txn)),
-            Out::YXmlText(v) => In::XmlText(v.as_prelim(txn)),
-            #[cfg(feature = "weak")]
-            Out::YWeakLink(v) => In::WeakLink(v.as_prelim(txn)),
-            Out::UndefinedRef(v) => infer_type_from_content(*v, txn),
-            Out::Doc(guid) => {
-                // deep copy of the document state
-                let subdoc = txn.subdoc(guid).unwrap();
-                let state = subdoc
-                    .transact()
-                    .encode_state_as_update_v1(&StateVector::default());
-                let options = subdoc.options().clone();
-                let mut subdoc = Doc::with_options(options);
-                subdoc
-                    .transact_mut()
-                    .apply_update(Update::decode_v1(&state).unwrap())
-                    .unwrap();
-                In::Doc(subdoc)
-            }
-        }
-    }
-}
-
-fn infer_type_from_content<D: Deref<Target = Doc>>(branch: NodePtr, txn: &Transaction<D>) -> In {
-    let has_map = !branch.map.is_empty();
-    let mut ptr = branch.start;
-    let has_list = ptr.is_some();
-    let mut possible_text = false;
-    while let Some(curr) = ptr {
-        if !curr.is_deleted() {
-            possible_text = match &curr.content {
-                ItemContent::Embed(_) | ItemContent::Format(_, _) | ItemContent::String(_) => true,
-                _ => false,
-            };
-            break;
-        }
-        ptr = curr.right;
-    }
-
-    match (has_map, has_list, possible_text) {
-        (true, false, false) => In::Map(MapRef::from(branch).as_prelim(txn)),
-        (false, true, false) => In::Array(ArrayRef::from(branch).as_prelim(txn)),
-        (false, _, true) => In::Text(TextRef::from(branch).as_prelim(txn)),
-        (true, _, true) => In::XmlText(XmlTextRef::from(branch).as_prelim(txn)),
-        (true, true, false) => In::XmlElement(XmlElementRef::from(branch).as_prelim(txn)),
-        _ => In::Map(MapPrelim::default()), // if we have no content, default to map
     }
 }
 
@@ -152,46 +86,12 @@ impl_try_from!(Arc<str>);
 impl_try_from!(Vec<u8>);
 impl_try_from!(Arc<[u8]>);
 
-impl ToJson for Out {
-    /// Converts current value into [Any] object equivalent that resembles enhanced JSON payload.
-    /// Rules are:
-    ///
-    /// - Primitive types ([Out::Any]) are passed right away, as no transformation is needed.
-    /// - [Out::YArray] is converted into JSON-like array.
-    /// - [Out::YMap] is converted into JSON-like object map.
-    /// - [Out::YText], [Out::YXmlText] and [Out::YXmlElement] are converted into strings
-    ///   (XML types are stringified XML representation).
-    fn to_json<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Any {
-        match self {
-            Out::Any(a) => a.clone(),
-            Out::YText(v) => Any::from(v.get_string(txn)),
-            Out::YArray(v) => v.to_json(txn),
-            Out::YMap(v) => v.to_json(txn),
-            Out::YXmlElement(v) => Any::from(v.get_string(txn)),
-            Out::YXmlText(v) => Any::from(v.get_string(txn)),
-            Out::YXmlFragment(v) => Any::from(v.get_string(txn)),
-            Out::Doc(guid) => any!({"guid": guid.as_ref()}),
-            #[cfg(feature = "weak")]
-            Out::YWeakLink(_) => Any::Undefined,
-            Out::UndefinedRef(_) => Any::Undefined,
-        }
-    }
-}
-
 impl std::fmt::Display for Out {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Out::Any(v) => std::fmt::Display::fmt(v, f),
-            Out::YText(_) => write!(f, "TextRef"),
-            Out::YArray(_) => write!(f, "ArrayRef"),
-            Out::YMap(_) => write!(f, "MapRef"),
-            Out::YXmlElement(_) => write!(f, "XmlElementRef"),
-            Out::YXmlFragment(_) => write!(f, "XmlFragmentRef"),
-            Out::YXmlText(_) => write!(f, "XmlTextRef"),
-            #[cfg(feature = "weak")]
-            Out::YWeakLink(_) => write!(f, "WeakRef"),
-            Out::Doc(v) => write!(f, "Doc(guid:{})", v),
-            Out::UndefinedRef(_) => write!(f, "UndefinedRef"),
+            Out::Any(value) => std::fmt::Display::fmt(value, f),
+            Out::Node(node) => write!(f, "Node({})", node),
+            Out::Doc(guid) => write!(f, "Doc({})", guid),
         }
     }
 }

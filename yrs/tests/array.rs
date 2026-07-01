@@ -227,8 +227,8 @@ fn concurrent_insert_remove_with_3_conflicts() {
 fn insertions_in_late_sync() {
     let mut d1 = Doc::with_client_id(1);
     {
-        let a = d1.get_or_insert_array("array");
         let mut txn = d1.transact_mut();
+        let a = txn.node_mut("array");
         a.push_back(&mut txn, "x");
         a.push_back(&mut txn, "y");
     }
@@ -238,16 +238,18 @@ fn insertions_in_late_sync() {
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
 
     {
-        let a1 = d1.get_or_insert_array("array");
-        let a2 = d2.get_or_insert_array("array");
-        let a3 = d3.get_or_insert_array("array");
-        let mut t1 = d1.transact_mut();
-        let mut t2 = d2.transact_mut();
-        let mut t3 = d3.transact_mut();
-
-        a1.insert(&mut t1, 1, "user0");
-        a2.insert(&mut t2, 1, "user1");
-        a3.insert(&mut t3, 1, "user2");
+        d1.transact_mut()
+            .node_mut("array")
+            .unwrap()
+            .insert(1, "user0");
+        d2.transact_mut()
+            .node_mut("array")
+            .unwrap()
+            .insert(1, "user1");
+        d3.transact_mut()
+            .node_mut("array")
+            .unwrap()
+            .insert(1, "user2");
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
@@ -521,6 +523,7 @@ use arc_swap::ArcSwapOption;
 use fastrand::Rng;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
+use yrs::test_utils::exchange_updates;
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, Out, StateVector, Update};
 

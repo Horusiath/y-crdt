@@ -965,15 +965,12 @@ mod test {
     use crate::error::Error;
     use crate::test_utils::{Blocks, exchange_updates};
     use crate::transaction::TransactionMut;
-    use crate::types::ToJson;
     use crate::update::Update;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        Any, Array, ArrayPrelim, ArrayRef, Doc, ID, IdSet, Map, MapRef, OffsetKind, Options,
-        Snapshot, StateVector, Subscription, Text, TextPrelim, TextRef, Transaction,
-        TransactionCleanupEvent, UpdateEvent, Uuid, XmlElementPrelim, XmlFragment, XmlFragmentRef,
-        XmlTextPrelim, XmlTextRef, any, uuid_v4,
+        Any, Doc, ID, IdSet, OffsetKind, Options, Snapshot, StateVector, Subscription, Transaction,
+        TransactionCleanupEvent, UpdateEvent, Uuid, any, uuid_v4,
     };
     use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
@@ -1016,12 +1013,12 @@ mod test {
             198, 5, 0, 1, 49, 68, 227, 214, 245, 198, 5, 1, 1, 50, 0,
         ];
         let mut doc = Doc::new();
-        let txt = doc.get_or_insert_text("type");
         let mut txn = doc.transact_mut();
         txn.apply_update(Update::decode_v1(update).unwrap())
             .unwrap();
 
-        let actual = txt.get_string(&txn);
+        let txt = txn.node("type").unwrap();
+        let actual = txt.to_string();
         assert_eq!(actual, "210".to_owned());
     }
 
@@ -1044,23 +1041,23 @@ mod test {
             48, 49, 50, 4, 65, 1, 1, 1, 0, 0, 1, 3, 0, 0,
         ];
         let mut doc = Doc::new();
-        let txt = doc.get_or_insert_text("type");
         let mut txn = doc.transact_mut();
         txn.apply_update(Update::decode_v2(update).unwrap())
             .unwrap();
 
-        let actual = txt.get_string(&txn);
+        let txt = txn.node("type").unwrap();
+        let actual = txt.to_string();
         assert_eq!(actual, "210".to_owned());
     }
 
     #[test]
     fn encode_basic() {
         let mut doc = Doc::with_client_id(1490905955);
-        let txt = doc.get_or_insert_text("type");
         let mut t = doc.transact_mut();
-        txt.insert(&mut t, 0, "0");
-        txt.insert(&mut t, 0, "1");
-        txt.insert(&mut t, 0, "2");
+        let mut txt = t.node_mut("type").unwrap();
+        txt.insert(0, "0");
+        txt.insert(0, "1");
+        txt.insert(0, "2");
 
         let encoded = t.encode_state_as_update_v1(&StateVector::default());
         let expected = &[
@@ -1074,19 +1071,18 @@ mod test {
     fn integrate() {
         // create new document at A and add some initial text to it
         let mut d1 = Doc::new();
-        let txt = d1.get_or_insert_text("test");
         let mut t1 = d1.transact_mut();
+        let mut txt = t1.node_mut("test").unwrap();
         // Question: why YText.insert uses positions of blocks instead of actual cursor positions
         // in text as seen by user?
-        txt.insert(&mut t1, 0, "hello");
-        txt.insert(&mut t1, 5, " ");
-        txt.insert(&mut t1, 6, "world");
+        txt.insert(0, "hello");
+        txt.insert(5, " ");
+        txt.insert(6, "world");
 
         assert_eq!(txt.get_string(&t1), "hello world".to_string());
 
         // create document at B
         let mut d2 = Doc::new();
-        let txt = d2.get_or_insert_text("test");
         let mut t2 = d2.transact_mut();
         let sv = t2.state_vector().encode_v1();
 
@@ -1106,6 +1102,7 @@ mod test {
         assert!(pending.1.is_none());
 
         // check if B sees the same thing that A does
+        let txt = t2.node("test").unwrap();
         assert_eq!(txt.get_string(&t1), "hello world".to_string());
     }
 
@@ -1122,10 +1119,10 @@ mod test {
                 c.fetch_add(block.len(), Ordering::SeqCst);
             }
         });
-        let txt = doc.get_or_insert_text("test");
         let mut txn = doc.transact_mut();
         {
-            txt.insert(&mut txn, 0, "abc");
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert(0, "abc");
             let mut txn2 = doc2.transact_mut();
             let sv = txn2.state_vector().encode_v1();
             let u = txn.encode_diff_v1(&StateVector::decode_v1(sv.as_slice()).unwrap());
@@ -1137,7 +1134,8 @@ mod test {
         drop(sub);
 
         {
-            txt.insert(&mut txn, 3, "de");
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert(3, "de");
             let mut txn2 = doc2.transact_mut();
             let sv = txn2.state_vector().encode_v1();
             let u = txn.encode_diff_v1(&StateVector::decode_v1(sv.as_slice()).unwrap());
@@ -1151,7 +1149,6 @@ mod test {
     #[cfg(feature = "small-client")]
     fn pending_update_integration() {
         let mut doc = Doc::new();
-        let txt = doc.get_or_insert_text("source");
 
         let updates = [
             vec![
@@ -1199,14 +1196,17 @@ mod test {
             println!("integrate pending update: {u:#?}");
             txn.apply_update(u).unwrap();
         }
-        assert_eq!(txt.get_string(&doc.transact()), "abcd".to_string());
+        let txn = doc.transact();
+        let txt = txn.node("source").unwrap();
+        assert_eq!(txt.to_string(), "abcd".to_string());
     }
 
     #[test]
     fn ypy_issue_32() {
         let mut d1 = Doc::with_client_id(1971027812);
-        let source_1 = d1.get_or_insert_text("source");
-        source_1.push(&mut d1.transact_mut(), "a");
+        let mut t1 = d1.transact_mut();
+        let mut source_1 = t1.node_mut("source").unwrap();
+        source_1.push_text("a");
 
         let updates = [
             vec![
@@ -1237,7 +1237,6 @@ mod test {
         assert_eq!("a", source_1.get_string(&d1.transact()));
 
         let mut d2 = Doc::new();
-        let source_2 = d2.get_or_insert_text("source");
         let state_2 = d2.transact().state_vector().encode_v1();
         let update = d1
             .transact()
@@ -1245,7 +1244,8 @@ mod test {
         let update = Update::decode_v1(&update).unwrap();
         d2.transact_mut().apply_update(update).unwrap();
 
-        assert_eq!("a", source_2.get_string(&d2.transact()));
+        let source_2 = d2.transact().node("source").unwrap().to_string();
+        assert_eq!("a", source_2);
 
         let update = Update::decode_v1(&[
             1, 2, 201, 210, 153, 56, 5, 132, 228, 254, 237, 171, 7, 0, 1, 98, 168, 201, 210, 153,
@@ -1256,14 +1256,14 @@ mod test {
         assert_eq!("ab", source_1.get_string(&d1.transact()));
 
         let mut d3 = Doc::new();
-        let source_3 = d3.get_or_insert_text("source");
         let state_3 = d3.transact().state_vector().encode_v1();
         let state_3 = StateVector::decode_v1(&state_3).unwrap();
         let update = d1.transact().encode_state_as_update_v1(&state_3);
         let update = Update::decode_v1(&update).unwrap();
         d3.transact_mut().apply_update(update).unwrap();
 
-        assert_eq!("ab", source_3.get_string(&d3.transact()));
+        let source_3 = d3.transact().node("source").unwrap().to_string();
+        assert_eq!("ab", source_3);
     }
 
     #[test]

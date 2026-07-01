@@ -14,11 +14,9 @@ use crate::types::{
     Path, RootRef, SharedRef, ToJson, TypePtr, TypeRef, event_change_set, event_keys,
 };
 use crate::{
-    Any, ArrayRef, DeepObservable, Doc, GetString, ID, In, IndexedSequence, Map, NodeID,
-    Observable, StickyIndex, Text, TextRef, Transaction,
+    Any, ArrayRef, DeepObservable, Doc, ID, In, IndexedSequence, Map, NodeID, Observable,
+    StickyIndex, Text, TextRef, Transaction,
 };
-
-pub trait XmlPrelim: Prelim {}
 
 /// Trait shared by preliminary types that can be used as XML nodes: [XmlElementPrelim],
 /// [XmlFragmentPrelim] and [XmlTextPrelim].
@@ -54,29 +52,6 @@ impl From<XmlFragmentPrelim> for XmlIn {
     #[inline]
     fn from(value: XmlFragmentPrelim) -> Self {
         Self::Fragment(value)
-    }
-}
-
-impl XmlPrelim for XmlIn {}
-
-impl Prelim for XmlIn {
-    type Return = XmlOut;
-
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let type_ref = match &self {
-            XmlIn::Text(_) => TypeRef::XmlText,
-            XmlIn::Element(prelim) => TypeRef::XmlElement(prelim.tag.clone()),
-            XmlIn::Fragment(_) => TypeRef::XmlFragment,
-        };
-        (ItemContent::Node(Node::new(type_ref)), Some(self))
-    }
-
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
-        match self {
-            XmlIn::Text(prelim) => prelim.integrate(txn, inner_ref),
-            XmlIn::Element(prelim) => prelim.integrate(txn, inner_ref),
-            XmlIn::Fragment(prelim) => prelim.integrate(txn, inner_ref),
-        }
     }
 }
 
@@ -416,27 +391,6 @@ impl XmlElementPrelim {
             tag: tag.into(),
             attributes: HashMap::default(),
             children: Vec::default(),
-        }
-    }
-}
-
-impl XmlPrelim for XmlElementPrelim {}
-
-impl Prelim for XmlElementPrelim {
-    type Return = XmlElementRef;
-
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        let inner = Node::new(TypeRef::XmlElement(self.tag.clone()));
-        (ItemContent::Node(inner), Some(self))
-    }
-
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
-        let xml = XmlElementRef::from(inner_ref);
-        for (key, value) in self.attributes {
-            xml.insert_attribute(txn, key, value);
-        }
-        for value in self.children {
-            xml.push_back(txn, value);
         }
     }
 }

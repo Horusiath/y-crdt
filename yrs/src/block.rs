@@ -2,7 +2,7 @@ use crate::block_store::BlockStore;
 use crate::doc::OffsetKind;
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
-use crate::node::{Node, NodePtr};
+use crate::node::{Attrs, Node, NodePtr, TypeRef};
 use crate::slice::{BlockSlice, ItemSlice};
 use crate::transaction::{TransactionMut, ensure_state};
 use crate::types::text::update_current_attributes;

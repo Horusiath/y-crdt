@@ -623,7 +623,6 @@ mod event;
 mod id_map;
 mod id_set;
 mod transaction;
-pub mod types;
 mod update;
 pub mod updates;
 mod utils;
@@ -649,9 +648,7 @@ mod state_vector;
 mod sticky_index;
 pub mod sync;
 #[cfg(test)]
-mod test_utils;
-#[cfg(test)]
-mod tests;
+pub mod test_utils;
 mod transact;
 pub mod undo;
 
@@ -671,10 +668,7 @@ pub use crate::id_map::{AttrRange, ContentAttribute, ContentAttributes, Diff, Id
 pub use crate::id_set::IdSet;
 pub use crate::input::In;
 pub use crate::json_path::{JsonPath, JsonPathEval};
-pub use crate::node::Hook;
-pub use crate::node::Nested;
 pub use crate::node::NodeID;
-pub use crate::node::Root;
 pub use crate::node_ref::DeltaOptions;
 pub use crate::node_ref::NodeRef;
 pub use crate::observer::{Observer, Subscription};
@@ -692,28 +686,6 @@ pub use crate::transaction::RootRefs;
 pub use crate::transaction::Transaction;
 pub use crate::transaction::TransactionMut;
 pub use crate::transaction::TransactionState;
-pub use crate::types::DeepObservable;
-pub use crate::types::Observable;
-pub use crate::types::array::Array;
-pub use crate::types::array::ArrayPrelim;
-pub use crate::types::array::ArrayRef;
-pub use crate::types::map::Map;
-pub use crate::types::map::MapPrelim;
-pub use crate::types::map::MapRef;
-pub use crate::types::text::Text;
-pub use crate::types::text::TextPrelim;
-pub use crate::types::text::TextRef;
-#[cfg(feature = "weak")]
-pub use crate::types::weak::{Quotable, WeakPrelim, WeakRef};
-pub use crate::types::xml::Xml;
-pub use crate::types::xml::XmlElementPrelim;
-pub use crate::types::xml::XmlElementRef;
-pub use crate::types::xml::XmlFragment;
-pub use crate::types::xml::XmlFragmentPrelim;
-pub use crate::types::xml::XmlFragmentRef;
-pub use crate::types::xml::XmlOut;
-pub use crate::types::xml::XmlTextPrelim;
-pub use crate::types::xml::XmlTextRef;
 pub use crate::update::Update;
 
 pub use crate::cell::Acquire;

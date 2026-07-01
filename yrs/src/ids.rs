@@ -2,8 +2,8 @@ use crate::block::{ClientID, ID};
 use crate::block_store::{BlockStore, ClientBlockList};
 use crate::slice::BlockSlice;
 use smallvec::SmallVec;
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::ops::Range;
 
 /// Trait for per-range values that can be merged when ranges overlap.
@@ -1206,7 +1206,7 @@ mod test {
     }
 
     use crate::test_utils::exchange_updates;
-    use crate::{Doc, IdSet, Options, Text};
+    use crate::{Doc, IdSet, Options};
 
     /// Helper: collect (clock_start, len) tuples from iter_blocks.
     fn collect_slices(id_set: &IdSet, store: &BlockStore) -> Vec<(u32, u32)> {

@@ -4,16 +4,16 @@ use crate::encoding::read::Error;
 use crate::ids::{BlockSliceIter, IdMapInner, IdRanges};
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
-use crate::{Doc, Transaction};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use std::ops::Deref;
+use crate::{Doc, Transaction};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 use std::collections::btree_map::Entry;
 use std::fmt::Formatter;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 use std::ops::Range;
 
 impl Encode for Range<u32> {
@@ -626,7 +626,7 @@ pub(crate) mod test {
     use crate::test_utils::exchange_updates;
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
-    use crate::{Doc, Options, Text, ID};
+    use crate::{Doc, ID, Options};
     use std::collections::HashSet;
     use std::fmt::Debug;
 
@@ -1044,26 +1044,33 @@ pub(crate) mod test {
         o.client_id = ClientID::new(1);
         o.skip_gc = true;
         let mut d1 = Doc::with_options(o.clone());
-        let t1 = d1.get_or_insert_text("test");
 
         o.client_id = ClientID::new(2);
         let mut d2 = Doc::with_options(o);
-        let t2 = d2.get_or_insert_text("test");
 
-        t1.insert(&mut d1.transact_mut(), 0, "aaaaa");
-        t1.insert(&mut d1.transact_mut(), 0, "bbb");
+        d1.transact_mut()
+            .node_mut("test")
+            .unwrap()
+            .insert_text(0, "aaaaa");
+        d1.transact_mut()
+            .node_mut("test")
+            .unwrap()
+            .insert_text(0, "bbb");
 
         exchange_updates(&mut [&mut d1, &mut d2]);
 
-        t2.insert(&mut d2.transact_mut(), 4, "cccc");
+        d2.transact_mut()
+            .node_mut("test")
+            .unwrap()
+            .insert_text(4, "cccc");
 
         exchange_updates(&mut [&mut d1, &mut d2]);
 
         // t1: 'bbbaccccaaaa'
-        t1.remove_range(&mut d1.transact_mut(), 2, 2); // => 'bbccccaaaa'
-        t1.remove_range(&mut d1.transact_mut(), 3, 1); // => 'bbcccaaaa'
-        t1.remove_range(&mut d1.transact_mut(), 3, 1); // => 'bbccaaaa'
-        t1.remove_range(&mut d1.transact_mut(), 7, 1); // => 'bbccaaa'
+        d1.transact_mut().node_mut("test").unwrap().remove(2, 2); // => 'bbccccaaaa'
+        d1.transact_mut().node_mut("test").unwrap().remove(3, 1); // => 'bbcccaaaa'
+        d1.transact_mut().node_mut("test").unwrap().remove(3, 1); // => 'bbccaaaa'
+        d1.transact_mut().node_mut("test").unwrap().remove(7, 1); // => 'bbccaaa'
 
         let blocks = {
             let mut txn = d1.transact_mut();
@@ -1106,8 +1113,11 @@ pub(crate) mod test {
     fn deleted_blocks2() {
         let mut ds = IdSet::new();
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "testab");
+        doc.transact_mut()
+            .node_mut("test")
+            .unwrap()
+            .push_text("testab");
+
         ds.insert(ID::new(ClientID::new(1), 5), 1);
         let txn = doc.transact_mut();
         let mut i = ds.blocks();
