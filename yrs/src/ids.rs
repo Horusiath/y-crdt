@@ -1222,8 +1222,7 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut doc = Doc::with_options(o);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abcde"); // block: client=1, clock=0..5
+        doc.transact_mut().node_mut("test").unwrap().push_text("abcde"); // block: client=1, clock=0..5
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..5])]);
@@ -1238,8 +1237,7 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut doc = Doc::with_options(o);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abcdefghij"); // block: client=1, clock=0..10
+        doc.transact_mut().node_mut("test").unwrap().push_text("abcdefghij"); // block: client=1, clock=0..10
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [3..7])]);
@@ -1254,8 +1252,7 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut doc = Doc::with_options(o);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abcde"); // block: client=1, clock=0..5
+        doc.transact_mut().node_mut("test").unwrap().push_text("abcde"); // block: client=1, clock=0..5
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [2..5])]);
@@ -1270,8 +1267,7 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut doc = Doc::with_options(o);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abcde"); // block: client=1, clock=0..5
+        doc.transact_mut().node_mut("test").unwrap().push_text("abcde"); // block: client=1, clock=0..5
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..3])]);
@@ -1286,8 +1282,7 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut doc = Doc::with_options(o);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abcdefghij"); // block: client=1, clock=0..10
+        doc.transact_mut().node_mut("test").unwrap().push_text("abcdefghij"); // block: client=1, clock=0..10
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [1..3, 7..9])]);
@@ -1302,16 +1297,13 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut d1 = Doc::with_options(o.clone());
-        let t1 = d1.get_or_insert_text("test");
-
         o.client_id = ClientID::new(2);
         let mut d2 = Doc::with_options(o);
-        let t2 = d2.get_or_insert_text("test");
 
-        t1.push(&mut d1.transact_mut(), "aaaaa"); // client=1, clock=0..5
+        d1.transact_mut().node_mut("test").unwrap().push_text("aaaaa"); // client=1, clock=0..5
         exchange_updates(&mut [&mut d1, &mut d2]);
 
-        t2.push(&mut d2.transact_mut(), "bbb"); // client=2, clock=0..3
+        d2.transact_mut().node_mut("test").unwrap().push_text("bbb"); // client=2, clock=0..3
         exchange_updates(&mut [&mut d1, &mut d2]);
 
         let txn = d1.transact();
@@ -1327,21 +1319,18 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut d1 = Doc::with_options(o.clone());
-        let t1 = d1.get_or_insert_text("test");
-
         o.client_id = ClientID::new(2);
         let mut d2 = Doc::with_options(o);
-        let t2 = d2.get_or_insert_text("test");
 
-        t1.push(&mut d1.transact_mut(), "aaa"); // client=1, clock=0..3
+        d1.transact_mut().node_mut("test").unwrap().push_text("aaa"); // client=1, clock=0..3
         exchange_updates(&mut [&mut d1, &mut d2]);
 
         // d2 inserts in the middle, which will cause block split on integration
-        t2.insert(&mut d2.transact_mut(), 1, "bb"); // client=2, clock=0..2
+        d2.transact_mut().node_mut("test").unwrap().insert_text(1, "bb"); // client=2, clock=0..2
         exchange_updates(&mut [&mut d1, &mut d2]);
 
         // Append more to client=1
-        t1.push(&mut d1.transact_mut(), "cc"); // client=1, clock=3..5
+        d1.transact_mut().node_mut("test").unwrap().push_text("cc"); // client=1, clock=3..5
 
         // d1 store has client=1 blocks split around client=2's insertion.
         // A range covering clock 0..5 should yield all of them.
@@ -1362,8 +1351,7 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut doc = Doc::with_options(o);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abc"); // block: client=1, clock=0..3
+        doc.transact_mut().node_mut("test").unwrap().push_text("abc"); // block: client=1, clock=0..3
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(1), [0..100])]); // range far past actual blocks
@@ -1376,8 +1364,7 @@ mod test {
     fn iter_blocks_unknown_client() {
         // Range for a client that has no blocks in the store — yields nothing.
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abc");
+        doc.transact_mut().node_mut("test").unwrap().push_text("abc");
 
         let txn = doc.transact();
         let set = IdSet::from_iter([(ClientID::new(999), [0..10])]);
@@ -1390,8 +1377,7 @@ mod test {
     fn iter_blocks_empty_map() {
         // Empty IdMapInner — yields nothing.
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
-        txt.push(&mut doc.transact_mut(), "abc");
+        doc.transact_mut().node_mut("test").unwrap().push_text("abc");
 
         let txn = doc.transact();
         let empty = IdSet::default();
@@ -1406,16 +1392,13 @@ mod test {
         let mut o = Options::default();
         o.client_id = ClientID::new(1);
         let mut d1 = Doc::with_options(o.clone());
-        let t1 = d1.get_or_insert_text("test");
-
         o.client_id = ClientID::new(2);
         let mut d2 = Doc::with_options(o);
-        let t2 = d2.get_or_insert_text("test");
 
-        t1.push(&mut d1.transact_mut(), "abcdefghij"); // client=1, clock=0..10
+        d1.transact_mut().node_mut("test").unwrap().push_text("abcdefghij"); // client=1, clock=0..10
         exchange_updates(&mut [&mut d1, &mut d2]);
 
-        t2.push(&mut d2.transact_mut(), "ABCDEFGH"); // client=2, clock=0..8
+        d2.transact_mut().node_mut("test").unwrap().push_text("ABCDEFGH"); // client=2, clock=0..8
         exchange_updates(&mut [&mut d1, &mut d2]);
 
         let txn = d1.transact();

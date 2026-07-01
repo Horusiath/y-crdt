@@ -20,7 +20,7 @@ fn push_back() {
 fn push_front() {
     let mut doc = Doc::with_client_id(1);
     let mut txn = doc.transact_mut();
-    let mut a = txn.node_mut("array");
+    let mut a = txn.node_mut("array").unwrap();
 
     a.push_front("c");
     a.push_front("b");
@@ -77,7 +77,7 @@ fn len() {
         a.push_back(2); // len: 3
         a.push_back(3); // len: 4
 
-        a.remove_range(0, 1); // len: 3
+        a.remove(0, 1); // len: 3
         a.insert(0, 0); // len: 4
 
         assert_eq!(a.len(), 4);
@@ -85,13 +85,13 @@ fn len() {
     {
         let mut txn = d.transact_mut();
         let mut a = txn.node_mut("array").unwrap();
-        a.remove_range(1, 1); // len: 3
+        a.remove(1, 1); // len: 3
         assert_eq!(a.len(), 3);
 
         a.insert(1, 1); // len: 4
         assert_eq!(a.len(), 4);
 
-        a.remove_range(2, 1); // len: 3
+        a.remove(2, 1); // len: 3
         assert_eq!(a.len(), 3);
 
         a.insert(2, 2); // len: 4
@@ -102,7 +102,7 @@ fn len() {
     let mut a = txn.node_mut("array").unwrap();
     assert_eq!(a.len(), 4);
 
-    a.remove_range(1, 1);
+    a.remove(1, 1);
     assert_eq!(a.len(), 3);
 
     a.insert(1, 1);
@@ -139,9 +139,9 @@ fn insert_3_elements_try_re_get() {
 
     exchange_updates(&mut [&mut d1, &mut d2]);
 
-    let mut t2 = d2.transact();
-    let mut a2 = t2.node_mut("array").unwrap();
-    let actual: Vec<_> = a2.iter(&t2).collect();
+    let t2 = d2.transact();
+    let a2 = t2.node("array").unwrap();
+    let actual: Vec<_> = a2.iter().collect();
     assert_eq!(
         actual,
         vec![Out::from(1.0), Out::from(true), Out::from(false)]
@@ -151,23 +151,13 @@ fn insert_3_elements_try_re_get() {
 #[test]
 fn concurrent_insert_with_3_conflicts() {
     let mut d1 = Doc::with_client_id(1);
-    let a = d1.get_or_insert_array("array");
-    {
-        let mut txn = d1.transact_mut();
-        a.insert(&mut txn, 0, 0);
-    }
+    d1.transact_mut().node_mut("array").unwrap().insert(0, 0);
 
     let mut d2 = Doc::with_client_id(2);
-    {
-        let mut txn = d1.transact_mut();
-        a.insert(&mut txn, 0, 1);
-    }
+    d1.transact_mut().node_mut("array").unwrap().insert(0, 1);
 
     let mut d3 = Doc::with_client_id(3);
-    {
-        let mut txn = d1.transact_mut();
-        a.insert(&mut txn, 0, 2);
-    }
+    d1.transact_mut().node_mut("array").unwrap().insert(0, 2);
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
 
@@ -180,17 +170,18 @@ fn concurrent_insert_with_3_conflicts() {
 }
 
 fn to_array(d: &mut Doc) -> Vec<Out> {
-    let a = d.get_or_insert_array("array");
-    a.iter(&d.transact()).collect()
+    d.transact().node("array").unwrap().iter().collect()
 }
 
 #[test]
 fn concurrent_insert_remove_with_3_conflicts() {
     let mut d1 = Doc::with_client_id(1);
     {
-        let a = d1.get_or_insert_array("array");
         let mut txn = d1.transact_mut();
-        a.insert_range(&mut txn, 0, ["x", "y", "z"]);
+        let mut a = txn.node_mut("array").unwrap();
+        a.insert(0, "x");
+        a.insert(1, "y");
+        a.insert(2, "z");
     }
     let mut d2 = Doc::with_client_id(2);
     let mut d3 = Doc::with_client_id(3);
@@ -199,17 +190,14 @@ fn concurrent_insert_remove_with_3_conflicts() {
 
     {
         // start state: [x,y,z]
-        let a1 = d1.get_or_insert_array("array");
-        let a2 = d2.get_or_insert_array("array");
-        let a3 = d3.get_or_insert_array("array");
-        let mut t1 = d1.transact_mut();
-        let mut t2 = d2.transact_mut();
-        let mut t3 = d3.transact_mut();
-
-        a1.insert(&mut t1, 1, 0); // [x,0,y,z]
-        a2.remove_range(&mut t2, 0, 1); // [y,z]
-        a2.remove_range(&mut t2, 1, 1); // [y]
-        a3.insert(&mut t3, 1, 2); // [x,2,y,z]
+        d1.transact_mut().node_mut("array").unwrap().insert(1, 0); // [x,0,y,z]
+        {
+            let mut t2 = d2.transact_mut();
+            let mut a2 = t2.node_mut("array").unwrap();
+            a2.remove(0, 1); // [y,z]
+            a2.remove(1, 1); // [y]
+        }
+        d3.transact_mut().node_mut("array").unwrap().insert(1, 2); // [x,2,y,z]
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
@@ -228,9 +216,9 @@ fn insertions_in_late_sync() {
     let mut d1 = Doc::with_client_id(1);
     {
         let mut txn = d1.transact_mut();
-        let a = txn.node_mut("array");
-        a.push_back(&mut txn, "x");
-        a.push_back(&mut txn, "y");
+        let mut a = txn.node_mut("array").unwrap();
+        a.push_back("x");
+        a.push_back("y");
     }
     let mut d2 = Doc::with_client_id(2);
     let mut d3 = Doc::with_client_id(3);
@@ -266,23 +254,18 @@ fn insertions_in_late_sync() {
 fn removals_in_late_sync() {
     let mut d1 = Doc::with_client_id(1);
     {
-        let a = d1.get_or_insert_array("array");
         let mut txn = d1.transact_mut();
-        a.push_back(&mut txn, "x");
-        a.push_back(&mut txn, "y");
+        let mut a = txn.node_mut("array").unwrap();
+        a.push_back("x");
+        a.push_back("y");
     }
     let mut d2 = Doc::with_client_id(2);
 
     exchange_updates(&mut [&mut d1, &mut d2]);
 
     {
-        let a1 = d1.get_or_insert_array("array");
-        let a2 = d2.get_or_insert_array("array");
-        let mut t1 = d1.transact_mut();
-        let mut t2 = d2.transact_mut();
-
-        a2.remove_range(&mut t2, 1, 1);
-        a1.remove_range(&mut t1, 0, 2);
+        d2.transact_mut().node_mut("array").unwrap().remove(1, 1);
+        d1.transact_mut().node_mut("array").unwrap().remove(0, 2);
     }
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -297,22 +280,17 @@ fn removals_in_late_sync() {
 fn insert_then_merge_delete_on_sync() {
     let mut d1 = Doc::with_client_id(1);
     {
-        let a = d1.get_or_insert_array("array");
         let mut txn = d1.transact_mut();
-        a.push_back(&mut txn, "x");
-        a.push_back(&mut txn, "y");
-        a.push_back(&mut txn, "z");
+        let mut a = txn.node_mut("array").unwrap();
+        a.push_back("x");
+        a.push_back("y");
+        a.push_back("z");
     }
     let mut d2 = Doc::with_client_id(2);
 
     exchange_updates(&mut [&mut d1, &mut d2]);
 
-    {
-        let a2 = d2.get_or_insert_array("array");
-        let mut t2 = d2.transact_mut();
-
-        a2.remove_range(&mut t2, 0, 3);
-    }
+    d2.transact_mut().node_mut("array").unwrap().remove(0, 3);
 
     exchange_updates(&mut [&mut d1, &mut d2]);
 
@@ -629,13 +607,13 @@ fn fuzzy_test_300() {
 #[test]
 fn get_at_removed_index() {
     let mut d1 = Doc::with_client_id(1);
-    let a1 = d1.get_or_insert_array("array");
     let mut t1 = d1.transact_mut();
+    let mut a1 = t1.node_mut("array").unwrap();
 
-    a1.insert_range(&mut t1, 0, ["A"]);
-    a1.remove(&mut t1, 0);
+    a1.insert(0, "A");
+    a1.remove(0, 1);
 
-    let actual = a1.get(&t1, 0);
+    let actual = a1.get(0);
     assert_eq!(actual, None);
 }
 
@@ -684,9 +662,7 @@ fn multi_threading() {
             sleep(Duration::from_millis(millis));
 
             let mut doc = d2.write().unwrap();
-            let array = doc.get_or_insert_array("test");
-            let mut txn = doc.transact_mut();
-            array.push_back(&mut txn, "a");
+            doc.transact_mut().node_mut("test").unwrap().push_back("a");
         }
     });
 
@@ -697,18 +673,15 @@ fn multi_threading() {
             sleep(Duration::from_millis(millis));
 
             let mut doc = d3.write().unwrap();
-            let array = doc.get_or_insert_array("test");
-            let mut txn = doc.transact_mut();
-            array.push_back(&mut txn, "b");
+            doc.transact_mut().node_mut("test").unwrap().push_back("b");
         }
     });
 
     h3.join().unwrap();
     h2.join().unwrap();
 
-    let mut doc = doc.write().unwrap();
-    let array = doc.get_or_insert_array("test");
-    let len = array.len(&doc.transact());
+    let doc = doc.write().unwrap();
+    let len = doc.transact().node("test").unwrap().len();
     assert_eq!(len, 20);
 }
 
@@ -716,26 +689,20 @@ fn multi_threading() {
 fn insert_empty_range() {
     let mut doc = Doc::with_client_id(1);
     let mut txn = doc.transact_mut();
-    let array = txn.get_or_insert_array("array");
+    {
+        let mut array = txn.node_mut("array").unwrap();
+        array.insert(0, 1);
+        array.push_back(2);
 
-    array.insert(&mut txn, 0, 1);
-    array.insert_range::<_, Any>(&mut txn, 1, []);
-    array.push_back(&mut txn, 2);
-
-    assert_eq!(
-        array.iter(&txn).collect::<Vec<_>>(),
-        vec![1.into(), 2.into()]
-    );
+        assert_eq!(array.iter().collect::<Vec<_>>(), vec![1.into(), 2.into()]);
+    }
 
     let data = txn.encode_state_as_update_v1(&StateVector::default());
 
     let mut doc2 = Doc::with_client_id(2);
     let mut txn = doc2.transact_mut();
-    let array = txn.get_or_insert_array("array");
     txn.apply_update(Update::decode_v1(&data).unwrap()).unwrap();
+    let array = txn.node("array").unwrap();
 
-    assert_eq!(
-        array.iter(&txn).collect::<Vec<_>>(),
-        vec![1.into(), 2.into()]
-    );
+    assert_eq!(array.iter().collect::<Vec<_>>(), vec![1.into(), 2.into()]);
 }

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use yrs::test_utils::exchange_updates;
 use yrs::updates::decoder::Decode;
 use yrs::{Any, Doc, NodeRef, Out, StateVector, Transaction, Update, any};
 
@@ -12,11 +13,10 @@ use yrs::{Any, Doc, NodeRef, Out, StateVector, Transaction, Update, any};
 fn map_basic() {
     let mut d1 = Doc::with_client_id(1);
     let mut t1 = d1.transact_mut();
-    let mut m1 = t1.node_mut("map");
+    let mut m1 = t1.node_mut("map").unwrap();
 
     let mut d2 = Doc::with_client_id(2);
     let mut t2 = d2.transact_mut();
-    let mut m2 = t2.node_mut("map");
 
     m1.insert_attr("number", 1);
     m1.insert_attr("string", "hello Y");
@@ -54,13 +54,14 @@ fn map_basic() {
         );
     }
 
-    compare_all(&m1);
+    drop(m1);
+    compare_all(&t1.node("map").unwrap());
 
     let update = t1.encode_state_as_update_v1(&StateVector::default());
     t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
         .unwrap();
 
-    compare_all(&m2);
+    compare_all(&t2.node("map").unwrap());
 }
 
 #[test]
@@ -90,14 +91,11 @@ fn map_get_set() {
 fn map_get_set_sync_with_conflicts() {
     let mut d1 = Doc::with_client_id(1);
     let mut t1 = d1.transact_mut();
-    let m1 = d1.get_or_insert_map("map");
+    t1.node_mut("map").unwrap().insert_attr("stuff", "c0");
 
     let mut d2 = Doc::with_client_id(2);
-    let m2 = d2.get_or_insert_map("map");
     let mut t2 = d2.transact_mut();
-
-    m1.insert(&mut t1, "stuff".to_owned(), "c0");
-    m2.insert(&mut t2, "stuff".to_owned(), "c1");
+    t2.node_mut("map").unwrap().insert_attr("stuff", "c1");
 
     let u1 = t1.encode_state_as_update_v1(&StateVector::default());
     let u2 = t2.encode_state_as_update_v1(&StateVector::default());
@@ -107,8 +105,8 @@ fn map_get_set_sync_with_conflicts() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    assert_eq!(m1.get(&t1, &"stuff".to_owned()), Some(Out::from("c1")));
-    assert_eq!(m2.get(&t2, &"stuff".to_owned()), Some(Out::from("c1")));
+    assert_eq!(t1.node("map").unwrap().attr("stuff"), Some(Out::from("c1")));
+    assert_eq!(t2.node("map").unwrap().attr("stuff"), Some(Out::from("c1")));
 }
 
 #[test]
@@ -140,28 +138,29 @@ fn map_len_remove() {
 #[test]
 fn map_clear() {
     let mut d1 = Doc::with_client_id(1);
-    let m1 = d1.get_or_insert_map("map");
     let mut t1 = d1.transact_mut();
+    {
+        let mut m1 = t1.node_mut("map").unwrap();
+        m1.insert_attr("key1", "c0");
+        m1.insert_attr("key2", "c1");
+        m1.clear_attrs();
 
-    m1.insert(&mut t1, "key1".to_owned(), "c0");
-    m1.insert(&mut t1, "key2".to_owned(), "c1");
-    m1.clear(&mut t1);
-
-    assert_eq!(m1.len(&t1), 0);
-    assert_eq!(m1.get(&t1, &"key1".to_owned()), None);
-    assert_eq!(m1.get(&t1, &"key2".to_owned()), None);
+        assert_eq!(m1.attr_len(), 0);
+        assert_eq!(m1.attr("key1"), None);
+        assert_eq!(m1.attr("key2"), None);
+    }
 
     let mut d2 = Doc::with_client_id(2);
-    let m2 = d2.get_or_insert_map("map");
     let mut t2 = d2.transact_mut();
 
     let u1 = t1.encode_state_as_update_v1(&StateVector::default());
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    assert_eq!(m2.len(&t2), 0);
-    assert_eq!(m2.get(&t2, &"key1".to_owned()), None);
-    assert_eq!(m2.get(&t2, &"key2".to_owned()), None);
+    let m2 = t2.node("map").unwrap();
+    assert_eq!(m2.attr_len(), 0);
+    assert_eq!(m2.attr("key1"), None);
+    assert_eq!(m2.attr("key2"), None);
 }
 
 #[test]
@@ -172,60 +171,54 @@ fn map_clear_sync() {
     let mut d4 = Doc::with_client_id(4);
 
     {
-        let m1 = d1.get_or_insert_map("map");
-        let m2 = d2.get_or_insert_map("map");
-        let m3 = d3.get_or_insert_map("map");
-
         let mut t1 = d1.transact_mut();
         let mut t2 = d2.transact_mut();
         let mut t3 = d3.transact_mut();
 
-        m1.insert(&mut t1, "key1".to_owned(), "c0");
-        m2.insert(&mut t2, "key1".to_owned(), "c1");
-        m2.insert(&mut t2, "key1".to_owned(), "c2");
-        m3.insert(&mut t3, "key1".to_owned(), "c3");
+        t1.node_mut("map").unwrap().insert_attr("key1", "c0");
+        t2.node_mut("map").unwrap().insert_attr("key1", "c1");
+        t2.node_mut("map").unwrap().insert_attr("key1", "c2");
+        t3.node_mut("map").unwrap().insert_attr("key1", "c3");
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3, &mut d4]);
 
     {
-        let m1 = d1.get_or_insert_map("map");
-        let m2 = d2.get_or_insert_map("map");
-        let m3 = d3.get_or_insert_map("map");
-
         let mut t1 = d1.transact_mut();
         let mut t2 = d2.transact_mut();
         let mut t3 = d3.transact_mut();
 
-        m1.insert(&mut t1, "key2".to_owned(), "c0");
-        m2.insert(&mut t2, "key2".to_owned(), "c1");
-        m2.insert(&mut t2, "key2".to_owned(), "c2");
-        m3.insert(&mut t3, "key2".to_owned(), "c3");
-        m3.clear(&mut t3);
+        t1.node_mut("map").unwrap().insert_attr("key2", "c0");
+        t2.node_mut("map").unwrap().insert_attr("key2", "c1");
+        t2.node_mut("map").unwrap().insert_attr("key2", "c2");
+        t3.node_mut("map").unwrap().insert_attr("key2", "c3");
+        t3.node_mut("map").unwrap().clear_attrs();
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3, &mut d4]);
 
-    for mut doc in [d1, d2, d3, d4] {
-        let map = doc.get_or_insert_map("map");
+    for doc in [d1, d2, d3, d4] {
+        let client_id = doc.client_id();
+        let txn = doc.transact();
+        let map = txn.node("map").unwrap();
 
         assert_eq!(
-            map.get(&doc.transact(), &"key1".to_owned()),
+            map.attr("key1"),
             None,
             "'key1' entry for peer {} should be removed",
-            doc.client_id()
+            client_id
         );
         assert_eq!(
-            map.get(&doc.transact(), &"key2".to_owned()),
+            map.attr("key2"),
             None,
             "'key2' entry for peer {} should be removed",
-            doc.client_id()
+            client_id
         );
         assert_eq!(
-            map.len(&doc.transact()),
+            map.attr_len(),
             0,
             "all entries for peer {} should be removed",
-            doc.client_id()
+            client_id
         );
     }
 }
@@ -237,30 +230,28 @@ fn map_get_set_with_3_way_conflicts() {
     let mut d3 = Doc::with_client_id(3);
 
     {
-        let m1 = d1.get_or_insert_map("map");
-        let m2 = d2.get_or_insert_map("map");
-        let m3 = d3.get_or_insert_map("map");
-
         let mut t1 = d1.transact_mut();
         let mut t2 = d2.transact_mut();
         let mut t3 = d3.transact_mut();
 
-        m1.insert(&mut t1, "stuff".to_owned(), "c0");
-        m2.insert(&mut t2, "stuff".to_owned(), "c1");
-        m2.insert(&mut t2, "stuff".to_owned(), "c2");
-        m3.insert(&mut t3, "stuff".to_owned(), "c3");
+        t1.node_mut("map").unwrap().insert_attr("stuff", "c0");
+        t2.node_mut("map").unwrap().insert_attr("stuff", "c1");
+        t2.node_mut("map").unwrap().insert_attr("stuff", "c2");
+        t3.node_mut("map").unwrap().insert_attr("stuff", "c3");
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
 
-    for mut doc in [d1, d2, d3] {
-        let map = doc.get_or_insert_map("map");
+    for doc in [d1, d2, d3] {
+        let client_id = doc.client_id();
+        let txn = doc.transact();
+        let map = txn.node("map").unwrap();
 
         assert_eq!(
-            map.get(&doc.transact(), &"stuff".to_owned()),
+            map.attr("stuff"),
             Some(Out::from("c3")),
             "peer {} - map entry resolved to unexpected value",
-            doc.client_id()
+            client_id
         );
     }
 }
@@ -273,50 +264,43 @@ fn map_get_set_remove_with_3_way_conflicts() {
     let mut d4 = Doc::with_client_id(4);
 
     {
-        let m1 = d1.get_or_insert_map("map");
-        let m2 = d2.get_or_insert_map("map");
-        let m3 = d3.get_or_insert_map("map");
-
         let mut t1 = d1.transact_mut();
         let mut t2 = d2.transact_mut();
         let mut t3 = d3.transact_mut();
 
-        m1.insert(&mut t1, "key1".to_owned(), "c0");
-        m2.insert(&mut t2, "key1".to_owned(), "c1");
-        m2.insert(&mut t2, "key1".to_owned(), "c2");
-        m3.insert(&mut t3, "key1".to_owned(), "c3");
+        t1.node_mut("map").unwrap().insert_attr("key1", "c0");
+        t2.node_mut("map").unwrap().insert_attr("key1", "c1");
+        t2.node_mut("map").unwrap().insert_attr("key1", "c2");
+        t3.node_mut("map").unwrap().insert_attr("key1", "c3");
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3, &mut d4]);
 
     {
-        let m1 = d1.get_or_insert_map("map");
-        let m2 = d2.get_or_insert_map("map");
-        let m3 = d3.get_or_insert_map("map");
-        let m4 = d4.get_or_insert_map("map");
-
         let mut t1 = d1.transact_mut();
         let mut t2 = d2.transact_mut();
         let mut t3 = d3.transact_mut();
         let mut t4 = d4.transact_mut();
 
-        m1.insert(&mut t1, "key1".to_owned(), "deleteme");
-        m2.insert(&mut t2, "key1".to_owned(), "c1");
-        m3.insert(&mut t3, "key1".to_owned(), "c2");
-        m4.insert(&mut t4, "key1".to_owned(), "c3");
-        m4.remove(&mut t4, &"key1".to_owned());
+        t1.node_mut("map").unwrap().insert_attr("key1", "deleteme");
+        t2.node_mut("map").unwrap().insert_attr("key1", "c1");
+        t3.node_mut("map").unwrap().insert_attr("key1", "c2");
+        t4.node_mut("map").unwrap().insert_attr("key1", "c3");
+        t4.node_mut("map").unwrap().remove_attr("key1");
     }
 
     exchange_updates(&mut [&mut d1, &mut d2, &mut d3, &mut d4]);
 
-    for mut doc in [d1, d2, d3, d4] {
-        let map = doc.get_or_insert_map("map");
+    for doc in [d1, d2, d3, d4] {
+        let client_id = doc.client_id();
+        let txn = doc.transact();
+        let map = txn.node("map").unwrap();
 
         assert_eq!(
-            map.get(&doc.transact(), &"key1".to_owned()),
+            map.attr("key1"),
             None,
             "entry 'key1' on peer {} should be removed",
-            doc.client_id()
+            client_id
         );
     }
 }
@@ -688,9 +672,8 @@ fn multi_threading() {
             sleep(Duration::from_millis(millis));
 
             let mut doc = d2.write().unwrap();
-            let map = doc.get_or_insert_map("test");
             let mut txn = doc.transact_mut();
-            map.insert(&mut txn, "key", 1);
+            txn.node_mut("test").unwrap().insert_attr("key", 1);
         }
     });
 
@@ -701,21 +684,19 @@ fn multi_threading() {
             sleep(Duration::from_millis(millis));
 
             let mut doc = d3.write().unwrap();
-            let map = doc.get_or_insert_map("test");
             let mut txn = doc.transact_mut();
-            map.insert(&mut txn, "key", 2);
+            txn.node_mut("test").unwrap().insert_attr("key", 2);
         }
     });
 
     h3.join().unwrap();
     h2.join().unwrap();
 
-    let mut doc = doc.write().unwrap();
-    let map = doc.get_or_insert_map("test");
+    let doc = doc.write().unwrap();
     let txn = doc.transact();
-    let value = map.get(&txn, "key").unwrap().to_json(&txn);
+    let value = txn.node("test").unwrap().attr("key").unwrap();
 
-    assert!(value == 1.into() || value == 2.into())
+    assert!(value == Out::from(1) || value == Out::from(2))
 }
 
 #[test]

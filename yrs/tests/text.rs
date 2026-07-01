@@ -5,7 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use yrs::Doc;
+use yrs::node::Attrs;
+use yrs::test_utils::{exchange_updates, run_scenario};
+use yrs::updates::decoder::Decode;
+use yrs::updates::encoder::Encode;
+use yrs::{Doc, OffsetKind, Options, StateVector, Update};
 
 #[test]
 fn insert_empty_string() {
@@ -39,81 +43,79 @@ fn append_single_character_blocks() {
 #[test]
 fn append_mutli_character_blocks() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "hello");
-    txt.insert(&mut txn, 5, " ");
-    txt.insert(&mut txn, 6, "world");
+    txt.insert_text(0, "hello");
+    txt.insert_text(5, " ");
+    txt.insert_text(6, "world");
 
-    assert_eq!(txt.get_string(&txn).as_str(), "hello world");
+    assert_eq!(txt.to_string(), "hello world");
 }
 
 #[test]
 fn prepend_single_character_blocks() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "a");
-    txt.insert(&mut txn, 0, "b");
-    txt.insert(&mut txn, 0, "c");
+    txt.insert_text(0, "a");
+    txt.insert_text(0, "b");
+    txt.insert_text(0, "c");
 
-    assert_eq!(txt.get_string(&txn).as_str(), "cba");
+    assert_eq!(txt.to_string(), "cba");
 }
 
 #[test]
 fn prepend_mutli_character_blocks() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "hello");
-    txt.insert(&mut txn, 0, " ");
-    txt.insert(&mut txn, 0, "world");
+    txt.insert_text(0, "hello");
+    txt.insert_text(0, " ");
+    txt.insert_text(0, "world");
 
-    assert_eq!(txt.get_string(&txn).as_str(), "world hello");
+    assert_eq!(txt.to_string(), "world hello");
 }
 
 #[test]
 fn insert_after_block() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "hello");
-    txt.insert(&mut txn, 5, " ");
-    txt.insert(&mut txn, 6, "world");
-    txt.insert(&mut txn, 6, "beautiful ");
+    txt.insert_text(0, "hello");
+    txt.insert_text(5, " ");
+    txt.insert_text(6, "world");
+    txt.insert_text(6, "beautiful ");
 
-    assert_eq!(txt.get_string(&txn).as_str(), "hello beautiful world");
+    assert_eq!(txt.to_string(), "hello beautiful world");
 }
 
 #[test]
 fn insert_inside_of_block() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "it was expected");
-    txt.insert(&mut txn, 6, " not");
+    txt.insert_text(0, "it was expected");
+    txt.insert_text(6, " not");
 
-    assert_eq!(txt.get_string(&txn).as_str(), "it was not expected");
+    assert_eq!(txt.to_string(), "it was not expected");
 }
 
 #[test]
 fn insert_concurrent_root() {
     let mut d1 = Doc::with_client_id(1);
-    let txt1 = d1.get_or_insert_text("test");
     let mut t1 = d1.transact_mut();
 
-    txt1.insert(&mut t1, 0, "hello ");
+    t1.node_mut("test").unwrap().insert_text(0, "hello ");
 
     let mut d2 = Doc::with_client_id(2);
-    let txt2 = d2.get_or_insert_text("test");
     let mut t2 = d2.transact_mut();
 
-    txt2.insert(&mut t2, 0, "world");
+    t2.node_mut("test").unwrap().insert_text(0, "world");
 
     let d1_sv = t1.state_vector().encode_v1();
     let d2_sv = t2.state_vector().encode_v1();
@@ -126,8 +128,8 @@ fn insert_concurrent_root() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    let a = txt1.get_string(&t1);
-    let b = txt2.get_string(&t2);
+    let a = t1.node("test").unwrap().to_string();
+    let b = t2.node("test").unwrap().to_string();
 
     assert_eq!(a, b);
     assert_eq!(a.as_str(), "hello world");
@@ -136,14 +138,15 @@ fn insert_concurrent_root() {
 #[test]
 fn insert_concurrent_in_the_middle() {
     let mut d1 = Doc::with_client_id(1);
-    let txt1 = d1.get_or_insert_text("test");
     let mut t1 = d1.transact_mut();
 
-    txt1.insert(&mut t1, 0, "I expect that");
-    assert_eq!(txt1.get_string(&t1).as_str(), "I expect that");
+    t1.node_mut("test").unwrap().insert_text(0, "I expect that");
+    assert_eq!(
+        t1.node("test").unwrap().to_string().as_str(),
+        "I expect that"
+    );
 
     let mut d2 = Doc::with_client_id(2);
-    let txt2 = d2.get_or_insert_text("test");
     let mut t2 = d2.transact_mut();
 
     let d2_sv = t2.state_vector().encode_v1();
@@ -151,14 +154,17 @@ fn insert_concurrent_in_the_middle() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    assert_eq!(txt2.get_string(&t2).as_str(), "I expect that");
+    let actual = t2.node("test").unwrap().to_string();
+    assert_eq!(actual, "I expect that");
 
-    txt2.insert(&mut t2, 1, " have");
-    txt2.insert(&mut t2, 13, "ed");
-    assert_eq!(txt2.get_string(&t2).as_str(), "I have expected that");
+    let mut txt2 = t2.node_mut("test").unwrap();
+    txt2.insert_text(1, " have");
+    txt2.insert_text(13, "ed");
+    assert_eq!(txt2.to_string(), "I have expected that");
 
-    txt1.insert(&mut t1, 1, " didn't");
-    assert_eq!(txt1.get_string(&t1).as_str(), "I didn't expect that");
+    let mut txt1 = t1.node_mut("test").unwrap();
+    txt1.insert_text(1, " didn't");
+    assert_eq!(txt1.to_string(), "I didn't expect that");
 
     let d2_sv = t2.state_vector().encode_v1();
     let d1_sv = t1.state_vector().encode_v1();
@@ -169,24 +175,23 @@ fn insert_concurrent_in_the_middle() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    let a = txt1.get_string(&t1);
-    let b = txt2.get_string(&t2);
+    let a = t1.node("test").unwrap().to_string();
+    let b = t2.node("test").unwrap().to_string();
 
     assert_eq!(a, b);
-    assert_eq!(a.as_str(), "I didn't have expected that");
+    assert_eq!(a, "I didn't have expected that");
 }
 
 #[test]
 fn append_concurrent() {
     let mut d1 = Doc::with_client_id(1);
-    let txt1 = d1.get_or_insert_text("test");
     let mut t1 = d1.transact_mut();
 
-    txt1.insert(&mut t1, 0, "aaa");
-    assert_eq!(txt1.get_string(&t1).as_str(), "aaa");
+    let mut txt1 = t1.node_mut("test").unwrap();
+    txt1.insert_text(0, "aaa");
+    assert_eq!(txt1.to_string(), "aaa");
 
     let mut d2 = Doc::with_client_id(2);
-    let txt2 = d2.get_or_insert_text("test");
     let mut t2 = d2.transact_mut();
 
     let d2_sv = t2.state_vector().encode_v1();
@@ -194,14 +199,15 @@ fn append_concurrent() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    assert_eq!(txt2.get_string(&t2).as_str(), "aaa");
+    let mut txt2 = t2.node("test").unwrap();
+    assert_eq!(txt2.to_string().as_str(), "aaa");
 
-    txt2.insert(&mut t2, 3, "bbb");
-    txt2.insert(&mut t2, 6, "bbb");
-    assert_eq!(txt2.get_string(&t2).as_str(), "aaabbbbbb");
+    txt2.insert_text(3, "bbb");
+    txt2.insert_text(6, "bbb");
+    assert_eq!(txt2.to_string(), "aaabbbbbb");
 
-    txt1.insert(&mut t1, 3, "aaa");
-    assert_eq!(txt1.get_string(&t1).as_str(), "aaaaaa");
+    t1.node_mut("test").unwrap().insert_text(3, "aaa");
+    assert_eq!(t1.node("test").unwrap().to_string(), "aaaaaa");
 
     let d2_sv = t2.state_vector().encode_v1();
     let d1_sv = t1.state_vector().encode_v1();
@@ -213,8 +219,8 @@ fn append_concurrent() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    let a = txt1.get_string(&t1);
-    let b = txt2.get_string(&t2);
+    let a = t1.node("test").unwrap().to_string();
+    let b = t2.node("test").unwrap().to_string();
 
     assert_eq!(a.as_str(), "aaaaaabbbbbb");
     assert_eq!(a, b);
@@ -223,116 +229,117 @@ fn append_concurrent() {
 #[test]
 fn delete_single_block_start() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "bbb");
-    txt.insert(&mut txn, 0, "aaa");
-    txt.remove_range(&mut txn, 0, 3);
+    txt.insert_text(0, "bbb");
+    txt.insert_text(0, "aaa");
+    txt.remove(0, 3);
 
-    assert_eq!(txt.len(&txn), 3);
-    assert_eq!(txt.get_string(&txn).as_str(), "bbb");
+    assert_eq!(txt.len(), 3);
+    assert_eq!(txt.to_string(), "bbb");
 }
 
 #[test]
 fn delete_single_block_end() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "bbb");
-    txt.insert(&mut txn, 0, "aaa");
-    txt.remove_range(&mut txn, 3, 3);
+    txt.insert_text(0, "bbb");
+    txt.insert_text(0, "aaa");
+    txt.remove(3, 3);
 
-    assert_eq!(txt.get_string(&txn).as_str(), "aaa");
+    assert_eq!(txt.to_string(), "aaa");
 }
 
 #[test]
 fn delete_multiple_whole_blocks() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "a");
-    txt.insert(&mut txn, 1, "b");
-    txt.insert(&mut txn, 2, "c");
+    txt.insert_text(0, "a");
+    txt.insert_text(1, "b");
+    txt.insert_text(2, "c");
 
-    txt.remove_range(&mut txn, 1, 1);
-    assert_eq!(txt.get_string(&txn).as_str(), "ac");
+    txt.remove(1, 1);
+    assert_eq!(txt.to_string(), "ac");
 
-    txt.remove_range(&mut txn, 1, 1);
-    assert_eq!(txt.get_string(&txn).as_str(), "a");
+    txt.remove(1, 1);
+    assert_eq!(txt.to_string(), "a");
 
-    txt.remove_range(&mut txn, 0, 1);
-    assert_eq!(txt.get_string(&txn).as_str(), "");
+    txt.remove(0, 1);
+    assert_eq!(txt.to_string(), "");
 }
 
 #[test]
 fn delete_slice_of_block() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "abc");
-    txt.remove_range(&mut txn, 1, 1);
+    txt.insert_text(0, "abc");
+    txt.remove(1, 1);
 
-    assert_eq!(txt.get_string(&txn).as_str(), "ac");
+    assert_eq!(txt.to_string(), "ac");
 }
 
 #[test]
 fn delete_multiple_blocks_with_slicing() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "hello ");
-    txt.insert(&mut txn, 6, "beautiful");
-    txt.insert(&mut txn, 15, " world");
+    txt.insert_text(0, "hello ");
+    txt.insert_text(6, "beautiful");
+    txt.insert_text(15, " world");
 
-    txt.remove_range(&mut txn, 5, 11);
-    assert_eq!(txt.get_string(&txn).as_str(), "helloworld");
+    txt.remove(5, 11);
+    assert_eq!(txt.to_string(), "helloworld");
 }
 
 #[test]
 fn insert_after_delete() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "hello ");
-    txt.remove_range(&mut txn, 0, 5);
-    txt.insert(&mut txn, 1, "world");
+    txt.insert_text(0, "hello ");
+    txt.remove(0, 5);
+    txt.insert_text(1, "world");
 
-    assert_eq!(txt.get_string(&txn).as_str(), " world");
+    assert_eq!(txt.to_string(), " world");
 }
 
 #[test]
 fn concurrent_insert_delete() {
     let mut d1 = Doc::with_client_id(1);
-    let txt1 = d1.get_or_insert_text("test");
     let mut t1 = d1.transact_mut();
 
-    txt1.insert(&mut t1, 0, "hello world");
-    assert_eq!(txt1.get_string(&t1).as_str(), "hello world");
+    let mut txt1 = t1.node_mut("test").unwrap();
+    txt1.insert_text(0, "hello world");
+    assert_eq!(txt1.to_string(), "hello world");
 
     let u1 = t1.encode_state_as_update_v1(&StateVector::default());
 
     let mut d2 = Doc::with_client_id(2);
-    let txt2 = d2.get_or_insert_text("test");
     let mut t2 = d2.transact_mut();
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
-    assert_eq!(txt2.get_string(&t2).as_str(), "hello world");
+    assert_eq!(t2.node("test").unwrap().to_string().as_str(), "hello world");
 
-    txt1.insert(&mut t1, 5, " beautiful");
-    txt1.insert(&mut t1, 21, "!");
-    txt1.remove_range(&mut t1, 0, 5);
-    assert_eq!(txt1.get_string(&t1).as_str(), " beautiful world!");
+    let mut txt1 = t1.node_mut("test").unwrap();
+    txt1.insert_text(5, " beautiful");
+    txt1.insert_text(21, "!");
+    txt1.remove(0, 5);
+    assert_eq!(txt1.to_string(), " beautiful world!");
 
-    txt2.remove_range(&mut t2, 5, 5);
-    txt2.remove_range(&mut t2, 0, 1);
-    txt2.insert(&mut t2, 0, "H");
-    assert_eq!(txt2.get_string(&t2).as_str(), "Hellod");
+    let mut txt2 = t2.node_mut("test").unwrap();
+    txt2.remove(5, 5);
+    txt2.remove(0, 1);
+    txt2.insert_text(0, "H");
+    assert_eq!(txt2.to_string(), "Hellod");
 
     let sv1 = t1.state_vector().encode_v1();
     let sv2 = t2.state_vector().encode_v1();
@@ -344,8 +351,8 @@ fn concurrent_insert_delete() {
     t2.apply_update(Update::decode_v1(u1.as_slice()).unwrap())
         .unwrap();
 
-    let a = txt1.get_string(&t1);
-    let b = txt2.get_string(&t2);
+    let a = t1.node("test").unwrap().to_string();
+    let b = t2.node("test").unwrap().to_string();
 
     assert_eq!(a, b);
     assert_eq!(a, "H beautifuld!".to_owned());
@@ -469,21 +476,21 @@ fn insert_and_remove_event_changes() {
 
 fn text_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 2] {
     fn insert_text(doc: &mut Doc, rng: &mut Rng) {
-        let ytext = doc.get_or_insert_text("text");
         let mut txn = doc.transact_mut();
-        let pos = rng.between(0, ytext.len(&txn));
+        let mut ytext = txn.node_mut("text").unwrap();
+        let pos = rng.between(0, ytext.len());
         let word = rng.random_string();
-        ytext.insert(&mut txn, pos, word.as_str());
+        ytext.insert_text(pos, word.as_str());
     }
 
     fn delete_text(doc: &mut Doc, rng: &mut Rng) {
-        let ytext = doc.get_or_insert_text("text");
         let mut txn = doc.transact_mut();
-        let len = ytext.len(&txn);
+        let mut ytext = txn.node_mut("text").unwrap();
+        let len = ytext.len();
         if len > 0 {
             let pos = rng.between(0, len - 1);
             let to_delete = rng.between(2, len - pos);
-            ytext.remove_range(&mut txn, pos, to_delete);
+            ytext.remove(pos, to_delete);
         }
     }
 
@@ -862,129 +869,121 @@ fn text_diff_adjacent() {
 #[test]
 fn text_remove_4_byte_range() {
     let mut d1 = Doc::new();
-    let txt = d1.get_or_insert_text("test");
 
-    txt.insert(&mut d1.transact_mut(), 0, "😭😊");
+    d1.transact_mut()
+        .node_mut("test")
+        .unwrap()
+        .insert_text(0, "😭😊");
 
     let mut d2 = Doc::new();
     exchange_updates(&mut [&mut d1, &mut d2]);
 
-    txt.remove_range(&mut d1.transact_mut(), 0, "😭".len() as u32);
-    assert_eq!(txt.get_string(&d1.transact()).as_str(), "😊");
+    d1.transact_mut()
+        .node_mut("test")
+        .unwrap()
+        .remove(0, "😭".len() as u32);
+    assert_eq!(d1.transact().node("test").unwrap().to_string(), "😊");
 
     exchange_updates(&mut [&mut d1, &mut d2]);
-    let txt = d2.get_or_insert_text("test");
-    assert_eq!(txt.get_string(&d2.transact()).as_str(), "😊");
+    assert_eq!(d2.transact().node("test").unwrap().to_string(), "😊");
 }
 
 #[test]
 fn text_remove_3_byte_range() {
     let mut d1 = Doc::new();
-    let txt = d1.get_or_insert_text("test");
 
-    txt.insert(&mut d1.transact_mut(), 0, "⏰⏳");
+    d1.transact_mut()
+        .node_mut("test")
+        .unwrap()
+        .insert_text(0, "⏰⏳");
 
     let mut d2 = Doc::new();
     exchange_updates(&mut [&mut d1, &mut d2]);
 
-    txt.remove_range(&mut d1.transact_mut(), 0, "⏰".len() as u32);
-    assert_eq!(txt.get_string(&d1.transact()).as_str(), "⏳");
+    d1.transact_mut()
+        .node_mut("test")
+        .unwrap()
+        .remove(0, "⏰".len() as u32);
+    assert_eq!(d1.transact().node("test").unwrap().to_string(), "⏳");
 
     exchange_updates(&mut [&mut d1, &mut d2]);
-    let txt = d2.get_or_insert_text("test");
-    assert_eq!(txt.get_string(&d2.transact()).as_str(), "⏳");
+    assert_eq!(d2.transact().node("test").unwrap().to_string(), "⏳");
 }
 #[test]
 fn delete_4_byte_character_from_middle() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "😊😭");
+    txt.insert_text(0, "😊😭");
     // uncomment the following line will pass the test
-    // txt.format(&mut txn, 0, "😊".len() as u32, HashMap::new());
-    txt.remove_range(&mut txn, "😊".len() as u32, "😭".len() as u32);
+    // txt.format(0, "😊".len() as u32, HashMap::new());
+    txt.remove("😊".len() as u32, "😭".len() as u32);
 
-    assert_eq!(txt.get_string(&txn).as_str(), "😊");
+    assert_eq!(txt.to_string(), "😊");
 }
 
 #[test]
 fn delete_3_byte_character_from_middle_1() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "⏰⏳");
+    txt.insert_text(0, "⏰⏳");
     // uncomment the following line will pass the test
-    // txt.format(&mut txn, 0, "⏰".len() as u32, HashMap::new());
-    txt.remove_range(&mut txn, "⏰".len() as u32, "⏳".len() as u32);
+    // txt.format(0, "⏰".len() as u32, HashMap::new());
+    txt.remove("⏰".len() as u32, "⏳".len() as u32);
 
-    assert_eq!(txt.get_string(&txn).as_str(), "⏰");
+    assert_eq!(txt.to_string(), "⏰");
 }
 
 #[test]
 fn delete_3_byte_character_from_middle_2() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "👯🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨");
+    txt.insert_text(0, "👯🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨");
 
-    txt.format(
-        &mut txn,
-        "👯".len() as u32,
-        "🙇‍♀️🙇‍♀️".len() as u32,
-        HashMap::new(),
-    );
-    txt.remove_range(&mut txn, "👯🙇‍♀️🙇‍♀️".len() as u32, "⏰".len() as u32); // will delete ⏰ and 👩‍❤️‍💋‍👨
+    txt.format("👯".len() as u32, "🙇‍♀️🙇‍♀️".len() as u32, HashMap::new());
+    txt.remove("👯🙇‍♀️🙇‍♀️".len() as u32, "⏰".len() as u32); // will delete ⏰ and 👩‍❤️‍💋‍👨
 
-    assert_eq!(txt.get_string(&txn).as_str(), "👯🙇‍♀️🙇‍♀️👩‍❤️‍💋‍👨");
+    assert_eq!(txt.to_string(), "👯🙇‍♀️🙇‍♀️👩‍❤️‍💋‍👨");
 }
 
 #[test]
 fn delete_3_byte_character_from_middle_after_insert_and_format() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨");
-    txt.insert(&mut txn, 0, "👯");
-    txt.format(
-        &mut txn,
-        "👯".len() as u32,
-        "🙇‍♀️🙇‍♀️".len() as u32,
-        HashMap::new(),
-    );
+    txt.insert_text(0, "🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨");
+    txt.insert_text(0, "👯");
+    txt.format("👯".len() as u32, "🙇‍♀️🙇‍♀️".len() as u32, HashMap::new());
 
     // will delete ⏰ and 👩‍❤️‍💋‍👨
-    txt.remove_range(&mut txn, "👯🙇‍♀️🙇‍♀️".len() as u32, "⏰".len() as u32); // will delete ⏰ and 👩‍❤️‍💋‍👨
+    txt.remove("👯🙇‍♀️🙇‍♀️".len() as u32, "⏰".len() as u32); // will delete ⏰ and 👩‍❤️‍💋‍👨
 
-    assert_eq!(&txt.get_string(&txn), "👯🙇‍♀️🙇‍♀️👩‍❤️‍💋‍👨");
+    assert_eq!(&txt.to_string(), "👯🙇‍♀️🙇‍♀️👩‍❤️‍💋‍👨");
 }
 
 #[test]
 fn delete_multi_byte_character_from_middle_after_insert_and_format() {
     let mut doc = Doc::with_client_id(1);
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
+    let mut txt = txn.node_mut("test").unwrap();
 
-    txt.insert(&mut txn, 0, "❤️❤️🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨👩‍❤️‍💋‍👨");
-    txt.insert(&mut txn, 0, "👯");
+    txt.insert_text(0, "❤️❤️🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨👩‍❤️‍💋‍👨");
+    txt.insert_text(0, "👯");
+    txt.format("👯".len() as u32, "❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32, HashMap::new());
+    txt.insert_text("👯❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32, "⏰");
     txt.format(
-        &mut txn,
-        "👯".len() as u32,
-        "❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32,
-        HashMap::new(),
-    );
-    txt.insert(&mut txn, "👯❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32, "⏰");
-    txt.format(
-        &mut txn,
         "👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰".len() as u32,
         "👩‍❤️‍💋‍👨".len() as u32,
         HashMap::new(),
     );
-    txt.remove_range(&mut txn, "👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰👩‍❤️‍💋‍👩".len() as u32, "👩‍❤️‍💋‍👨".len() as u32);
-    assert_eq!(txt.get_string(&txn).as_str(), "👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰👩‍❤️‍💋‍👨");
+    txt.remove("👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰👩‍❤️‍💋‍👩".len() as u32, "👩‍❤️‍💋‍👨".len() as u32);
+    assert_eq!(txt.to_string().as_str(), "👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰👩‍❤️‍💋‍👨");
 }
 
 #[test]
@@ -1009,25 +1008,26 @@ fn insert_string_with_no_attribute() {
 #[test]
 fn insert_empty_string_with_attributes() {
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
 
-    let attrs = Attrs::from([("a".into(), "a".into())]);
-    txt.insert(&mut txn, 0, "abc");
-    txt.insert(&mut txn, 1, ""); // nothing changes
-    txt.insert_with_attributes(&mut txn, 1, "", attrs); // nothing changes
+    {
+        let attrs = Attrs::from([("a".into(), "a".into())]);
+        let mut txt = txn.node_mut("test").unwrap();
+        txt.insert_text(0, "abc");
+        txt.insert_text(1, ""); // nothing changes
+        txt.insert_text_with(1, "", attrs); // nothing changes
 
-    assert_eq!(txt.get_string(&txn).as_str(), "abc");
+        assert_eq!(txt.to_string(), "abc");
+    }
 
     let bin = txn.encode_state_as_update_v1(&StateVector::default());
 
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
     let mut txn = doc.transact_mut();
     let update = Update::decode_v1(bin.as_slice()).unwrap();
     txn.apply_update(update).unwrap();
 
-    assert_eq!(txt.get_string(&txn).as_str(), "abc");
+    assert_eq!(txn.node("test").unwrap().to_string(), "abc");
 }
 
 #[test]
@@ -1105,9 +1105,8 @@ fn multi_threading() {
             sleep(Duration::from_millis(millis));
 
             let mut doc = d2.write().unwrap();
-            let txt = doc.get_or_insert_text("test");
             let mut txn = doc.transact_mut();
-            txt.push(&mut txn, "a");
+            txn.node_mut("test").unwrap().push_text("a");
         }
     });
 
@@ -1118,18 +1117,16 @@ fn multi_threading() {
             sleep(Duration::from_millis(millis));
 
             let mut doc = d3.write().unwrap();
-            let txt = doc.get_or_insert_text("test");
             let mut txn = doc.transact_mut();
-            txt.push(&mut txn, "b");
+            txn.node_mut("test").unwrap().push_text("b");
         }
     });
 
     h3.join().unwrap();
     h2.join().unwrap();
 
-    let mut doc = doc.write().unwrap();
-    let txt = doc.get_or_insert_text("test");
-    let len = txt.len(&doc.transact());
+    let doc = doc.write().unwrap();
+    let len = doc.transact().node("test").unwrap().len();
     assert_eq!(len, 20);
 }
 

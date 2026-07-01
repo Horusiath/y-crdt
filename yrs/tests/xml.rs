@@ -383,12 +383,13 @@ fn format_attributes_decode_compatibility_v1() {
     ];
     let update = Update::decode_v1(data).unwrap();
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
-    let txt: &XmlTextRef = txt.as_ref();
     let mut txn = doc.transact_mut();
 
     txn.apply_update(update).unwrap();
-    assert_eq!(txt.get_string(&txn), "<i>hello </i><b><i>world</i></b>");
+    assert_eq!(
+        txn.node("test").unwrap().to_string(),
+        "<i>hello </i><b><i>world</i></b>"
+    );
 
     let actual = txn.encode_state_as_update_v1(&StateVector::default());
     assert_eq!(actual, data);
@@ -403,12 +404,13 @@ fn format_attributes_decode_compatibility_v2() {
     ];
     let update = Update::decode_v2(data).unwrap();
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("test");
-    let txt: &XmlTextRef = txt.as_ref();
     let mut txn = doc.transact_mut();
 
     txn.apply_update(update).unwrap();
-    assert_eq!(txt.get_string(&txn), "<i>hello </i><b><i>world</i></b>");
+    assert_eq!(
+        txn.node("test").unwrap().to_string(),
+        "<i>hello </i><b><i>world</i></b>"
+    );
 
     let actual = txn.encode_state_as_update_v2(&StateVector::default());
     assert_eq!(actual, data);
@@ -417,7 +419,6 @@ fn format_attributes_decode_compatibility_v2() {
 #[test]
 fn issue_607() {
     let mut doc = Doc::new();
-    let xml = doc.get_or_insert_xml_fragment("doc");
     /* Update below created through yjs (v13.6)
         ```js
         // Create a short GC-prefixed history: client 2 writes an attribute onto a node
@@ -451,16 +452,20 @@ fn issue_607() {
     doc.transact_mut().apply_update(u1).unwrap();
     {
         let txn = doc.transact();
-        let xml = xml.get(&txn, 0).unwrap().into_xml_element().unwrap();
-        let actual = xml.get_string(&txn);
+        let Out::Node(id) = txn.node("doc").unwrap().get(0).unwrap() else {
+            panic!("expected xml element node");
+        };
+        let actual = txn.node(id).unwrap().to_string();
         assert_eq!(actual, "<p><a></a></p>");
     }
 
     doc.transact_mut().apply_update(u2).unwrap();
     {
         let txn = doc.transact();
-        let xml = xml.get(&txn, 0).unwrap().into_xml_element().unwrap();
-        let actual = xml.get_string(&txn);
+        let Out::Node(id) = txn.node("doc").unwrap().get(0).unwrap() else {
+            panic!("expected xml element node");
+        };
+        let actual = txn.node(id).unwrap().to_string();
         assert_eq!(actual, "<p><b></b></p>");
     }
 }

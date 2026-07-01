@@ -113,7 +113,6 @@ fn text_insert_delete() {
     let setter = visited.clone();
 
     let mut doc = Doc::new();
-    let txt = doc.get_or_insert_text("type");
     let _sub = doc.observe_update_v1(move |_, e| {
         let u = Update::decode_v1(&e.update).unwrap();
         let update_blocks = Blocks::new(&u.blocks);
@@ -130,7 +129,8 @@ fn text_insert_delete() {
         let u = Update::decode_v1(update).unwrap();
         txn.apply_update(u).unwrap();
     }
-    assert_eq!(txt.get_string(&doc.transact()), "abhi".to_string());
+    let actual = doc.transact().node("type").unwrap().to_string();
+    assert_eq!(actual, "abhi");
     assert!(visited.load(Ordering::Relaxed));
 }
 

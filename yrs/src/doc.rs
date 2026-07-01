@@ -1055,9 +1055,9 @@ mod test {
         let mut doc = Doc::with_client_id(1490905955);
         let mut t = doc.transact_mut();
         let mut txt = t.node_mut("type").unwrap();
-        txt.insert(0, "0");
-        txt.insert(0, "1");
-        txt.insert(0, "2");
+        txt.insert_text(0, "0");
+        txt.insert_text(0, "1");
+        txt.insert_text(0, "2");
 
         let encoded = t.encode_state_as_update_v1(&StateVector::default());
         let expected = &[
@@ -1075,11 +1075,12 @@ mod test {
         let mut txt = t1.node_mut("test").unwrap();
         // Question: why YText.insert uses positions of blocks instead of actual cursor positions
         // in text as seen by user?
-        txt.insert(0, "hello");
-        txt.insert(5, " ");
-        txt.insert(6, "world");
+        txt.insert_text(0, "hello");
+        txt.insert_text(5, " ");
+        txt.insert_text(6, "world");
 
-        assert_eq!(txt.get_string(&t1), "hello world".to_string());
+        let actual = txt.to_string();
+        assert_eq!(actual, "hello world");
 
         // create document at B
         let mut d2 = Doc::new();
@@ -1103,7 +1104,8 @@ mod test {
 
         // check if B sees the same thing that A does
         let txt = t2.node("test").unwrap();
-        assert_eq!(txt.get_string(&t1), "hello world".to_string());
+        let actual = txt.to_string();
+        assert_eq!(actual, "hello world");
     }
 
     #[test]
@@ -1121,8 +1123,10 @@ mod test {
         });
         let mut txn = doc.transact_mut();
         {
-            let mut txt = txn.node_mut("test").unwrap();
-            txt.insert(0, "abc");
+            {
+                let mut txt = txn.node_mut("test").unwrap();
+                txt.insert_text(0, "abc");
+            }
             let mut txn2 = doc2.transact_mut();
             let sv = txn2.state_vector().encode_v1();
             let u = txn.encode_diff_v1(&StateVector::decode_v1(sv.as_slice()).unwrap());
@@ -1134,8 +1138,10 @@ mod test {
         drop(sub);
 
         {
-            let mut txt = txn.node_mut("test").unwrap();
-            txt.insert(3, "de");
+            {
+                let mut txt = txn.node_mut("test").unwrap();
+                txt.insert_text(3, "de");
+            }
             let mut txn2 = doc2.transact_mut();
             let sv = txn2.state_vector().encode_v1();
             let u = txn.encode_diff_v1(&StateVector::decode_v1(sv.as_slice()).unwrap());
@@ -1204,9 +1210,7 @@ mod test {
     #[test]
     fn ypy_issue_32() {
         let mut d1 = Doc::with_client_id(1971027812);
-        let mut t1 = d1.transact_mut();
-        let mut source_1 = t1.node_mut("source").unwrap();
-        source_1.push_text("a");
+        d1.transact_mut().node_mut("source").unwrap().push_text("a");
 
         let updates = [
             vec![
@@ -1234,7 +1238,8 @@ mod test {
             d1.transact_mut().apply_update(u).unwrap();
         }
 
-        assert_eq!("a", source_1.get_string(&d1.transact()));
+        let actual = d1.transact().node("source").unwrap().to_string();
+        assert_eq!(actual, "a");
 
         let mut d2 = Doc::new();
         let state_2 = d2.transact().state_vector().encode_v1();
@@ -1253,7 +1258,8 @@ mod test {
         ])
         .unwrap();
         d1.transact_mut().apply_update(update).unwrap();
-        assert_eq!("ab", source_1.get_string(&d1.transact()));
+        let actual = d1.transact().node("source").unwrap().to_string();
+        assert_eq!(actual, "ab");
 
         let mut d3 = Doc::new();
         let state_3 = d3.transact().state_vector().encode_v1();
@@ -1270,7 +1276,6 @@ mod test {
     fn observe_transaction_cleanup() {
         // Setup
         let mut doc = Doc::new();
-        let text = doc.get_or_insert_text("test");
         let before_state = Arc::new(ArcSwapOption::default());
         let after_state = Arc::new(ArcSwapOption::default());
         let delete_set = Arc::new(ArcSwapOption::default());
@@ -1292,8 +1297,11 @@ mod test {
             let mut txn = doc.transact_mut();
 
             // Update the document
-            text.insert(&mut txn, 0, "abc");
-            text.remove_range(&mut txn, 1, 2);
+            {
+                let mut text = txn.node_mut("test").unwrap();
+                text.insert_text(0, "abc");
+                text.remove(1, 2);
+            }
             txn.commit();
 
             // Compare values
@@ -1314,7 +1322,10 @@ mod test {
         // Ensure that the subscription is successfully dropped.
         drop(sub);
         let mut txn = doc.transact_mut();
-        text.insert(&mut txn, 0, "should not update");
+        {
+            let mut text = txn.node_mut("test").unwrap();
+            text.insert_text(0, "should not update");
+        }
         txn.commit();
         assert_ne!(
             after_state.swap(None),
@@ -1325,19 +1336,23 @@ mod test {
     #[test]
     fn partially_duplicated_update() {
         let mut d1 = Doc::with_client_id(1);
-        let txt1 = d1.get_or_insert_text("text");
-        txt1.insert(&mut d1.transact_mut(), 0, "hello");
+        d1.transact_mut()
+            .node_mut("text")
+            .unwrap()
+            .insert_text(0, "hello");
         let u = d1
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
 
         let mut d2 = Doc::with_client_id(2);
-        let txt2 = d2.get_or_insert_text("text");
         d2.transact_mut()
             .apply_update(Update::decode_v1(&u).unwrap())
             .unwrap();
 
-        txt1.insert(&mut d1.transact_mut(), 5, "world");
+        d1.transact_mut()
+            .node_mut("text")
+            .unwrap()
+            .insert_text(5, "world");
         let u = d1
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
@@ -1345,10 +1360,9 @@ mod test {
             .apply_update(Update::decode_v1(&u).unwrap())
             .unwrap();
 
-        assert_eq!(
-            txt1.get_string(&d1.transact()),
-            txt2.get_string(&d2.transact())
-        );
+        let s1 = d1.transact().node("text").unwrap().to_string();
+        let s2 = d2.transact().node("text").unwrap().to_string();
+        assert_eq!(s1, s2);
     }
 
     #[test]
@@ -1356,7 +1370,6 @@ mod test {
         const INPUT: &'static str = "hello";
 
         let mut d1 = Doc::with_client_id(1);
-        let txt1 = d1.get_or_insert_text("text");
         let acc = Arc::new(Mutex::new(String::new()));
 
         let a = acc.clone();
@@ -1379,7 +1392,10 @@ mod test {
 
         for c in INPUT.chars() {
             // append characters 1-by-1 (1 transactions per character)
-            txt1.push(&mut d1.transact_mut(), &c.to_string());
+            d1.transact_mut()
+                .node_mut("text")
+                .unwrap()
+                .push_text(&c.to_string());
         }
 
         assert_eq!(acc.lock().unwrap().as_str(), INPUT);
@@ -1400,7 +1416,7 @@ mod test {
         });
 
         for _ in 0..INPUT.len() as u32 {
-            txt1.remove_range(&mut d1.transact_mut(), 0, 1);
+            d1.transact_mut().node_mut("text").unwrap().remove(0, 1);
         }
 
         let expected = vec![(0..1), (1..2), (2..3), (3..4), (4..5)];
@@ -1426,8 +1442,7 @@ mod test {
         let update = Update::decode_v2(bin).unwrap();
         doc.transact_mut().apply_update(update).unwrap();
 
-        let root = doc.get_or_insert_map("root");
-        let actual = root.to_json(&doc.transact());
+        let actual = doc.transact().node("root").unwrap().to_json();
         let expected = Any::from_json(
             r#"{
               "string": "world",
@@ -1452,10 +1467,15 @@ mod test {
         options.skip_gc = true;
 
         let mut d1 = Doc::with_options(options);
-        let txt1 = d1.get_or_insert_text("text");
-        txt1.insert(&mut d1.transact_mut(), 0, "hello");
+        d1.transact_mut()
+            .node_mut("text")
+            .unwrap()
+            .insert_text(0, "hello");
         let snapshot = d1.transact_mut().snapshot();
-        txt1.insert(&mut d1.transact_mut(), 5, "_world");
+        d1.transact_mut()
+            .node_mut("text")
+            .unwrap()
+            .insert_text(5, "_world");
 
         let mut encoder = EncoderV1::new();
         d1.transact_mut()
@@ -1464,10 +1484,10 @@ mod test {
         let update = Update::decode_v1(&encoder.to_vec()).unwrap();
 
         let mut d2 = Doc::with_client_id(2);
-        let txt2 = d2.get_or_insert_text("text");
         d2.transact_mut().apply_update(update).unwrap();
 
-        assert_eq!(txt2.get_string(&d2.transact()), "hello".to_string());
+        let actual = d2.transact().node("text").unwrap().to_string();
+        assert_eq!(actual, "hello");
     }
 
     #[test]
@@ -1476,10 +1496,12 @@ mod test {
         options.skip_gc = true;
 
         let mut doc = Doc::with_options(options.clone().into());
-        let txt = doc.get_or_insert_text("name");
 
         let mut txn = doc.transact_mut();
-        txt.insert(&mut txn, 0, "Lucas");
+        {
+            let mut txt = txn.node_mut("name").unwrap();
+            txt.insert_text(0, "Lucas");
+        }
         drop(txn);
 
         let txn = doc.transact();
@@ -1491,12 +1513,11 @@ mod test {
         let state_diff = encoder.to_vec();
 
         let mut remote_doc = Doc::with_options(options);
-        let remote_txt = remote_doc.get_or_insert_text("name");
         let mut txn = remote_doc.transact_mut();
         let update = Update::decode_v1(&state_diff).unwrap();
         txn.apply_update(update).unwrap();
 
-        let actual = remote_txt.get_string(&txn);
+        let actual = txn.node("name").unwrap().to_string();
 
         assert_eq!(actual, "Lucas");
     }
@@ -2216,13 +2237,12 @@ mod test {
                 offset_kind: OffsetKind::Utf16,
                 ..Options::default()
             });
-            let txt = doc.get_or_insert_text("test");
             let mut txn = doc.transact_mut();
-            txt.insert(&mut txn, 0, "hello");
+            txn.node_mut("test").unwrap().insert_text(0, "hello");
 
             let snap = txn.snapshot();
 
-            txt.insert(&mut txn, 5, " world");
+            txn.node_mut("test").unwrap().insert_text(5, " world");
 
             let mut encoder = EncoderV1::new();
             txn.encode_state_from_snapshot(&snap, &mut encoder).unwrap();
@@ -2230,11 +2250,10 @@ mod test {
         };
 
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
         let mut txn = doc.transact_mut();
         txn.apply_update(Update::decode_v1(&update).unwrap())
             .unwrap();
-        let str = txt.get_string(&txn);
+        let str = txn.node("test").unwrap().to_string();
         assert_eq!(&str, "hello");
     }
 
@@ -2251,15 +2270,25 @@ mod test {
             })
         };
 
-        let map = d1.get_or_insert_map("map");
-        map.insert(&mut d1.transact_mut(), "a", 1); // U1: 'a' => 1
-        map.insert(&mut d1.transact_mut(), "a", 1.1); // U2: 'a' => 1.1
-        map.insert(&mut d1.transact_mut(), "b", 2); // U3: 'b' => 2
+        d1.transact_mut()
+            .node_mut("map")
+            .unwrap()
+            .insert_attr("a", 1); // U1: 'a' => 1
+        d1.transact_mut()
+            .node_mut("map")
+            .unwrap()
+            .insert_attr("a", 1.1); // U2: 'a' => 1.1
+        d1.transact_mut()
+            .node_mut("map")
+            .unwrap()
+            .insert_attr("b", 2); // U3: 'b' => 2
 
-        assert_eq!(map.to_json(&d1.transact()), any!({"a": 1.1, "b": 2}));
+        assert_eq!(
+            d1.transact().node("map").unwrap().to_json(),
+            any!({"a": 1.1, "b": 2})
+        );
 
         let mut d2 = Doc::new();
-        let map = d2.get_or_insert_map("map");
 
         {
             let mut updates = updates.lock().unwrap();
@@ -2269,13 +2298,13 @@ mod test {
             let mut txn = d2.transact_mut();
 
             txn.apply_update(u1).unwrap(); // apply: 'a' => 1
-            assert_eq!(map.to_json(&txn), any!({"a": 1}));
+            assert_eq!(txn.node("map").unwrap().to_json(), any!({"a": 1}));
 
             txn.apply_update(u3).unwrap(); // apply: 'b' => 2 (it's ok, we insert a skip for u2)
-            assert_eq!(map.to_json(&txn), any!({"a": 1, "b": 2}));
+            assert_eq!(txn.node("map").unwrap().to_json(), any!({"a": 1, "b": 2}));
 
             txn.apply_update(u2).unwrap(); // apply: 'a' => 1.1
-            assert_eq!(map.to_json(&txn), any!({"a": 1.1, "b": 2}));
+            assert_eq!(txn.node("map").unwrap().to_json(), any!({"a": 1.1, "b": 2}));
         }
     }
 
@@ -2327,7 +2356,6 @@ mod test {
     #[test]
     fn observe_after_transaction() {
         let mut d1 = Doc::with_client_id(1);
-        let txt1 = d1.get_or_insert_text("text");
 
         let e = Arc::new(ArcSwapOption::default());
         let e_copy = e.clone();
@@ -2339,7 +2367,10 @@ mod test {
             ))));
         });
 
-        txt1.insert(&mut d1.transact_mut(), 0, "hello world");
+        d1.transact_mut()
+            .node_mut("text")
+            .unwrap()
+            .insert_text(0, "hello world");
         let actual = e.swap(None);
         assert_eq!(
             actual,
@@ -2350,7 +2381,7 @@ mod test {
             )))
         );
 
-        txt1.remove_range(&mut d1.transact_mut(), 2, 7);
+        d1.transact_mut().node_mut("text").unwrap().remove(2, 7);
         let actual = e.swap(None);
         assert_eq!(
             actual,
@@ -2367,7 +2398,10 @@ mod test {
 
         d1.unobserve_after_transaction("key");
 
-        txt1.insert(&mut d1.transact_mut(), 4, " the door");
+        d1.transact_mut()
+            .node_mut("text")
+            .unwrap()
+            .insert_text(4, " the door");
         let actual = e.swap(None);
         assert!(actual.is_none());
     }
@@ -2560,16 +2594,14 @@ mod test {
         let (upd1, upd2) = {
             let mut doc2 = Doc::new();
             let mut tx = doc2.transact_mut();
-            let text = tx.get_or_insert_text("example");
-            text.insert(&mut tx, 0, "foo");
+            tx.node_mut("example").unwrap().insert_text(0, "foo");
             let upd1 = tx.encode_update_v2();
             drop(tx);
 
             let mut tx = doc2.transact_mut();
-            let text = tx.get_or_insert_text("example");
-            text.remove_range(&mut tx, 0, 1);
+            tx.node_mut("example").unwrap().remove(0, 1);
             let upd2 = tx.encode_update_v2();
-            assert_eq!(text.get_string(&tx), "oo");
+            assert_eq!(tx.node("example").unwrap().to_string(), "oo");
             drop(tx);
 
             (upd1, upd2)
@@ -2586,9 +2618,8 @@ mod test {
         tx.apply_update(Update::decode_v2(&upd1).unwrap()).unwrap();
 
         // After insert arrives, pending delete should be auto-applied
-        let text = tx.get_or_insert_text("example");
         assert_eq!(
-            text.get_string(&tx),
+            tx.node("example").unwrap().to_string(),
             "oo",
             "Pending delete should have been applied"
         );

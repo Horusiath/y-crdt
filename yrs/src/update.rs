@@ -1184,14 +1184,14 @@ mod test {
             let mut doc = Doc::with_client_id(1);
             let mut tr = doc.transact_mut();
             let mut txt = tr.node_mut("test").unwrap();
-            txt.insert(0, "aaa");
+            txt.insert_text(0, "aaa");
             tr.encode_update_v1()
         };
         let binary2 = {
             let mut doc = Doc::with_client_id(2);
             let mut tr = doc.transact_mut();
             let mut txt = tr.node_mut("test").unwrap();
-            txt.insert(0, "bbb");
+            txt.insert_text(0, "bbb");
             tr.encode_update_v1()
         };
 
@@ -1401,8 +1401,8 @@ mod test {
         {
             let mut txn = d.transact_mut();
             let mut txt = txn.node_mut("t").unwrap();
-            txt.insert(0, "P");
-            txt.insert(1, "Q");
+            txt.insert_text(0, "P");
+            txt.insert_text(1, "Q");
         }
         let d_state = d
             .transact()
@@ -1474,8 +1474,8 @@ mod test {
                 }
             }
             let txn = doc.transact();
-            let t = txn.get_text("t").unwrap();
-            t.get_string(&txn)
+            let t = txn.node("t").unwrap();
+            t.to_string()
         }
 
         let a = vec![1, 1, 174, 156, 239, 251, 3, 0, 4, 1, 1, 116, 1, 124, 0]; // insert "|" at 0,
@@ -1571,9 +1571,9 @@ mod test {
         let expected = update.encode_v1();
         let mut doc = Doc::with_client_id(2);
         let mut txn = doc.transact_mut();
-        let txt = txn.get_or_insert_text("test");
+        txn.node_mut("test").unwrap();
         txn.apply_update(update).unwrap();
-        let str = txt.get_string(&txn);
+        let str = txn.node("test").unwrap().to_string();
         assert_eq!(str, "hello"); // 'world' is missing because of skip block
         assert!(txn.has_missing_updates());
         let state = txn.encode_state_as_update_v1(&Default::default());

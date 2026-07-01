@@ -152,24 +152,25 @@ fn test_editing_trace(fpath: &str) {
         },
         ..Options::default()
     });
-    let txt = doc.get_or_insert_text("text");
     let start = Instant::now();
     for t in data.txns {
         let mut txn = doc.transact_mut();
+        let mut txt = txn.node_mut("text").unwrap();
         for patch in t.patches {
             let at = patch.0;
             let delete = patch.1;
             let content = patch.2;
 
             if delete != 0 {
-                txt.remove_range(&mut txn, at as u32, delete as u32);
+                txt.remove(at as u32, delete as u32);
             }
             if !content.is_empty() {
-                txt.insert(&mut txn, at as u32, &content);
+                txt.insert_text(at as u32, &content);
             }
         }
     }
     let finish = Instant::now();
     println!("elapsed: {}ms", (finish - start).as_millis());
-    assert_eq!(txt.get_string(&doc.transact()), data.end_content);
+    let actual = doc.transact().node("text").unwrap().to_string();
+    assert_eq!(actual, data.end_content);
 }

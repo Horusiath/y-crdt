@@ -285,8 +285,7 @@ mod test {
     fn ordering_one_of() {
         let mut doc = Doc::with_client_id(1);
         let mut txn = doc.transact_mut();
-        let txt = txn.get_or_insert_text("text");
-        txt.insert(&mut txn, 0, "a");
+        txn.node_mut("text").unwrap().insert_text(0, "a");
 
         let a = txn.state_vector();
         let b = StateVector::default();

@@ -615,9 +615,8 @@ mod test {
         let mut a2 = Awareness::new(Doc::with_client_id(2));
 
         let expected = {
-            let txt = a1.doc_mut().get_or_insert_text("test");
             let mut txn = a1.doc_mut().transact_mut();
-            txt.push(&mut txn, "hello");
+            txn.node_mut("test").unwrap().push_text("hello");
             txn.encode_state_as_update_v1(&StateVector::default())
         };
 
@@ -640,8 +639,9 @@ mod test {
             assert!(result2.is_none());
         }
 
-        let txt = a2.doc().transact().get_text("test").unwrap();
-        assert_eq!(txt.get_string(&a2.doc().transact()), "hello".to_owned());
+        let txn = a2.doc().transact();
+        let txt = txn.node("test").unwrap();
+        assert_eq!(txt.to_string(), "hello");
     }
 
     #[test]
@@ -652,9 +652,8 @@ mod test {
         let mut a2 = Awareness::new(Doc::with_client_id(2));
 
         let data = {
-            let txt = a1.doc_mut().get_or_insert_text("test");
             let mut txn = a1.doc_mut().transact_mut();
-            txt.push(&mut txn, "hello");
+            txn.node_mut("test").unwrap().push_text("hello");
             txn.encode_update_v1()
         };
 
@@ -664,8 +663,9 @@ mod test {
 
         assert!(result.is_none());
 
-        let txt = a2.doc().transact().get_text("test").unwrap();
-        assert_eq!(txt.get_string(&a2.doc().transact()), "hello".to_owned());
+        let txn = a2.doc().transact();
+        let txt = txn.node("test").unwrap();
+        assert_eq!(txt.to_string(), "hello");
     }
 
     #[test]
