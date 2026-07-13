@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use fastrand::Rng;
 
-use yrs::block::ClientID;
-use yrs::encoding::read::{Cursor, Read};
-use yrs::updates::decoder::{Decode, Decoder, DecoderV1};
-use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
-use yrs::{Doc, Options, StateVector, Update};
+use crate::block::{Block, ClientID};
+use crate::encoding::read::{Cursor, Read};
+use crate::update::BlockSet;
+use crate::updates::decoder::{Decode, Decoder, DecoderV1};
+use crate::updates::encoder::{Encode, Encoder, EncoderV1};
+use crate::{Doc, Options, StateVector, Update};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";
 

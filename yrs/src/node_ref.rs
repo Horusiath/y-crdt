@@ -1,7 +1,7 @@
 use crate::block::{ItemContent, ItemPosition, ItemPtr};
 use crate::delta::{AttrOp, Op};
 use crate::event::Event;
-use crate::node::{Node, NodePtr};
+use crate::node::{Attrs, Node, NodePtr};
 use crate::types::{Attrs, DeepObservable, Event, Observable};
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
 use std::collections::Bound;
@@ -292,7 +292,7 @@ where
 
     /// Applies a sequence of delta operations to this type.
     pub fn apply_delta(&mut self, deltas: impl IntoIterator<Item = Delta<In>>) {
-        if self.ptr.item.map(|item| item.is_deleted()).map_or(false) {
+        if self.ptr.item.map(|item| item.is_deleted()).unwrap_or(false) {
             return; // current node is already deleted
         }
 

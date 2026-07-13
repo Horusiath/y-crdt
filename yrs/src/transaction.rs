@@ -1,11 +1,11 @@
 use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
 use crate::doc::DocEvents;
 use crate::error::{Error, UpdateError};
-use crate::event::SubdocsEvent;
+use crate::event::{Event, SubdocsEvent};
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
-use crate::node::{Node, NodePtr};
+use crate::node::{Node, NodePtr, TypePtr};
 use crate::slice::BlockSlice;
 use crate::types::{Event, Events, TypePtr, TypeRef};
 use crate::update::Update;
