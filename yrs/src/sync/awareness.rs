@@ -557,8 +557,6 @@ impl Encode for AwarenessUpdate {
 impl Decode for AwarenessUpdate {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::encoding::read::Error> {
         let len: usize = decoder.read_var()?;
-        // `len` is attacker-controlled (awareness updates arrive over the network); a fallible
-        // reservation avoids an allocation bomb (see `Update::decode`'s `try_reserve`).
         let mut clients = HashMap::new();
         clients.try_reserve(len)?;
         for _ in 0..len {
@@ -662,16 +660,15 @@ impl Event {
 
 #[cfg(test)]
 mod test {
-    use arc_swap::ArcSwapOption;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::block::ClientID;
-    use crate::sync::awareness::{AwarenessUpdate, AwarenessUpdateSummary, Event};
-    use crate::sync::Awareness;
-    use crate::updates::decoder::Decode;
     use crate::Doc;
+    use crate::block::ClientID;
+    use crate::sync::awareness::{AwarenessUpdateSummary, Event};
+    use crate::sync::{Awareness, AwarenessUpdate};
+    use crate::updates::decoder::Decode;
 
     #[test]
     fn decode_rejects_length_amplification() {

@@ -8,7 +8,6 @@ use crate::error::UpdateError;
 use crate::id_set::IdSet;
 use crate::node::{NodePtr, TypePtr, TypeRef};
 use crate::transaction::TransactionMut;
-use crate::types::{TypePtr, TypeRef};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
@@ -1074,7 +1073,7 @@ mod test {
     use crate::update::{BlockSet, Update};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
-    use crate::{Any, Delta, Doc, ID, IdSet, Options, StateVector, merge_updates_v1};
+    use crate::{Any, Delta, Doc, ID, IdSet, Options, Out, StateVector, merge_updates_v1};
 
     #[test]
     fn update_decode() {
@@ -1245,7 +1244,7 @@ mod test {
             txn.apply_update(u).unwrap();
             let linknote = prosemirror.get(0);
             let actual = linknote.and_then(|xml| match xml {
-                XmlOut::Element(elem) => Some(elem.tag().clone()),
+                Out::Node(elem) => Some(elem.tag().clone()),
                 _ => None,
             });
             assert_eq!(actual, Some("linknote".into()));

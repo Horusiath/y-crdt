@@ -3,20 +3,16 @@ use crate::block_store::BlockStore;
 use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
 use crate::id_set::DeleteSet;
-use crate::node::{Node, NodePtr};
+use crate::node::{Node, NodePtr, Path, PathSegment, TypeRef};
 use crate::slice::ItemSlice;
 use crate::transaction::TransactionState;
 use crate::transaction::{Origin, TransactionMut};
-use crate::types::{Path, PathSegment, ToJson, TypeRef};
 use crate::update::PendingUpdate;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
 use crate::{Any, Subscription};
-use crate::{
-    ArrayRef, ID, IdSet, MapRef, NodeID, Snapshot, StateVector, TextRef, Transaction, Uuid,
-    XmlFragmentRef, uuid_v4, uuid_v4_from,
-};
+use crate::{ID, IdSet, NodeID, Snapshot, StateVector, Transaction, Uuid, uuid_v4, uuid_v4_from};
 use crate::{Observer, error};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
@@ -969,10 +965,9 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        Any, Doc, ID, IdSet, OffsetKind, Options, Snapshot, StateVector, Subscription, Transaction,
-        TransactionCleanupEvent, UpdateEvent, Uuid, any, uuid_v4,
+        Any, Doc, ID, IdSet, In, OffsetKind, Options, Snapshot, StateVector, Subscription,
+        Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, any, uuid_v4,
     };
-    use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
     use std::collections::BTreeSet;
     use std::iter::FromIterator;
@@ -1725,6 +1720,7 @@ mod test {
         }
     }
 
+    // TODO(unified-api): depends on typed root casts (TextRef/ArrayRef/MapRef/Xml*) not yet in new API
     #[test]
     fn root_refs() {
         let mut doc = Doc::new();
@@ -1748,6 +1744,7 @@ mod test {
         }
     }
 
+    // TODO(unified-api): depends on nested ArrayPrelim + cast::<ArrayRef> not yet in new API
     #[test]
     fn integrate_block_with_parent_gc() {
         let mut d1 = Doc::with_client_id(1);
@@ -1804,7 +1801,6 @@ mod test {
             let loaded = e.loaded().cloned().collect();
             event_c.store(Some(Arc::new((added, removed, loaded))));
         });
-        let subdocs = doc.get_or_insert_map("mysubdocs");
         let uuid_a: Uuid = "A".into();
         let doc_a = Doc::with_options({
             let mut o = Options::default();
@@ -1813,7 +1809,7 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            subdocs.insert(&mut txn, "a", doc_a);
+            txn.node_mut("mysubdocs").unwrap().insert_attr("a", In::Doc(doc_a));
             load_subdoc(&mut txn, &uuid_a);
         }
 
@@ -1860,7 +1856,10 @@ mod test {
             o.should_load = false;
             o
         });
-        subdocs.insert(&mut doc.transact_mut(), "b", doc_b);
+        doc.transact_mut()
+            .node_mut("mysubdocs")
+            .unwrap()
+            .insert_attr("b", In::Doc(doc_b));
         let actual = event.swap(None);
         assert_eq!(
             actual,
@@ -1885,7 +1884,7 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            subdocs.insert(&mut txn, "c", doc_c);
+            txn.node_mut("mysubdocs").unwrap().insert_attr("c", In::Doc(doc_c));
             load_subdoc(&mut txn, &uuid_c);
         }
         let actual = event.swap(None);
@@ -1938,9 +1937,10 @@ mod test {
         let guids: BTreeSet<_> = doc2.transact().subdoc_guids().cloned().collect();
         assert_eq!(guids, BTreeSet::from([uuid_a.clone(), uuid_c.clone()]));
         {
-            let subdocs_map = doc2.transact().get_map("mysubdocs").unwrap();
-            let mut txn = doc2.transact_mut();
-            subdocs_map.remove(&mut txn, "a");
+            doc2.transact_mut()
+                .node_mut("mysubdocs")
+                .unwrap()
+                .remove_attr("a");
         }
 
         let actual = event.swap(None);
@@ -1961,7 +1961,6 @@ mod test {
     #[test]
     fn subdoc_load_edge_cases() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("test");
         let subdoc_1 = Doc::new();
         let uuid_1 = subdoc_1.guid().clone();
 
@@ -1976,7 +1975,7 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            array.insert(&mut txn, 0, subdoc_1);
+            txn.node_mut("test").unwrap().insert(0, In::Doc(subdoc_1));
             let subdoc_ref = txn.doc.subdoc(&uuid_1).unwrap();
             assert!(subdoc_ref.should_load());
             assert!(!subdoc_ref.auto_load());
@@ -1996,7 +1995,7 @@ mod test {
         // Get the uuid of the replacement subdoc.
         let uuid_2 = {
             let txn = doc.transact();
-            let out = array.get(&txn, 0).unwrap();
+            let out = txn.node("test").unwrap().get(0).unwrap();
             match out {
                 crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
@@ -2036,9 +2035,8 @@ mod test {
         );
         doc2.transact_mut().apply_update(u.unwrap()).unwrap();
         let uuid_3 = {
-            let array = doc2.get_or_insert_array("test");
             let txn = doc2.transact();
-            match array.get(&txn, 0).unwrap() {
+            match txn.node("test").unwrap().get(0).unwrap() {
                 crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
@@ -2070,7 +2068,6 @@ mod test {
     #[test]
     fn subdoc_auto_load_edge_cases() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("test");
         let subdoc_1 = Doc::with_options({
             let mut o = Options::default();
             o.auto_load = true;
@@ -2090,7 +2087,7 @@ mod test {
 
         {
             let mut txn = doc.transact_mut();
-            array.insert(&mut txn, 0, subdoc_1);
+            txn.node_mut("test").unwrap().insert(0, In::Doc(subdoc_1));
         }
         {
             let subdoc_ref = doc.subdoc(&uuid_1).unwrap();
@@ -2116,7 +2113,7 @@ mod test {
 
         let uuid_2 = {
             let txn = doc.transact();
-            match array.get(&txn, 0).unwrap() {
+            match txn.node("test").unwrap().get(0).unwrap() {
                 crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
@@ -2158,9 +2155,8 @@ mod test {
         );
         doc2.transact_mut().apply_update(u.unwrap()).unwrap();
         let uuid_3 = {
-            let array = doc2.get_or_insert_array("test");
             let txn = doc2.transact();
-            match array.get(&txn, 0).unwrap() {
+            match txn.node("test").unwrap().get(0).unwrap() {
                 crate::Out::Doc(uuid) => uuid,
                 _ => panic!("expected YDoc"),
             }
@@ -2181,6 +2177,7 @@ mod test {
         );
     }
 
+    // TODO(unified-api): depends on Xml types + nested prelims/insert_range not yet in new API
     #[test]
     fn to_json() {
         let mut doc = Doc::new();
@@ -2406,6 +2403,7 @@ mod test {
         assert!(actual.is_none());
     }
 
+    // TODO(unified-api): depends on nested TextPrelim insertion + TextRef return not yet in new API
     fn init_test_data<const N: usize>(txn: &mut TransactionMut, data: [&str; N]) -> TextRef {
         let map = txn.get_or_insert_map("map");
         let txt = map.insert(txn, "text", TextPrelim::default());
@@ -2415,6 +2413,7 @@ mod test {
         txt
     }
 
+    // TODO(unified-api): depends on init_test_data (nested TextPrelim) not yet in new API
     #[test]
     fn force_gc() {
         let mut doc = Doc::with_options(Options {
@@ -2466,6 +2465,7 @@ mod test {
         assert_matches!(&block, &Block::GC(_));
     }
 
+    // TODO(unified-api): depends on init_test_data (nested TextPrelim) + cast::<TextRef> not yet in new API
     #[test]
     fn force_gc_with_delete_set() {
         let mut doc = Doc::with_options(Options {

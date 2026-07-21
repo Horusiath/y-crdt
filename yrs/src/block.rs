@@ -2304,50 +2304,6 @@ impl TryFrom<ItemPtr> for Unused {
     }
 }
 
-/// Prelim container for types passed over to [Text::insert_embed] and [Text::insert_embed_with_attributes] methods.
-#[derive(Debug)]
-pub enum EmbedPrelim<T> {
-    Primitive(Any),
-    Shared(T),
-}
-
-impl<T> Prelim for EmbedPrelim<T>
-where
-    T: Prelim,
-{
-    type Return = T::Return;
-
-    fn into_content(self, txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        match self {
-            EmbedPrelim::Primitive(any) => (ItemContent::Embed(any), None),
-            EmbedPrelim::Shared(prelim) => {
-                let (branch, content) = prelim.into_content(txn);
-                let carrier = if let Some(carrier) = content {
-                    Some(EmbedPrelim::Shared(carrier))
-                } else {
-                    None
-                };
-                (branch, carrier)
-            }
-        }
-    }
-
-    fn integrate(self, txn: &mut TransactionMut, inner_ref: NodePtr) {
-        if let EmbedPrelim::Shared(carrier) = self {
-            carrier.integrate(txn, inner_ref)
-        }
-    }
-}
-
-impl<T> From<T> for EmbedPrelim<T>
-where
-    T: Into<Any>,
-{
-    fn from(value: T) -> Self {
-        EmbedPrelim::Primitive(value.into())
-    }
-}
-
 impl std::fmt::Display for ID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<{}#{}>", self.client, self.clock)

@@ -1,4 +1,4 @@
-use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr, Prelim};
+use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr};
 use crate::doc::DocEvents;
 use crate::error::{Error, UpdateError};
 use crate::event::{Event, SubdocsEvent};
@@ -7,13 +7,12 @@ use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::node::{Node, NodePtr, TypePtr};
 use crate::slice::BlockSlice;
-use crate::types::{Event, Events, TypePtr, TypeRef};
 use crate::update::Update;
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::utils::OptionExt;
 use crate::{
-    Any, ArrayRef, Doc, IdSet, In, MapRef, NodeID, NodeRef, Out, Snapshot, StateVector, TextRef,
-    Uuid, XmlElementRef, XmlFragmentRef, XmlTextRef, merge_updates_v1, merge_updates_v2,
+    Any, Doc, IdSet, In, NodeID, NodeRef, Out, Snapshot, StateVector, Uuid, merge_updates_v1,
+    merge_updates_v2,
 };
 use smallvec::SmallVec;
 use std::cell::OnceCell;

@@ -1,8 +1,7 @@
-use crate::block::{Item, ItemContent, ItemPtr, Prelim};
-use crate::node::NodePtr;
+use crate::block::{Item, ItemContent, ItemPtr};
+use crate::node::{NodePtr, TypePtr};
 use crate::transaction::TransactionMut;
-use crate::types::TypePtr;
-use crate::{Doc, Out, ID};
+use crate::{Doc, ID, Out};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.

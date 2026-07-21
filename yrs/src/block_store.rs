@@ -1,12 +1,12 @@
-use crate::block::{Block, BlockRange, BlockRef, ClientID, ItemPtr, ID};
+use crate::block::{Block, BlockRange, BlockRef, ClientID, ID, ItemPtr};
+use crate::node::TypePtr;
 use crate::slice::ItemSlice;
-use crate::types::TypePtr;
 use crate::update::BlockSet;
 use crate::utils::client_hasher::ClientHasher;
 use crate::*;
 use std::cell::UnsafeCell;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::BuildHasherDefault;
 use std::ops::{Index, Range, RangeInclusive};
 use std::vec::Vec;
