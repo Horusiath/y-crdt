@@ -1505,8 +1505,8 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        any, Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Observable, StateVector,
-        Text, Transact, Update, WriteTxn, ID,
+        any, Any, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Observable, Snapshot,
+        StateVector, Text, Transact, Update, WriteTxn, ID,
     };
     use arc_swap::ArcSwapOption;
     use fastrand::Rng;
@@ -2843,5 +2843,87 @@ mod test {
         let update = Update::decode_v1(bin.as_slice()).unwrap();
         txn.apply_update(update).unwrap();
         assert_eq!(txt.get_string(&txn), "ab");
+    }
+
+    /// Remote client 1 makes `total` edits, of which the local peer receives only the
+    /// first `synced`. Returns the local doc and a snapshot taken on the remote after
+    /// all edits, i.e. one whose state map points past the local block list.
+    ///
+    /// Each edit inserts at index 0, so every item lands left of the previous one and
+    /// the blocks stay unsquashed.
+    fn partially_synced(total: usize, synced: usize) -> (Doc, Snapshot) {
+        let remote = Doc::with_options(Options {
+            client_id: ClientID::new(1),
+            skip_gc: true,
+            ..Default::default()
+        });
+        let rtxt = remote.get_or_insert_text("text");
+        let local = Doc::with_client_id(2);
+
+        for i in 0..total {
+            let mut txn = remote.transact_mut();
+            rtxt.insert(&mut txn, 0, "a");
+            let update = txn.encode_update_v1();
+            drop(txn);
+            if i < synced {
+                local
+                    .transact_mut()
+                    .apply_update(Update::decode_v1(&update).unwrap())
+                    .unwrap();
+            }
+        }
+        let snapshot = remote.transact().snapshot();
+        (local, snapshot)
+    }
+
+    /// Renders history on a peer that has not caught up to the snapshot, so the clock
+    /// held by the snapshot is out of range for the local block list.
+    fn assert_partial_history(total: usize, synced: usize) {
+        let (local, snapshot) = partially_synced(total, synced);
+        let txt = local.get_or_insert_text("text");
+        let mut txn = local.transact_mut();
+
+        let diff = txt.diff_range(&mut txn, Some(&snapshot), None, YChange::identity);
+        let text: String = diff
+            .iter()
+            .map(|d| match &d.insert {
+                Out::Any(Any::String(s)) => s.to_string(),
+                other => panic!("unexpected chunk {:?}", other),
+            })
+            .collect();
+        assert_eq!(text, "a".repeat(synced));
+    }
+
+    /// see: https://github.com/y-crdt/y-crdt/pull/645.
+    #[test]
+    fn diff_range_with_snapshot_ahead_single_block() {
+        assert_partial_history(6, 1);
+    }
+    #[test]
+    fn diff_range_with_snapshot_ahead_many_blocks() {
+        assert_partial_history(20, 3);
+    }
+
+    #[test]
+    fn apply_update_with_missing_predecessors() {
+        let remote = Doc::with_client_id(1);
+        let rtxt = remote.get_or_insert_text("text");
+        let mut updates = Vec::new();
+        for _ in 0..6 {
+            let mut txn = remote.transact_mut();
+            rtxt.insert(&mut txn, 0, "a");
+            updates.push(txn.encode_update_v1());
+        }
+
+        // delivered in reverse, so every update but the last references missing clocks
+        let local = Doc::with_client_id(2);
+        let ltxt = local.get_or_insert_text("text");
+        for update in updates.iter().rev() {
+            local
+                .transact_mut()
+                .apply_update(Update::decode_v1(update).unwrap())
+                .unwrap();
+        }
+        assert_eq!(ltxt.get_string(&local.transact()), "aaaaaa");
     }
 }
