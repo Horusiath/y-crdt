@@ -54,6 +54,8 @@ impl ClientBlockList {
         if start == clock {
             // a common case is to just append a block at the end, so check first if we can do that
             Some(right)
+        } else if clock > end {
+            None // clock lands past the last block, so no block owns it.
         } else {
             let mut mid = ((clock / end) * right as u32) as usize;
             while left <= right {
