@@ -870,7 +870,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
             // We don't need to check for events.length
             // because we know it has at least one element
-            let events = Events::new(&mut unsorted);
+            unsorted.sort_by_key(|e| e.path());
             let mut branch = branch;
             branch.trigger_deep(self.as_readonly(), &events);
         }

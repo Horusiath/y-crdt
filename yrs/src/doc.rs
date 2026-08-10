@@ -721,16 +721,6 @@ impl Default for Doc {
     }
 }
 
-impl ToJson for Doc {
-    fn to_json<D: std::ops::Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Any {
-        let mut m = HashMap::new();
-        for (key, value) in txn.root_refs() {
-            m.insert(key.to_string(), value.to_json(txn));
-        }
-        Any::from(m)
-    }
-}
-
 macro_rules! define_event_type {
     ($name:ident ($($args:tt)*)) => {
         #[cfg(feature = "sync")]
@@ -1809,7 +1799,9 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            txn.node_mut("mysubdocs").unwrap().insert_attr("a", In::Doc(doc_a));
+            txn.node_mut("mysubdocs")
+                .unwrap()
+                .insert_attr("a", In::Doc(doc_a));
             load_subdoc(&mut txn, &uuid_a);
         }
 
@@ -1884,7 +1876,9 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            txn.node_mut("mysubdocs").unwrap().insert_attr("c", In::Doc(doc_c));
+            txn.node_mut("mysubdocs")
+                .unwrap()
+                .insert_attr("c", In::Doc(doc_c));
             load_subdoc(&mut txn, &uuid_c);
         }
         let actual = event.swap(None);

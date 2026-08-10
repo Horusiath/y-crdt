@@ -58,20 +58,12 @@ impl StickyIndex {
         Self::new(IndexScope::Relative(id), assoc)
     }
 
-    pub fn from_type<D, B>(_txn: &Transaction<D>, branch: &B, assoc: Assoc) -> Self
+    pub fn from_type<D, B>(node: NodeID, assoc: Assoc) -> Self
     where
         D: Deref<Target = Doc>,
-        B: AsRef<Branch>,
+        B: AsRef<Node>,
     {
-        let branch = branch.as_ref();
-        if let Some(ptr) = branch.item {
-            let id = ptr.id().clone();
-            Self::new(IndexScope::Nested(id), assoc)
-        } else if let Some(name) = &branch.name {
-            Self::new(IndexScope::Root(name.clone()), assoc)
-        } else {
-            unreachable!()
-        }
+        Self::new(IndexScope::Absolute(node), assoc)
     }
 
     #[inline]
@@ -82,7 +74,7 @@ impl StickyIndex {
     /// Scope refers to root collection.
     #[inline]
     pub fn is_root(&self) -> bool {
-        if let IndexScope::Root(_) = &self.scope {
+        if let IndexScope::Absolute(NodeID::Root(_)) = &self.scope {
             true
         } else {
             false
@@ -92,7 +84,7 @@ impl StickyIndex {
     /// Scope refers to nested shared collection.
     #[inline]
     pub fn is_nested(&self) -> bool {
-        if let IndexScope::Nested(_) = &self.scope {
+        if let IndexScope::Absolute(NodeID::Nested(_)) = &self.scope {
             true
         } else {
             false
@@ -192,7 +184,7 @@ impl StickyIndex {
                     }
                 }
             }
-            IndexScope::Nested(id) => {
+            IndexScope::Absolute(NodeID::Nested(id)) => {
                 let store = txn.doc();
                 if store.blocks.get_clock(&id.client) <= id.clock {
                     // type does not exist yet
@@ -210,7 +202,7 @@ impl StickyIndex {
                     };
                 } // else - branch remains null
             }
-            IndexScope::Root(name) => {
+            IndexScope::Absolute(NodeID::Root(name)) => {
                 branch = txn.doc().get_type(name.clone());
                 if let Some(ptr) = branch.as_ref() {
                     index = if self.assoc == Assoc::After {
@@ -237,7 +229,7 @@ impl StickyIndex {
     ) -> Option<Self> {
         if assoc == Assoc::Before {
             if index == 0 {
-                let context = IndexScope::from_node(branch);
+                let context = IndexScope::Absolute(branch.id());
                 return Some(StickyIndex::new(context, assoc));
             }
             index -= 1;
@@ -252,7 +244,7 @@ impl StickyIndex {
                 let context = if let Some(ptr) = walker.next_item() {
                     IndexScope::Relative(ptr.last_id())
                 } else {
-                    IndexScope::from_branch(branch)
+                    IndexScope::Absolute(branch.id())
                 };
                 Some(Self::new(context, assoc))
             } else {
@@ -264,7 +256,7 @@ impl StickyIndex {
                 id.clock += walker.rel();
                 IndexScope::Relative(id)
             } else {
-                IndexScope::from_branch(branch)
+                IndexScope::Absolute(branch.id())
             };
             Some(Self::new(context, assoc))
         }
@@ -296,15 +288,15 @@ impl StickyIndex {
                     Some(item)
                 };
             }
-            IndexScope::Nested(id) => {
+            IndexScope::Absolute(NodeID::Nested(id)) => {
                 // position at the beginning/end of a nested type
                 let item = doc.blocks.get_item(id)?;
-                item.as_branch()?
+                item.as_node()?
             }
-            IndexScope::Root(name) => {
+            IndexScope::Absolute(NodeID::Root(name)) => {
                 // position at the beginning/end of a root type
                 let branch = doc.types.get(name.as_ref())?;
-                BranchPtr::from(branch)
+                NodePtr::from(branch)
             }
         };
         match &self.assoc {
@@ -345,8 +337,8 @@ impl Serialize for StickyIndex {
         let mut s = serializer.serialize_struct("StickyIndex", 2)?;
         match &self.scope {
             IndexScope::Relative(id) => s.serialize_field("item", id)?,
-            IndexScope::Nested(id) => s.serialize_field("type", id)?,
-            IndexScope::Root(name) => s.serialize_field("tname", name)?,
+            IndexScope::Absolute(NodeID::Nested(id)) => s.serialize_field("type", id)?,
+            IndexScope::Absolute(NodeID::Root(name)) => s.serialize_field("tname", name)?,
         }
         let assoc = self.assoc as i8;
         s.serialize_field("assoc", &assoc)?;
@@ -400,9 +392,9 @@ impl<'de> Deserialize<'de> for StickyIndex {
                 let scope = if let Some(id) = item {
                     IndexScope::Relative(id)
                 } else if let Some(name) = tname {
-                    IndexScope::Root(name)
+                    IndexScope::Absolute(NodeID::Root(name))
                 } else if let Some(id) = ttype {
-                    IndexScope::Nested(id)
+                    IndexScope::Absolute(NodeID::Nested(id))
                 } else {
                     return Err(serde::de::Error::missing_field("item"));
                 };
@@ -452,21 +444,9 @@ pub enum IndexScope {
     /// [StickyIndex] is relative to a given block [ID]. This happens whenever we set [StickyIndex]
     /// somewhere inside the non-empty shared collection.
     Relative(ID),
-    /// If a containing collection is a nested y-type, which is empty, this case allows us to
-    /// identify that nested type.
-    Nested(ID),
-    /// If a containing collection is a root-level y-type, which is empty, this case allows us to
-    /// identify that nested type.
-    Root(Arc<str>),
-}
-
-impl IndexScope {
-    pub fn from_branch(branch: BranchPtr) -> Self {
-        match branch.id() {
-            BranchID::Nested(id) => IndexScope::Nested(id),
-            BranchID::Root(name) => IndexScope::Root(name),
-        }
-    }
+    /// [StickyIndex] is bound to a specific collection. Usually used when index points
+    /// to the beginning or the end of that collection.
+    Absolute(NodeID),
 }
 
 impl Encode for IndexScope {
@@ -477,12 +457,12 @@ impl Encode for IndexScope {
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
             }
-            IndexScope::Nested(id) => {
+            IndexScope::Absolute(NodeID::Nested(id)) => {
                 encoder.write_var(2);
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
             }
-            IndexScope::Root(type_name) => {
+            IndexScope::Absolute(NodeID::Root(type_name)) => {
                 encoder.write_var(1);
                 encoder.write_string(&type_name);
             }
@@ -501,12 +481,12 @@ impl Decode for IndexScope {
             }
             1 => {
                 let type_name = decoder.read_string()?;
-                Ok(IndexScope::Root(type_name.into()))
+                Ok(IndexScope::Absolute(NodeID::Root(type_name.into())))
             }
             2 => {
                 let client = ClientID::new(decoder.read_var::<u64>()?);
                 let clock = decoder.read_var()?;
-                Ok(IndexScope::Nested(ID::new(client, clock)))
+                Ok(IndexScope::Absolute(NodeID::Nested(ID::new(client, clock))))
             }
             _ => Err(Error::UnexpectedValue),
         }
@@ -606,11 +586,16 @@ impl Decode for Assoc {
 /// Trait used to retrieve a [StickyIndex] corresponding to a given human-readable index.
 /// Unlike standard indexes [StickyIndex] enables to track the location inside of a shared
 /// y-types, even in the face of concurrent updates.
-pub trait IndexedSequence: AsRef<Branch> {
+pub trait IndexedSequence: AsRef<Node> {
     /// Returns a [StickyIndex] equivalent to a human-readable `index`.
     /// Returns `None` if `index` is beyond the length of current sequence.
-    fn sticky_index<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>, index: u32, assoc: Assoc) -> Option<StickyIndex> {
-        StickyIndex::at(txn, BranchPtr::from(self.as_ref()), index, assoc)
+    fn sticky_index<D: Deref<Target = Doc>>(
+        &self,
+        txn: &Transaction<D>,
+        index: u32,
+        assoc: Assoc,
+    ) -> Option<StickyIndex> {
+        StickyIndex::at(txn, NodePtr::from(self.as_ref()), index, assoc)
     }
 }
 
@@ -619,7 +604,7 @@ pub trait IndexedSequence: AsRef<Branch> {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Offset {
     /// Pointer to a collection type [Offset] refers to.
-    pub branch: BranchPtr,
+    pub branch: NodePtr,
     /// Human readable index corresponding to this [Offset].
     pub index: u32,
     /// Association type used by [StickyIndex] this structure was created from.
@@ -627,7 +612,7 @@ pub struct Offset {
 }
 
 impl Offset {
-    fn new(branch: BranchPtr, index: u32, assoc: Assoc) -> Self {
+    fn new(branch: NodePtr, index: u32, assoc: Assoc) -> Self {
         Offset {
             branch,
             index,
@@ -642,13 +627,13 @@ mod test {
     use crate::sticky_index::Assoc;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{Doc, ID, IndexScope, IndexedSequence, StickyIndex};
+    use crate::{Doc, ID, IndexScope, IndexedSequence, NodeRef, StickyIndex, Transaction};
     use serde::{Deserialize, Serialize};
 
-    fn check_sticky_indexes(doc: &Doc, text: &TextRef) {
+    fn check_sticky_indexes(doc: &Doc, text: NodeRef<&Transaction<&Doc>>) {
         // test if all positions are encoded and restored correctly
         let txn = doc.transact();
-        let len = text.len(&txn);
+        let len = text.len();
         for i in 0..len {
             // for all types of associations..
             for assoc in [Assoc::After, Assoc::Before] {

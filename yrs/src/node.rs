@@ -35,7 +35,7 @@ impl NodePtr {
         Some(e)
     }
 
-    pub(crate) fn trigger_deep(&mut self, txn: &Transaction<&Doc>, e: &Events) {
+    pub(crate) fn trigger_deep<'txn>(&mut self, txn: &'txn Transaction<&Doc>, e: &[Event<'txn>]) {
         self.deep_observers.trigger(|fun| fun(txn, e));
     }
 }

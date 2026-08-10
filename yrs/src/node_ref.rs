@@ -23,7 +23,7 @@ impl<T> AsRef<Node> for NodeRef<T> {
 
 impl<T> DeepObservable for NodeRef<T> {}
 impl<T> Observable for NodeRef<T> {
-    type Event = Event;
+    type Event = Event<'txn>;
 }
 
 impl<T> NodeRef<T> {

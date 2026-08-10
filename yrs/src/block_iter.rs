@@ -1,7 +1,7 @@
 use crate::block::{Item, ItemContent, ItemPtr};
 use crate::node::{NodePtr, TypePtr};
 use crate::transaction::TransactionMut;
-use crate::{Doc, ID, Out};
+use crate::{Doc, ID, In, Out};
 
 /// Struct used for iterating over the sequence of item's values with respect to a potential
 /// [Move] markers that may change their order.
@@ -318,7 +318,7 @@ impl BlockIter {
         }
     }
 
-    pub fn insert_contents<V: Prelim>(
+    pub fn insert_contents<V: Into<In>>(
         &mut self,
         txn: &mut TransactionMut,
         value: V,
