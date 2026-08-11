@@ -312,18 +312,18 @@ where
 mod test {
     use crate::block::ClientID;
     use crate::iter::{BlockIterator, BlockSliceIterator, IntoBlockIter};
-    use crate::{Array, Assoc, Doc, StickyIndex, ID};
+    use crate::{Assoc, Doc, ID, StickyIndex};
 
     #[test]
     fn range_bounded() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        let mut txn = doc.transact_mut();
+        let array = txn.node_mut("array").unwrap();
 
         array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
         array.insert_range(&mut doc.transact_mut(), 0, [1]);
         array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
 
-        let txn = doc.transact();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::Before);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 4), Assoc::After);
         let res: Vec<_> = array

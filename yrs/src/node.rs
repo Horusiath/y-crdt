@@ -3,7 +3,10 @@ use crate::encoding::read::Error;
 use crate::event::Event;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{Any, Doc, ID, In, Observer, Origin, Out, Subscription, Transaction, TransactionMut};
+use crate::{
+    Any, Assoc, ClientID, Doc, ID, In, IndexScope, Observer, Origin, Out, StickyIndex,
+    Subscription, Transaction, TransactionMut,
+};
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -745,7 +748,7 @@ pub enum TypeRef {
     XmlText = TYPE_REFS_XML_TEXT,
     SubDoc = TYPE_REFS_DOC,
     #[cfg(feature = "weak")]
-    WeakLink(Arc<LinkSource>) = TYPE_REFS_WEAK,
+    WeakLink(Arc<crate::weak::LinkSource>) = TYPE_REFS_WEAK,
     Undefined = TYPE_REFS_UNDEFINED,
 }
 
@@ -767,7 +770,7 @@ impl TypeRef {
     }
 
     #[cfg(feature = "weak")]
-    fn encode_weak_link<E: Encoder>(data: &LinkSource, encoder: &mut E) {
+    fn encode_weak_link<E: Encoder>(data: &crate::weak::LinkSource, encoder: &mut E) {
         encoder.write_type_ref(TYPE_REFS_WEAK);
         let mut info = 0u8;
         let is_single = data.is_single();
@@ -791,11 +794,11 @@ impl TypeRef {
         }
         encoder.write_u8(info);
         match data.quote_start.scope() {
-            IndexScope::Relative(id) | IndexScope::Nested(id) => {
+            IndexScope::Relative(id) | IndexScope::Absolute(NodeID::Nested(id)) => {
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
             }
-            IndexScope::Root(name) => {
+            IndexScope::Absolute(NodeID::Root(name)) => {
                 encoder.write_string(name);
             }
         }
@@ -808,18 +811,20 @@ impl TypeRef {
             IndexScope::Relative(id) => {
                 // for single element id is the same as start so we can infer it
             }
-            IndexScope::Nested(id) => {
+            IndexScope::Absolute(NodeID::Nested(id)) => {
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
             }
-            IndexScope::Root(name) => {
+            IndexScope::Absolute(NodeID::Root(name)) => {
                 encoder.write_string(name);
             }
         }
     }
 
     #[cfg(feature = "weak")]
-    fn decode_weak_link<D: Decoder>(decoder: &mut D) -> Result<Arc<LinkSource>, Error> {
+    fn decode_weak_link<D: Decoder>(
+        decoder: &mut D,
+    ) -> Result<Arc<crate::weak::LinkSource>, Error> {
         let flags = decoder.read_u8()?;
         let is_single = flags & WEAK_REF_FLAGS_QUOTE == 0;
         let start_assoc = if flags & WEAK_REF_FLAGS_START_ASSOC == WEAK_REF_FLAGS_START_ASSOC {
@@ -839,12 +844,12 @@ impl TypeRef {
         let start_scope = if is_start_unbounded {
             if is_parent_root {
                 let name = decoder.read_string()?;
-                IndexScope::Root(name.into())
+                IndexScope::Absolute(NodeID::Root(name.into()))
             } else {
-                IndexScope::Nested(ID::new(
+                IndexScope::Absolute(NodeID::Nested(ID::new(
                     ClientID::new(decoder.read_var::<u64>()?),
                     decoder.read_var()?,
-                ))
+                )))
             }
         } else {
             IndexScope::Relative(ID::new(
@@ -856,12 +861,12 @@ impl TypeRef {
         let end_scope = if is_end_unbounded {
             if is_parent_root {
                 let name = decoder.read_string()?;
-                IndexScope::Root(name.into())
+                IndexScope::Absolute(NodeID::Root(name.into()))
             } else {
-                IndexScope::Nested(ID::new(
+                IndexScope::Absolute(NodeID::Nested(ID::new(
                     ClientID::new(decoder.read_var::<u64>()?),
                     decoder.read_var()?,
-                ))
+                )))
             }
         } else if is_single {
             start_scope.clone()
@@ -873,7 +878,7 @@ impl TypeRef {
         };
         let start = StickyIndex::new(start_scope, start_assoc);
         let end = StickyIndex::new(end_scope, end_assoc);
-        Ok(Arc::new(LinkSource::new(start, end)))
+        Ok(Arc::new(crate::weak::LinkSource::new(start, end)))
     }
 }
 

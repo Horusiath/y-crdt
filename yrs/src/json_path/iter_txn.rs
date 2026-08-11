@@ -115,9 +115,7 @@ fn member_union_iter<'a, D: Deref<Target = Doc>>(
             Some(Box::new(iter))
         }
         None => {
-            let iter = members
-                .into_iter()
-                .map(|key| Out::Node(NodeID::root(*key)));
+            let iter = members.into_iter().map(|key| Out::Node(NodeID::root(*key)));
             Some(Box::new(iter))
         }
         _ => None,
@@ -397,7 +395,7 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = Out> + 'a>;
 #[cfg(test)]
 mod test {
     use crate::updates::decoder::Decode;
-    use crate::{Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, MapPrelim, Out, Update, any};
+    use crate::{Doc, In, JsonPath, JsonPathEval, Out, Update, any};
 
     fn mixed_sample() -> Doc {
         let mut doc = Doc::new();

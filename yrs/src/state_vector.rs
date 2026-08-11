@@ -3,10 +3,10 @@ use crate::encoding::read::Error;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
-use crate::{IdSet, ID};
+use crate::{ID, IdSet};
 use std::cmp::Ordering;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::BuildHasherDefault;
 use std::iter::FromIterator;
 
@@ -211,7 +211,7 @@ impl Decode for Snapshot {
 mod test {
     use crate::block::ClientID;
     use crate::updates::decoder::Decode;
-    use crate::{Doc, StateVector, Text};
+    use crate::{Doc, StateVector};
     use std::cmp::Ordering;
     use std::iter::FromIterator;
 

@@ -1088,7 +1088,7 @@ impl<'doc> TransactionMut<'doc> {
             #[cfg(feature = "weak")]
             if let (Some(l), Some(r)) = (item.left, item.right) {
                 if l.info.is_linked() || r.info.is_linked() {
-                    crate::types::weak::join_linked_range(item_ptr, self);
+                    crate::weak::join_linked_range(item_ptr, self);
                 }
             }
         }
