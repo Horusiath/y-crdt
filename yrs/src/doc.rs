@@ -420,7 +420,7 @@ impl Doc {
             Entry::Vacant(e) => {
                 let mut branch = Node::new(type_ref);
                 let mut branch_ref = NodePtr::from(&mut branch);
-                branch_ref.name = Some(key);
+                branch_ref.name = Some(key); // root types are identified by name, see: Node::id
                 e.insert(branch);
                 branch_ref
             }

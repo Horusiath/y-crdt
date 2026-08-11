@@ -3,6 +3,7 @@ use crate::doc::OffsetKind;
 use crate::encoding::read::Error;
 use crate::gc::GCCollector;
 use crate::node::{Attrs, Node, NodePtr, TypePtr, TypeRef};
+use crate::node_ref::update_current_attributes;
 use crate::slice::{BlockSlice, ItemSlice};
 use crate::transaction::{TransactionMut, ensure_state};
 use crate::undo::UndoStack;
@@ -2006,8 +2007,7 @@ impl ItemContent {
             )),
             BLOCK_ITEM_TYPE_REF_NUMBER => {
                 let type_ref = TypeRef::decode(decoder)?;
-                let inner = Node::new(type_ref);
-                Ok(ItemContent::Node(inner))
+                Ok(ItemContent::Node(Node::new(type_ref)))
             }
             BLOCK_ITEM_ANY_REF_NUMBER => {
                 let len = decoder.read_len()? as usize;
@@ -2274,33 +2274,6 @@ impl std::fmt::Display for ItemPosition {
             write!(f, ", right: {}", r)?;
         }
         write!(f, ")")
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct PrelimString(pub SmallString<[u8; 8]>);
-
-impl Prelim for PrelimString {
-    type Return = Unused;
-
-    fn into_content(self, _txn: &mut TransactionMut) -> (ItemContent, Option<Self>) {
-        (ItemContent::String(self.0.into()), None)
-    }
-
-    fn integrate(self, _txn: &mut TransactionMut, _inner_ref: NodePtr) {}
-}
-
-/// Empty type marker, which can be used by a [Prelim] trait implementations when no integrated
-/// value should be returned after prelim type has been integrated as a result of insertion.
-#[repr(transparent)]
-pub struct Unused;
-
-impl TryFrom<ItemPtr> for Unused {
-    type Error = ItemPtr;
-
-    #[inline(always)]
-    fn try_from(_: ItemPtr) -> Result<Self, Self::Error> {
-        Ok(Unused)
     }
 }
 

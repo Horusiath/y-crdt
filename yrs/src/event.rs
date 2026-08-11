@@ -1,3 +1,4 @@
+use crate::node::{NodePtr, Path};
 use crate::transaction::Subdocs;
 use crate::{
     Delta, Doc, IdSet, NodeRef, StateVector, Transaction, TransactionMut, TransactionState, Uuid,
@@ -116,6 +117,15 @@ impl<'txn> Event<'txn> {
         todo!()
     }
 
+    pub(crate) fn set_current_target(&mut self, target: NodePtr) {
+        todo!()
+    }
+
+    /// A path from the node this event's observer is registered on, down to [Event::target].
+    pub fn path(&self) -> Path {
+        todo!()
+    }
+
     /// Whether children changed.
     pub fn children_changed(&self) -> bool {
         todo!()
@@ -127,7 +137,9 @@ impl<'txn> Event<'txn> {
     }
 
     pub fn delta(&self, options: /* todo */ ()) -> impl Iterator<Item = Delta> {
-        todo!()
+        todo!();
+        #[allow(unreachable_code)]
+        std::iter::empty()
     }
 
     /// Was this node deleted?

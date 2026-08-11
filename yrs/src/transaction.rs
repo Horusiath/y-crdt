@@ -5,7 +5,7 @@ use crate::event::{Event, SubdocsEvent};
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
-use crate::node::{Node, NodePtr, TypePtr};
+use crate::node::{Node, NodePtr, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
 use crate::update::Update;
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
@@ -235,20 +235,20 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
     #[inline]
     pub fn node<N: Into<NodeID>>(&self, id: N) -> Option<NodeRef<&Self>> {
         let node = match id.into() {
-            NodeID::Root(name) => self.doc.types.get(name.as_ref())?,
+            NodeID::Root(name) => NodePtr::from(self.doc.types.get(name.as_ref())?),
             NodeID::Nested(id) => {
                 let item = self.doc.blocks.get_item(&id)?;
                 if item.is_deleted() {
                     return None;
                 }
                 if let ItemContent::Node(node) = &item.content {
-                    node
+                    NodePtr::from(node)
                 } else {
                     return None;
                 }
             }
         };
-        Some(NodeRef::new(NodePtr::from(node), self))
+        Some(NodeRef::new(node, self))
     }
 
     /// If current document has been inserted as a sub-document, returns the guid of its parent
@@ -382,23 +382,20 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
     pub fn node_mut<N: Into<NodeID>>(&mut self, id: N) -> Option<NodeRef<&mut Self>> {
         let node = match id.into() {
-            NodeID::Root(name) => {
-                let mut e = self.doc.types.entry(name);
-                e.or_insert_with(|| Node::new(None))
-            }
+            NodeID::Root(name) => self.doc.get_or_create_type(name, TypeRef::Undefined),
             NodeID::Nested(id) => {
-                let item = self.doc.blocks.get_item(&id)?;
+                let mut item = self.doc.blocks.get_item(&id)?;
                 if item.is_deleted() {
                     return None;
                 }
                 if let ItemContent::Node(node) = &mut item.content {
-                    node
+                    NodePtr::from(&*node)
                 } else {
                     return None;
                 }
             }
         };
-        Some(NodeRef::new(NodePtr::from(node), self))
+        Some(NodeRef::new(node, self))
     }
 
     /// Prunes pending updates from the current document and returns them.
@@ -606,7 +603,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
                 ItemContent::Node(inner) => {
                     let branch_ptr = NodePtr::from(inner);
                     #[cfg(feature = "weak")]
-                    if let crate::types::TypeRef::WeakLink(source) = &branch_ptr.type_ref {
+                    if let TypeRef::WeakLink(source) = &branch_ptr.type_ref {
                         source.unlink_all(self, branch_ptr);
                     }
                     let mut ptr = branch_ptr.start;
@@ -750,18 +747,30 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
             (left, right, origin, id)
         };
-        let content = match value {
+        // preliminary node contents are integrated only after the item wrapping them has been
+        // integrated itself - otherwise nested content would have no parent to attach to
+        let mut remainder = None;
+        let mut content = match value {
             In::Any(value) => ItemContent::Any(vec![value]),
-            In::Node(node) => ItemContent::Node(Node::new(node.name)),
-            In::Doc(doc) => ItemContent::Doc(),
+            In::Node(node) => {
+                let type_ref = match &node.name {
+                    Some(name) => TypeRef::XmlElement(name.clone()),
+                    None => TypeRef::Undefined,
+                };
+                remainder = Some(node);
+                ItemContent::Node(Node::new(type_ref))
+            }
+            In::Doc(doc) => {
+                let options = doc.options.clone();
+                ItemContent::Doc(None, options)
+            }
         };
-        let (mut content, remainder) = value.into_content(self);
         let inner_ref = if let ItemContent::Node(inner_ref) = &mut content {
             Some(NodePtr::from(inner_ref))
         } else {
             None
         };
-        let mut block = Item::new(
+        let block = Item::new(
             id,
             left,
             origin,
@@ -774,7 +783,8 @@ impl<'doc> Transaction<&'doc mut Doc> {
         let block_ptr = self.integrate_item(block, 0);
 
         if let Some(remainder) = remainder {
-            remainder.integrate(self, inner_ref.unwrap().into())
+            let mut node = NodeRef::new(inner_ref.unwrap(), &mut *self);
+            node.apply_delta([remainder]);
         }
 
         block_ptr
@@ -856,23 +866,20 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
         // deep observe events
         for (&branch, events) in changed_parents.iter() {
+            for &i in events.iter() {
+                event_cache[i].set_current_target(branch);
+            }
+
             // sort events by path length so that top-level events are fired first.
-            let mut unsorted: Vec<&Event> = Vec::with_capacity(events.len());
-
-            for &i in events.iter() {
-                let e = &mut event_cache[i];
-                e.set_current_target(branch);
-            }
-
-            for &i in events.iter() {
-                unsorted.push(&event_cache[i]);
-            }
-
             // We don't need to check for events.length
             // because we know it has at least one element
-            unsorted.sort_by_key(|e| e.path());
+            let mut sorted: Vec<&Event> = events.iter().map(|&i| &event_cache[i]).collect();
+            sorted.sort_by_key(|e| e.path().len());
+
             let mut branch = branch;
-            branch.trigger_deep(self.as_readonly(), &events);
+            // SAFETY: same as as_readonly() — identical layout, shared ref only
+            let txn: &Transaction<&Doc> = unsafe { std::mem::transmute(&*self) };
+            branch.trigger_deep(txn, &sorted);
         }
     }
 

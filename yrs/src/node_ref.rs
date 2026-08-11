@@ -1,8 +1,8 @@
 use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr};
 use crate::delta::{AttrOp, Op};
-use crate::event::Event;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr};
 use crate::transaction::TransactionMut;
+use crate::utils::OptionExt;
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
 use std::collections::{Bound, HashMap};
 use std::fmt::{Display, Formatter};
@@ -22,9 +22,7 @@ impl<T> AsRef<Node> for NodeRef<T> {
 }
 
 impl<T> DeepObservable for NodeRef<T> {}
-impl<T> Observable for NodeRef<T> {
-    type Event = Event<'txn>;
-}
+impl<T> Observable for NodeRef<T> {}
 
 impl<T> NodeRef<T> {
     pub(crate) fn new(ptr: NodePtr, txn: T) -> Self {
@@ -37,7 +35,7 @@ impl<T> NodeRef<T> {
 }
 
 // read operations
-impl<'txn, T, D> NodeRef<T>
+impl<T, D> NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
     D: Deref<Target = Doc>,
@@ -49,8 +47,8 @@ where
         cursor
     }
 
-    pub fn txn(&self) -> &'txn Transaction<D> {
-        self.txn
+    pub fn txn(&self) -> &Transaction<D> {
+        &self.txn
     }
 
     /// The parent type, or `None` for root-level types.
@@ -115,7 +113,7 @@ where
     }
 
     /// Iterator over children values.
-    pub fn iter(&self) -> impl Iterator<Item = Out> + '_ {
+    pub fn iter(&self) -> Cursor {
         self.seek(0)
     }
 
@@ -183,7 +181,7 @@ where
     }
 }
 
-impl<'txn, T, D> Display for NodeRef<T>
+impl<T, D> Display for NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
     D: Deref<Target = Doc>,
@@ -194,11 +192,11 @@ where
 }
 
 // write operations
-impl<'txn, 'doc, T> NodeRef<T>
+impl<'doc, T> NodeRef<T>
 where
     T: DerefMut<Target = Transaction<&'doc mut Doc>>,
 {
-    pub fn txn_mut(&mut self) -> &mut Transaction<&mut Doc> {
+    pub fn txn_mut(&mut self) -> &mut Transaction<&'doc mut Doc> {
         &mut *self.txn
     }
 
@@ -301,13 +299,12 @@ where
         let mut removed = 0;
         let mut index = 0;
         while index < self.ptr.content_len {
-            match self.get(index) {
-                Some(value) if predicate(value) => {
-                    self.remove(index, 1);
-                    removed += 1;
-                    // elements after `index` shifted left, so don't advance
-                }
-                _ => index += 1,
+            if self.get(index).is_some_and(&mut predicate) {
+                self.remove(index, 1);
+                removed += 1;
+                // elements after `index` shifted left, so don't advance
+            } else {
+                index += 1;
             }
         }
         removed
@@ -334,7 +331,10 @@ where
             }
         };
 
-        let ptr = self.txn.create_item(&pos, value, Some(name)).unwrap();
+        let ptr = self
+            .txn
+            .create_item(&pos, value.into(), Some(name))
+            .unwrap();
         ptr.content.get_last().unwrap()
     }
 
@@ -423,13 +423,23 @@ impl Cursor {
     fn get(&self) -> Option<Out> {
         let item = self.curr?;
         match &item.content {
-            ItemContent::Any(values) => values.get(self.offset as usize).map(Out::from),
+            ItemContent::Any(values) => values
+                .get(self.offset as usize)
+                .cloned()
+                .map(Out::Any),
             ItemContent::String(slice) => {
-                Some(Out::Any(slice[self.offset as usize].to_string().into()))
+                let c = slice.chars().nth(self.offset as usize)?;
+                Some(Out::Any(Any::String(c.to_string().into())))
             }
-            ItemContent::JSON(values) => values.get(self.offset as usize).map(Out::from),
-            ItemContent::Binary(bin) if self.offset == 0 => Some(Out::Any(Any::Buffer(bin.into()))),
-            ItemContent::Doc(_, options) if self.offset == 0 => Some(Out::Doc(options.guid)),
+            ItemContent::JSON(values) => values
+                .get(self.offset as usize)
+                .map(|json| Out::Any(Any::from(json.as_str()))),
+            ItemContent::Binary(bin) if self.offset == 0 => {
+                Some(Out::Any(Any::Buffer(bin.as_slice().into())))
+            }
+            ItemContent::Doc(_, options) if self.offset == 0 => {
+                Some(Out::Doc(options.guid.clone()))
+            }
             ItemContent::Embed(value) if self.offset == 0 => Some(Out::Any(value.clone())),
             ItemContent::Node(node) if self.offset == 0 => Some(Out::Node(node.id())),
             _ => None,
@@ -568,7 +578,7 @@ fn insert(
     item
 }
 
-fn update_current_attributes(attrs: &mut Attrs, key: &str, value: &Any) {
+pub(crate) fn update_current_attributes(attrs: &mut Attrs, key: &str, value: &Any) {
     if let Any::Null = value {
         attrs.remove(key);
     } else {

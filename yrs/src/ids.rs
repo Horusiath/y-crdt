@@ -428,7 +428,7 @@ impl<T: Merge> IdRanges<T> {
         let other = other.0.as_slice();
         let mut i = 0usize;
 
-        for (ref range, ref value) in self.0.iter() {
+        for (range, value) in self.0.iter() {
             let mut start = range.start;
             let end = range.end;
 
@@ -476,7 +476,7 @@ impl<T: Merge> IdRanges<T> {
         let other = other.0.as_slice();
         let mut i = 0usize;
 
-        for (ref range, ref value) in self.0.iter() {
+        for (range, value) in self.0.iter() {
             while i < other.len() && other[i].0.end <= range.start {
                 i += 1;
             }

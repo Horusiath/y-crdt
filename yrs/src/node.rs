@@ -1,8 +1,9 @@
 use crate::block::{Block, Item, ItemContent, ItemPosition, ItemPtr};
+use crate::encoding::read::Error;
 use crate::event::Event;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{Any, Doc, ID, Observer, Origin, Out, Subscription, Transaction, TransactionMut};
+use crate::{Any, Doc, ID, In, Observer, Origin, Out, Subscription, Transaction, TransactionMut};
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -15,6 +16,10 @@ use std::sync::Arc;
 
 pub type Attrs = HashMap<Arc<str>, Any>;
 
+/// A batch of [Event]s bubbled up from nested shared collections, passed to deep observers.
+/// They are sorted by the length of their [Event::path], so that top-most events come first.
+pub type Events<'txn> = [Event<'txn>];
+
 /// A wrapper around [Node] cell, supplied with a bunch of convenience methods to operate on both
 /// map-like and array-like contents of a [Node].
 #[repr(transparent)]
@@ -25,17 +30,21 @@ unsafe impl Send for NodePtr {}
 unsafe impl Sync for NodePtr {}
 
 impl NodePtr {
-    pub(crate) fn trigger(
+    pub(crate) fn trigger<'txn>(
         &mut self,
-        txn: &Transaction<&Doc>,
+        txn: &'txn Transaction<&'txn Doc>,
         subs: HashSet<Option<Arc<str>>>,
-    ) -> Option<Event> {
-        let e = self.make_event(subs)?;
+    ) -> Option<Event<'txn>> {
+        let e = self.make_event(txn, subs)?;
         self.observers.trigger(|fun| fun(txn, &e));
         Some(e)
     }
 
-    pub(crate) fn trigger_deep<'txn>(&mut self, txn: &'txn Transaction<&Doc>, e: &[Event<'txn>]) {
+    pub(crate) fn trigger_deep<'txn>(
+        &mut self,
+        txn: &'txn Transaction<&'txn Doc>,
+        e: &Events<'txn>,
+    ) {
         self.deep_observers.trigger(|fun| fun(txn, e));
     }
 }
@@ -116,22 +125,10 @@ impl<'a> From<&'a Node> for NodePtr {
 }
 
 impl Into<Out> for NodePtr {
-    /// Converts current branch data into a [Out]. It uses a type ref information to resolve,
-    /// which value variant is a correct one for this branch. Since branch represent only complex
-    /// types [Out::Any] will never be returned from this method.
+    /// Converts current branch data into a [Out]. Since branches represent only complex types,
+    /// the result is always [Out::Node] pointing at a logical identifier of this branch.
     fn into(self) -> Out {
-        match self.type_ref() {
-            TypeRef::Array => Out::YArray(ArrayRef::from(self)),
-            TypeRef::Map => Out::YMap(MapRef::from(self)),
-            TypeRef::Text => Out::YText(TextRef::from(self)),
-            TypeRef::XmlElement(_) => Out::YXmlElement(XmlElementRef::from(self)),
-            TypeRef::XmlFragment => Out::YXmlFragment(XmlFragmentRef::from(self)),
-            TypeRef::XmlText => Out::YXmlText(XmlTextRef::from(self)),
-            //TYPE_REFS_XML_HOOK => Value::YXmlHook(XmlHookRef::from(self)),
-            #[cfg(feature = "weak")]
-            TypeRef::WeakLink(_) => Out::YWeakLink(crate::WeakRef::from(self)),
-            _ => Out::UndefinedRef(self),
-        }
+        Out::Node(self.id())
     }
 }
 
@@ -239,7 +236,7 @@ impl PartialEq for Node {
 }
 
 impl Node {
-    pub fn new(name: Option<Arc<str>>) -> Box<Self> {
+    pub fn new(name: Option<Arc<str>>, type_ref: TypeRef) -> Box<Self> {
         Box::new(Self {
             start: None,
             map: HashMap::default(),
@@ -247,7 +244,7 @@ impl Node {
             content_len: 0,
             item: None,
             name,
-            type_ref: TypeRef::Undefined,
+            type_ref,
             observers: Observer::default(),
             deep_observers: Observer::default(),
             has_formatting: false,
@@ -295,12 +292,6 @@ impl Node {
 
     pub fn content_len(&self) -> u32 {
         self.content_len
-    }
-
-    /// Get iterator over (String, Block) entries of a map component of a current root type.
-    /// Deleted blocks are skipped by this iterator.
-    pub(crate) fn entries<'a>(&'a self, doc: &'a Doc) -> Entries<'a> {
-        Entries::new(&self.map, doc)
     }
 
     /// Get iterator over Block entries of an array component of a current root type.
@@ -451,11 +442,11 @@ impl Node {
 
     /// Inserts a preliminary `value` into a current branch indexed sequence component at the given
     /// `index`. Returns an item reference created as a result of this operation.
-    pub(crate) fn insert_at<V: Prelim>(
+    pub(crate) fn insert_at(
         &self,
         txn: &mut TransactionMut,
         index: u32,
-        value: V,
+        value: In,
     ) -> Option<ItemPtr> {
         let (start, parent) = {
             if index <= self.len() {
@@ -595,7 +586,11 @@ impl Node {
         false
     }
 
-    pub(crate) fn make_event(&self, keys: HashSet<Option<Arc<str>>>) -> Option<Event> {
+    pub(crate) fn make_event<'txn>(
+        &self,
+        txn: &'txn Transaction<&'txn Doc>,
+        keys: HashSet<Option<Arc<str>>>,
+    ) -> Option<Event<'txn>> {
         todo!()
     }
 }
@@ -663,12 +658,47 @@ impl NodeID {
     }
 }
 
-impl std::fmt::Debug for NodeID {
+impl From<&str> for NodeID {
+    #[inline]
+    fn from(name: &str) -> Self {
+        NodeID::Root(name.into())
+    }
+}
+
+impl From<String> for NodeID {
+    #[inline]
+    fn from(name: String) -> Self {
+        NodeID::Root(name.into())
+    }
+}
+
+impl From<Arc<str>> for NodeID {
+    #[inline]
+    fn from(name: Arc<str>) -> Self {
+        NodeID::Root(name)
+    }
+}
+
+impl From<ID> for NodeID {
+    #[inline]
+    fn from(id: ID) -> Self {
+        NodeID::Nested(id)
+    }
+}
+
+impl std::fmt::Display for NodeID {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             NodeID::Nested(id) => write!(f, "{}", id),
             NodeID::Root(name) => write!(f, "'{}'", name),
         }
+    }
+}
+
+impl std::fmt::Debug for NodeID {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -924,40 +954,29 @@ impl Decode for TypeRef {
 
 #[cfg(feature = "sync")]
 pub trait Observable: AsRef<Node> {
-    type Event;
-
     /// Subscribes a given callback to be triggered whenever current y-type is changed.
     /// A callback is triggered whenever a transaction gets committed. This function does not
     /// trigger if changes have been observed by nested shared collections.
     ///
     /// All array-like event changes can be tracked by using [Event::delta] method.
     /// All map-like event changes can be tracked by using [Event::keys] method.
-    /// All text-like event changes can be tracked by using [TextEvent::delta] method.
     ///
     /// Returns a [Subscription] which, when dropped, will unsubscribe current callback.
-    fn observe<F>(&self, mut f: F) -> Subscription
+    fn observe<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Self::Event) + Send + Sync + 'static,
-        Event: AsRef<Self::Event>,
+        F: FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
-        branch.observe(move |txn, e| {
-            let mapped_event = e.as_ref();
-            f(txn, mapped_event)
-        })
+        branch.observe(f)
     }
 
-    fn observe_with<K, F>(&self, key: K, mut f: F)
+    fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Transaction<&Doc>, &Self::Event) + Send + Sync + 'static,
-        Event: AsRef<Self::Event>,
+        F: FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
-        branch.observe_with(key.into(), move |txn, e| {
-            let mapped_event = e.as_ref();
-            f(txn, mapped_event)
-        })
+        branch.observe_with(key.into(), f)
     }
 
     fn unobserve<K: Into<Origin>>(&self, key: K) -> bool {
@@ -968,31 +987,21 @@ pub trait Observable: AsRef<Node> {
 
 #[cfg(not(feature = "sync"))]
 pub trait Observable: AsRef<Node> {
-    type Event;
-
-    fn observe<F>(&self, mut f: F) -> Subscription
+    fn observe<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Self::Event) + 'static,
-        Event: AsRef<Self::Event>,
+        F: FnMut(&Transaction<&Doc>, &Event) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
-        branch.observe(move |txn, e| {
-            let mapped_event = e.as_ref();
-            f(txn, mapped_event)
-        })
+        branch.observe(f)
     }
 
-    fn observe_with<K, F>(&self, key: K, mut f: F)
+    fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Transaction<&Doc>, &Self::Event) + 'static,
-        Event: AsRef<Self::Event>,
+        F: FnMut(&Transaction<&Doc>, &Event) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
-        branch.observe_with(key.into(), move |txn, e| {
-            let mapped_event = e.as_ref();
-            f(txn, mapped_event)
-        })
+        branch.observe_with(key.into(), f)
     }
 
     fn unobserve<K: Into<Origin>>(&self, key: K) -> bool {

@@ -318,53 +318,6 @@ impl BlockIter {
         }
     }
 
-    pub fn insert_contents<V: Into<In>>(
-        &mut self,
-        txn: &mut TransactionMut,
-        value: V,
-    ) -> Option<ItemPtr> {
-        self.split_rel(txn);
-        let id = {
-            let store = txn.doc();
-            let client_id = store.options.client_id;
-            let clock = store.blocks.get_clock(&client_id);
-            ID::new(client_id, clock)
-        };
-        let parent = TypePtr::Node(self.branch);
-        let right = self.right();
-        let left = self.left();
-        let (mut content, remainder) = value.into_content(txn);
-        let inner_ref = if let ItemContent::Node(inner_ref) = &mut content {
-            Some(NodePtr::from(inner_ref))
-        } else {
-            None
-        };
-        let block = Item::new(
-            id,
-            left,
-            left.map(|ptr| ptr.last_id()),
-            right,
-            right.map(|r| *r.id()),
-            parent,
-            None,
-            content,
-        )?;
-        let block_ptr = txn.integrate_item(block, 0);
-
-        if let Some(remainder) = remainder {
-            remainder.integrate(txn, inner_ref.unwrap().into())
-        }
-
-        if let Some(item) = right.as_deref() {
-            self.next_item = item.right;
-        } else {
-            self.next_item = left;
-            self.reached_end = true;
-        }
-
-        block_ptr
-    }
-
     pub fn values<'a, 'doc>(&'a mut self, doc: &'doc Doc) -> Values<'a, 'doc> {
         Values::new(self, doc)
     }

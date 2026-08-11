@@ -1,6 +1,6 @@
 use crate::any::AnyArrayIter;
 use crate::json_path::JsonPathToken;
-use crate::{Any, Doc, JsonPath, JsonPathEval, Out, Transaction};
+use crate::{Any, Doc, JsonPath, JsonPathEval, NodeID, Out, Transaction};
 use std::ops::Deref;
 
 impl<D> JsonPathEval for Transaction<D>
@@ -61,8 +61,7 @@ fn slice_iter<'a, D: Deref<Target = Doc>>(
             ))
         }
         Some(Out::Node(id)) => {
-            let node = txn.node(id)?;
-            let mut iter = node.iter();
+            let iter = txn.node(id)?.iter();
             Some(Box::new(iter.skip(from).take(to - from).step_by(by)))
         }
         _ => None,
@@ -86,23 +85,12 @@ fn any_iter<'a, D: Deref<Target = Doc>>(
         }
         Some(Out::Node(id)) => {
             let node = txn.node(id)?;
-            Some(dyn_iter(node.iter()))
-        }
-        Some(Out::YArray(array)) => Some(dyn_iter(array.iter(txn))),
-        Some(Out::YXmlElement(elem)) => Some(dyn_iter(elem.children(txn).map(Out::from))),
-        Some(Out::YXmlFragment(elem)) => Some(dyn_iter(elem.children(txn).map(Out::from))),
-        Some(Out::YMap(map)) => Some(dyn_iter(map.into_iter(txn).map(|(_, value)| value))),
-        Some(Out::UndefinedRef(branch)) => {
-            // undefined ref only happens for root level types. These can be: ArrayRef, MapRef,
-            // XmlFragmentRef, TextRef. For JsonPath, we only care about ArrayRef and MapRef.
-            if branch.start.is_some() {
-                // a list component is not empty: we assume it's an Array
-                let array = crate::ArrayRef::from(branch);
-                Some(dyn_iter(array.iter(txn)))
+            // a node acts both as an indexed sequence and as a map: if its list component is
+            // empty, fall back onto its attributes
+            if node.len() != 0 {
+                Some(dyn_iter(node.iter()))
             } else {
-                // we assume it's a YMap
-                let map = crate::MapRef::from(branch);
-                Some(dyn_iter(map.into_iter(txn).map(|(_, value)| value)))
+                Some(dyn_iter(node.attr_values().collect::<Vec<_>>().into_iter()))
             }
         }
         _ => None,
@@ -121,12 +109,15 @@ fn member_union_iter<'a, D: Deref<Target = Doc>>(
                 .flat_map(move |key| map.get(*key).cloned().map(Out::Any));
             Some(Box::new(iter))
         }
-        Some(Out::YMap(map)) => {
-            let iter = members.into_iter().flat_map(move |key| map.get(txn, *key));
+        Some(Out::Node(id)) => {
+            let node = txn.node(id)?;
+            let iter = members.into_iter().flat_map(move |key| node.attr(*key));
             Some(Box::new(iter))
         }
         None => {
-            let iter = members.into_iter().flat_map(move |key| txn.get(key));
+            let iter = members
+                .into_iter()
+                .map(|key| Out::Node(NodeID::root(*key)));
             Some(Box::new(iter))
         }
         _ => None,
@@ -150,39 +141,16 @@ fn index_union_iter<'a, D: Deref<Target = Doc>>(
             });
             Some(Box::new(iter))
         }
-        Some(Out::YArray(array)) => {
-            let len = array.len(txn);
+        Some(Out::Node(id)) => {
+            let node = txn.node(id)?;
+            let len = node.len();
             let iter = indices.into_iter().flat_map(move |i| {
                 let i = if *i < 0 {
                     (len as i32 + *i) as u32
                 } else {
                     *i as u32
                 };
-                array.get(txn, i)
-            });
-            Some(Box::new(iter))
-        }
-        Some(Out::YXmlFragment(xml)) => {
-            let len = xml.len(txn);
-            let iter = indices.into_iter().flat_map(move |i| {
-                let i = if *i < 0 {
-                    (len as i32 + *i) as u32
-                } else {
-                    *i as u32
-                };
-                xml.get(txn, i).map(Out::from)
-            });
-            Some(Box::new(iter))
-        }
-        Some(Out::YXmlElement(xml)) => {
-            let len = xml.len(txn);
-            let iter = indices.into_iter().flat_map(move |i| {
-                let i = if *i < 0 {
-                    (len as i32 + *i) as u32
-                } else {
-                    *i as u32
-                };
-                xml.get(txn, i).map(Out::from)
+                node.get(i)
             });
             Some(Box::new(iter))
         }
@@ -337,16 +305,9 @@ fn get_member<D: Deref<Target = Doc>>(
     key: &str,
 ) -> Option<Out> {
     match out {
-        None => txn.get(key),
-        Some(Out::YMap(map)) => map.get(txn, key),
+        None => Some(Out::Node(NodeID::root(key))),
         Some(Out::Any(Any::Map(map))) => map.get(key).map(|any| Out::Any(any.clone())),
-        Some(Out::YXmlElement(elem)) => elem.get_attribute(txn, key),
-        Some(Out::YXmlText(elem)) => elem.get_attribute(txn, key),
-        Some(Out::UndefinedRef(branch)) => {
-            // we assume it's a YMap
-            let map = crate::MapRef::from(*branch);
-            map.get(txn, key)
-        }
+        Some(Out::Node(id)) => txn.node(id.clone())?.attr(key),
         _ => None,
     }
 }
@@ -357,14 +318,6 @@ fn get_index<D: Deref<Target = Doc>>(
     idx: i32,
 ) -> Option<Out> {
     match out {
-        Some(Out::YArray(array)) => {
-            let idx = if idx < 0 {
-                array.len(txn) as i32 + idx
-            } else {
-                idx
-            } as u32;
-            array.get(txn, idx)
-        }
         Some(Out::Any(Any::Array(array))) => {
             let idx = if idx < 0 {
                 array.len() as i32 + idx
@@ -373,31 +326,14 @@ fn get_index<D: Deref<Target = Doc>>(
             } as usize;
             array.get(idx).cloned().map(Out::Any)
         }
-        Some(Out::YXmlFragment(elem)) => {
+        Some(Out::Node(id)) => {
+            let node = txn.node(id.clone())?;
             let idx = if idx < 0 {
-                elem.len(txn) as i32 + idx
+                node.len() as i32 + idx
             } else {
                 idx
             } as u32;
-            elem.get(txn, idx).map(Out::from)
-        }
-        Some(Out::YXmlElement(elem)) => {
-            let idx = if idx < 0 {
-                elem.len(txn) as i32 + idx
-            } else {
-                idx
-            } as u32;
-            elem.get(txn, idx).map(Out::from)
-        }
-        Some(Out::UndefinedRef(array)) => {
-            // we assume it's a YMap
-            let array = crate::ArrayRef::from(*array);
-            let idx = if idx < 0 {
-                array.len(txn) as i32 + idx
-            } else {
-                idx
-            } as u32;
-            array.get(txn, idx)
+            node.get(idx)
         }
         _ => None,
     }
