@@ -3,8 +3,8 @@
 
 use std::fmt::Formatter;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 /// Atomic reference holding a value, that's supposed to be shared - potentially between multiple
 /// threads. Internally this value is hidden behind [Arc] reference, which is returned during

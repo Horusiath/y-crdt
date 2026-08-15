@@ -6,7 +6,7 @@ use crate::node::{Node, NodePtr};
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{Cell, Doc, ID, IdSet, Observer, Transaction, TransactionMut, Uuid};
+use crate::{Cell, Doc, ID, IdSet, NodeID, Observer, Transaction, TransactionMut, Uuid};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
@@ -165,10 +165,7 @@ where
     }
 
     /// Extends a list of shared types tracked by current undo manager by a given `scope`.
-    pub fn expand_scope<T>(&mut self, doc: &Cell<Doc>, scope: &T)
-    where
-        T: AsRef<Node>,
-    {
+    pub fn expand_scope(&mut self, doc: &Cell<Doc>, scope: NodeID) {
         let origin = Origin::from(Arc::as_ptr(&self.state) as usize);
         let inner_mut = Arc::get_mut(&mut self.state).unwrap();
         let ptr1 = AtomicPtr::new(inner_mut as *mut Inner<M>);
@@ -997,7 +994,10 @@ mod test {
     use crate::test_utils::exchange_updates;
     use crate::undo::{Options, StackItem};
     use crate::updates::decoder::Decode;
-    use crate::{Any, Cell, Delta, DeltaOptions, Doc, In, StateVector, UndoManager, Update, any};
+    use crate::{
+        Any, Cell, Delta, DeltaOptions, Doc, In, NodeID, NodeRef, Origin, Out, StateVector,
+        TransactionMut, UndoManager, Update, any,
+    };
 
     #[test]
     fn undo_text() {
@@ -1010,7 +1010,7 @@ mod test {
                 .as_ref(),
         );
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, &txt1);
+        mgr.expand_scope(&d1, "test".into());
 
         let d2 = Cell::new(Doc::with_client_id(2));
 
@@ -1106,21 +1106,24 @@ mod test {
             "xyz"
         );
         mgr.redo_blocking();
-        let mut txt1 = d1.acquire_mut().transact_mut().node_mut("test").unwrap();
-        assert_eq!(txt1.to_string(), "bcxyz");
+        {
+            let mut d1 = d1.acquire_mut();
+            let mut t1 = d1.transact_mut();
+            let mut txt1 = t1.node_mut("test").unwrap();
+            assert_eq!(txt1.to_string(), "bcxyz");
 
-        let bold = Attrs::from([("bold".into(), true.into())]);
-        txt1.format(1, 3, bold.clone());
-        let diff = txt1.to_delta(&DeltaOptions::default());
-        assert_eq!(
-            diff,
-            vec![
-                Delta::new().insert_text("b"..).map(In::into),
-                Delta::new().insert_text_with("cxy", bold).map(In::into),
-                Delta::new().insert_text("z"..).map(In::into)
-            ]
-        );
-
+            let bold = Attrs::from([("bold".into(), true.into())]);
+            txt1.format(1, 3, bold.clone());
+            let diff = txt1.to_delta(&DeltaOptions::default());
+            assert_eq!(
+                diff,
+                vec![
+                    Delta::out().insert_text("b"),
+                    Delta::out().insert_text_with("cxy", bold),
+                    Delta::out().insert_text("z"),
+                ]
+            );
+        }
         mgr.undo_blocking();
         mgr.redo_blocking();
     }
@@ -1128,13 +1131,6 @@ mod test {
     #[test]
     fn double_undo() {
         let doc = Cell::new(Doc::with_client_id(1));
-        let txt = NodePtr::from(
-            doc.acquire_mut()
-                .transact_mut()
-                .node_mut("test")
-                .unwrap()
-                .as_ref(),
-        );
         doc.acquire_mut()
             .transact_mut()
             .node_mut("test")
@@ -1142,7 +1138,7 @@ mod test {
             .insert_text(0, "1221");
 
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc, &txt);
+        mgr.expand_scope(&doc, "test".into());
         doc.acquire_mut()
             .transact_mut()
             .node_mut("test")
@@ -1171,13 +1167,6 @@ mod test {
     #[test]
     fn undo_map() {
         let d1 = Cell::new(Doc::with_client_id(1));
-        let map1 = NodePtr::from(
-            d1.acquire_mut()
-                .transact_mut()
-                .node_mut("test")
-                .unwrap()
-                .as_ref(),
-        );
 
         d1.acquire_mut()
             .transact_mut()
@@ -1185,7 +1174,7 @@ mod test {
             .unwrap()
             .insert_attr("a", 0);
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, &map1);
+        mgr.expand_scope(&d1, "test".into());
         d1.acquire_mut()
             .transact_mut()
             .node_mut("test")
@@ -1222,18 +1211,18 @@ mod test {
             .transact_mut()
             .node_mut("test")
             .unwrap()
-            .insert_attr("b", "initial");
+            .insert_attr("b", "initial".to_string());
         mgr.reset();
         d1.acquire_mut()
             .transact_mut()
             .node_mut("test")
             .unwrap()
-            .insert_attr("b", "val1");
+            .insert_attr("b", "val1".to_string());
         d1.acquire_mut()
             .transact_mut()
             .node_mut("test")
             .unwrap()
-            .insert_attr("b", "val2");
+            .insert_attr("b", "val2".to_string());
         mgr.reset();
         mgr.undo_blocking();
         assert_eq!(
@@ -1247,205 +1236,215 @@ mod test {
         );
     }
 
-    #[test]
-    // TODO(unified-api): nested MapPrelim/ArrayPrelim + Array::insert_range + Out::cast have no NodeRef equivalent yet
-    fn undo_array() {
-        let d1 = Cell::new(Doc::with_client_id(1));
-        let array1 = d1.acquire_mut().get_or_insert_array("test");
+    fn node<F, T>(cell: &Cell<Doc>, node: impl Into<NodeID>, f: F) -> T
+    where
+        F: FnOnce(NodeRef<&mut TransactionMut<'_>>) -> T,
+    {
+        let mut doc = cell.acquire_mut();
+        let mut txn = doc.transact_mut();
+        let node = txn.node_mut(node.into()).unwrap();
+        f(node)
+    }
 
-        let d2 = Cell::new(Doc::with_client_id(2));
-        let array2 = d2.acquire_mut().get_or_insert_array("test");
-
-        let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, &array1);
-        array1.insert_range(&mut d1.acquire_mut().transact_mut(), 0, [1, 2, 3]);
-        array2.insert_range(&mut d2.acquire_mut().transact_mut(), 0, [4, 5, 6]);
-
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![1, 2, 3, 4, 5, 6].into()
-        );
-        mgr.undo_blocking();
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![4, 5, 6].into()
-        );
-        mgr.redo_blocking();
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![1, 2, 3, 4, 5, 6].into()
-        );
-
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-
-        array2.remove_range(&mut d2.acquire_mut().transact_mut(), 0, 1); // user2 deletes [1]
-
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-
-        mgr.undo_blocking();
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![4, 5, 6].into()
-        );
-        mgr.redo_blocking();
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![2, 3, 4, 5, 6].into()
-        );
-        array1.remove_range(&mut d1.acquire_mut().transact_mut(), 0, 5);
-
-        // test nested structure
-        let map = array1.insert(
-            &mut d1.acquire_mut().transact_mut(),
-            0,
-            MapPrelim::default(),
-        );
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{}]"#).unwrap();
-        assert_eq!(actual, expected);
-        mgr.reset();
-        map.insert(&mut d1.acquire_mut().transact_mut(), "a", 1);
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{"a":1}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        mgr.undo_blocking();
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        mgr.undo_blocking();
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![2, 3, 4, 5, 6].into()
-        );
-
-        mgr.redo_blocking();
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        mgr.redo_blocking();
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{"a":1}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-
-        let map2 = array2
-            .get(&d2.acquire().transact(), 0)
-            .unwrap()
-            .cast::<MapRef>()
-            .unwrap();
-        map2.insert(&mut d2.acquire_mut().transact_mut(), "b", 2);
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        mgr.undo_blocking();
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{"b":2}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        mgr.undo_blocking();
-        assert_eq!(
-            array1.to_json(&d1.acquire().transact()),
-            vec![2, 3, 4, 5, 6].into()
-        );
-
-        mgr.redo_blocking();
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{"b":2}]"#).unwrap();
-        assert_eq!(actual, expected);
-
-        mgr.redo_blocking();
-        let actual = array1.to_json(&d1.acquire().transact());
-        let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
-        assert_eq!(actual, expected);
+    /// Same as [node], but the underlying transaction is tagged with a given `origin`.
+    fn node_with<F, T>(
+        cell: &Cell<Doc>,
+        origin: impl Into<Origin>,
+        node: impl Into<NodeID>,
+        f: F,
+    ) -> T
+    where
+        F: FnOnce(NodeRef<&mut TransactionMut<'_>>) -> T,
+    {
+        let mut doc = cell.acquire_mut();
+        let mut txn = doc.transact_mut_with(origin);
+        let node = txn.node_mut(node.into()).unwrap();
+        f(node)
     }
 
     #[test]
-    // TODO(unified-api): XML types (XmlElementPrelim/XmlTextPrelim) are not part of the new API
-    fn undo_xml() {
+    // TODO(unified-api): nested MapPrelim/ArrayPrelim + Array::insert_range + Out::cast have no NodeRef equivalent yet
+    fn undo_array() {
+        let array = NodeID::root("test");
         let d1 = Cell::new(Doc::with_client_id(1));
-        let frag = d1.acquire_mut().get_or_insert_xml_fragment("xml");
-        let xml1 = frag.insert(
-            &mut d1.acquire_mut().transact_mut(),
-            0,
-            XmlElementPrelim::empty("undefined"),
-        );
+
+        let d2 = Cell::new(Doc::with_client_id(2));
 
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, &xml1);
-        let child = xml1.insert(
-            &mut d1.acquire_mut().transact_mut(),
-            0,
-            XmlElementPrelim::empty("p"),
-        );
-        let text_child = child.insert(
-            &mut d1.acquire_mut().transact_mut(),
-            0,
-            XmlTextPrelim::new("content"),
-        );
+        mgr.expand_scope(&d1, array.clone());
+        node(&d1, "test", |mut array| array.insert_range(0, [1, 2, 3]));
+        node(&d2, "test", |mut array| array.insert_range(0, [4, 5, 6]));
 
-        assert_eq!(
-            xml1.get_string(&d1.acquire().transact()),
-            "<undefined><p>content</p></undefined>"
-        );
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+
+        node(&d1, "test", |mut array| {
+            assert_eq!(array.to_json(), vec![1, 2, 3, 4, 5, 6].into())
+        });
+
+        mgr.undo_blocking();
+
+        node(&d1, "test", |mut array| {
+            assert_eq!(array.to_json(), vec![4, 5, 6].into())
+        });
+
+        mgr.redo_blocking();
+
+        node(&d1, "test", |mut array| {
+            assert_eq!(array.to_json(), vec![1, 2, 3, 4, 5, 6].into())
+        });
+
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+
+        node(&d2, "test", |mut array| {
+            array.remove(0, 1); // user2 deletes [1]
+        });
+
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+
+        mgr.undo_blocking();
+        node(&d2, "test", |mut array| {
+            assert_eq!(array.to_json(), vec![4, 5, 6].into());
+        });
+
+        mgr.redo_blocking();
+
+        node(&d1, "test", |mut array| {
+            assert_eq!(array.to_json(), vec![2, 3, 4, 5, 6].into());
+            array.remove(0, 5);
+        });
+
+        // test nested structure
+        let map = node(&d1, "test", |mut array| {
+            let Out::Node(map) = array.insert(0, Delta::new()) else {
+                unreachable!()
+            };
+            assert_eq!(array.to_json(), Any::from_json(r#"[{}]"#).unwrap());
+            map
+        });
+
+        mgr.reset();
+
+        node(&d1, map.clone(), |mut map| {
+            map.insert_attr("a", 1);
+        });
+        node(&d1, "test", |mut array| {
+            assert_eq!(array.to_json(), Any::from_json(r#"[{"a":1}]"#).unwrap());
+        });
+
+        mgr.undo_blocking();
+
+        node(&d1, "test", |mut array| {
+            let actual = array.to_json();
+            let expected = Any::from_json(r#"[{}]"#).unwrap();
+            assert_eq!(actual, expected);
+        });
+
+        mgr.undo_blocking();
+
+        node(&d1, "test", |mut array| {
+            assert_eq!(array.to_json(), vec![2, 3, 4, 5, 6].into());
+        });
+
+        mgr.redo_blocking();
+
+        node(&d1, "test", |mut array| {
+            let actual = array.to_json();
+            let expected = Any::from_json(r#"[{}]"#).unwrap();
+            assert_eq!(actual, expected);
+        });
+
+        mgr.redo_blocking();
+        node(&d1, "test", |array| {
+            let actual = array.to_json();
+            let expected = Any::from_json(r#"[{"a":1}]"#).unwrap();
+            assert_eq!(actual, expected);
+        });
+
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+
+        let map2 = node(&d2, "test", |array| {
+            array.get(0).unwrap().node_id().unwrap()
+        });
+        node(&d2, map2, |mut map| {
+            map.insert_attr("b", 2);
+        });
+
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+
+        node(&d1, "test", |array| {
+            let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
+            assert_eq!(array.to_json(), expected);
+        });
+
+        mgr.undo_blocking();
+        node(&d1, "test", |array| {
+            let expected = Any::from_json(r#"[{"b":2}]"#).unwrap();
+            assert_eq!(array.to_json(), expected);
+        });
+
+        mgr.undo_blocking();
+        node(&d1, "test", |array| {
+            assert_eq!(array.to_json(), vec![2, 3, 4, 5, 6].into());
+        });
+
+        mgr.redo_blocking();
+        node(&d1, "test", |array| {
+            let expected = Any::from_json(r#"[{"b":2}]"#).unwrap();
+            assert_eq!(array.to_json(), expected);
+        });
+
+        mgr.redo_blocking();
+        node(&d1, "test", |array| {
+            let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
+            assert_eq!(array.to_json(), expected);
+        });
+    }
+
+    #[test]
+    fn undo_xml() {
+        let d1 = Cell::new(Doc::with_client_id(1));
+        let xml1 = node(&d1, "xml", |mut frag| {
+            frag.insert(0, Delta::with_name("undefined"))
+                .node_id()
+                .unwrap()
+        });
+
+        let mut mgr = UndoManager::new();
+        mgr.expand_scope(&d1, xml1.clone());
+        let child = node(&d1, xml1.clone(), |mut xml| {
+            xml.insert(0, Delta::with_name("p")).node_id().unwrap()
+        });
+        let text_child = node(&d1, child, |mut child| {
+            child
+                .insert(0, Delta::new().insert_text("content"))
+                .node_id()
+                .unwrap()
+        });
+
+        let as_string = || node(&d1, xml1.clone(), |xml| xml.to_string());
+
+        assert_eq!(as_string(), "<undefined><p>content</p></undefined>");
         // format textchild and revert that change
         mgr.reset();
-        text_child.format(
-            &mut d1.acquire_mut().transact_mut(),
-            3,
-            4,
-            Attrs::from([("bold".into(), any!({}))]),
-        );
+        node(&d1, text_child, |mut text| {
+            text.format(3, 4, Attrs::from([("bold".into(), any!({}))]))
+        });
         assert_eq!(
-            xml1.get_string(&d1.acquire().transact()),
+            as_string(),
             "<undefined><p>con<bold>tent</bold></p></undefined>"
         );
         mgr.undo_blocking();
-        assert_eq!(
-            xml1.get_string(&d1.acquire().transact()),
-            "<undefined><p>content</p></undefined>"
-        );
+        assert_eq!(as_string(), "<undefined><p>content</p></undefined>");
         mgr.redo_blocking();
         assert_eq!(
-            xml1.get_string(&d1.acquire().transact()),
+            as_string(),
             "<undefined><p>con<bold>tent</bold></p></undefined>"
         );
-        xml1.remove_range(&mut d1.acquire_mut().transact_mut(), 0, 1);
-        assert_eq!(
-            xml1.get_string(&d1.acquire().transact()),
-            "<undefined></undefined>"
-        );
+        node(&d1, xml1.clone(), |mut xml| xml.remove(0, 1));
+        assert_eq!(as_string(), "<undefined></undefined>");
         mgr.undo_blocking();
         assert_eq!(
-            xml1.get_string(&d1.acquire().transact()),
+            as_string(),
             "<undefined><p>con<bold>tent</bold></p></undefined>"
         );
     }
@@ -1464,7 +1463,7 @@ mod test {
                 .as_ref(),
         );
         let mut mgr: UndoManager<Metadata> = UndoManager::new();
-        mgr.expand_scope(&doc, &txt);
+        mgr.expand_scope(&doc, "test".into());
 
         let result = Arc::new(AtomicUsize::new(0));
         let counter = AtomicUsize::new(1);
@@ -1507,19 +1506,11 @@ mod test {
                 guid: "A".into(),
                 ..crate::Options::default()
             }));
-            let txt = NodePtr::from(
-                d1.acquire_mut()
-                    .transact_mut()
-                    .node_mut("test")
-                    .unwrap()
-                    .as_ref(),
-            );
             let mut m1: UndoManager<Metadata> = UndoManager::new();
-            m1.expand_scope(&d1, &txt);
+            m1.expand_scope(&d1, "test".into());
 
-            let txt_clone = txt.clone();
             let _sub1 = m1.observe_item_added(move |_, e| {
-                let e = e.meta_mut().entry("test".to_string()).or_default();
+                e.meta_mut().entry("test".to_string()).or_default();
             });
 
             d1.acquire_mut()
@@ -1569,13 +1560,6 @@ mod test {
             guid: "A".into(),
             ..crate::Options::default()
         }));
-        let txt = NodePtr::from(
-            d2.acquire_mut()
-                .transact_mut()
-                .node_mut("test")
-                .unwrap()
-                .as_ref(),
-        );
         let undo_options = Options {
             init_undo_stack: undo_stack,
             init_redo_stack: redo_stack,
@@ -1586,7 +1570,7 @@ mod test {
             .apply_update(Update::decode_v1(&state).unwrap())
             .unwrap();
         let mut m2: UndoManager<Metadata> = UndoManager::with_options(undo_options);
-        m2.expand_scope(&d2, &txt);
+        m2.expand_scope(&d2, "test".into());
 
         m2.undo_blocking();
         assert_eq!(
@@ -1601,94 +1585,61 @@ mod test {
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim values + returned sub-refs have no NodeRef equivalent yet
     fn undo_until_change_performed() {
         let d1 = Cell::new(Doc::with_client_id(1));
-        let arr1 = d1.acquire_mut().get_or_insert_array("array");
-
         let d2 = Cell::new(Doc::with_client_id(2));
-        let arr2 = d2.acquire_mut().get_or_insert_array("array");
 
-        let map1a = arr1.push_back(
-            &mut d1.acquire_mut().transact_mut(),
-            MapPrelim::from([("hello".to_owned(), "world".to_owned())]),
-        );
+        let map1a = node(&d1, "array", |mut arr| {
+            arr.push_back(Delta::new().insert_attr("hello", "world".to_string()))
+                .node_id()
+                .unwrap()
+        });
+        let map1b = node(&d1, "array", |mut arr| {
+            arr.push_back(Delta::new().insert_attr("key", "value".to_string()))
+                .node_id()
+                .unwrap()
+        });
 
-        let map1b = arr1.push_back(
-            &mut d1.acquire_mut().transact_mut(),
-            MapPrelim::from([("key".to_owned(), "value".to_owned())]),
-        );
-
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
         let mut mgr1 = UndoManager::new();
-        mgr1.expand_scope(&d1, &arr1);
+        mgr1.expand_scope(&d1, "array".into());
         let d1_client_id = d1.acquire().client_id();
         mgr1.include_origin(d1_client_id);
 
         let mut mgr2 = UndoManager::new();
-        mgr2.expand_scope(&d2, &arr2);
+        mgr2.expand_scope(&d2, "array".into());
         let d2_client_id = d2.acquire().client_id();
         mgr2.include_origin(d2_client_id);
 
-        map1b.insert(
-            &mut d1.acquire_mut().transact_mut_with(d1_client_id),
-            "key",
-            "value modified",
-        );
+        node_with(&d1, d1_client_id, map1b.clone(), |mut map| {
+            map.insert_attr("key", "value modified".to_string());
+        });
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
         mgr1.reset();
 
-        map1a.insert(
-            &mut d1.acquire_mut().transact_mut_with(d1_client_id),
-            "hello",
-            "world modified",
-        );
+        node_with(&d1, d1_client_id, map1a, |mut map| {
+            map.insert_attr("hello", "world modified".to_string());
+        });
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
-        arr2.remove_range(&mut d2.acquire_mut().transact_mut_with(d2_client_id), 0, 1);
+        node_with(&d2, d2_client_id, "array", |mut arr| arr.remove(0, 1));
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
         mgr2.undo_blocking();
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
         mgr1.undo_blocking();
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
-        assert_eq!(
-            map1b.get(&d1.acquire().transact(), "key"),
-            Some("value".into())
-        );
+        node(&d1, map1b, |map| {
+            assert_eq!(map.attr("key"), Some("value".into()));
+        });
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim + Out::cast have no NodeRef equivalent yet
     fn nested_undo() {
         // This issue has been reported in https://github.com/yjs/yjs/issues/317
         let doc = Cell::new(Doc::with_options(crate::doc::Options {
@@ -1696,196 +1647,165 @@ mod test {
             client_id: ClientID::new(1),
             ..crate::doc::Options::default()
         }));
-        let design = doc.acquire_mut().get_or_insert_map("map");
         let mut mgr = UndoManager::with_options({
             let mut o = Options::default();
             o.capture_timeout_millis = 0;
             o
         });
-        mgr.expand_scope(&doc, &design);
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            design.insert(
-                &mut txn,
-                "text",
-                MapPrelim::from([(
-                    "blocks",
-                    MapPrelim::from([("text", "Type something".to_owned())]),
-                )]),
-            );
-        }
-        let text = design
-            .get(&doc.acquire().transact(), "text")
-            .unwrap()
-            .cast::<MapRef>()
-            .unwrap();
+        mgr.expand_scope(&doc, "map".into());
 
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            text.insert(&mut txn, "blocks", MapPrelim::from([("text", "Something")]));
-        }
+        let blocks = |text: &str| Delta::new().insert_attr("text", text.to_owned());
+        let text = node(&doc, "map", |mut design| {
+            let content = Delta::new().insert_attr("blocks", blocks("Type something"));
+            design.insert_attr("text", content).node_id().unwrap()
+        });
 
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            text.insert(
-                &mut txn,
-                "blocks",
-                MapPrelim::from([("text", "Something else")]),
-            );
-        }
+        node(&doc, text.clone(), |mut text| {
+            text.insert_attr("blocks", blocks("Something"));
+        });
+
+        node(&doc, text, |mut text| {
+            text.insert_attr("blocks", blocks("Something else"));
+        });
+
+        let design_json = || node(&doc, "map", |design| design.to_json());
 
         assert_eq!(
-            design.to_json(&doc.acquire().transact()),
+            design_json(),
             Any::from_json(r#"{ "text": { "blocks": { "text": "Something else" } } }"#).unwrap()
         );
         mgr.undo_blocking();
         assert_eq!(
-            design.to_json(&doc.acquire().transact()),
+            design_json(),
             Any::from_json(r#"{ "text": { "blocks": { "text": "Something" } } }"#).unwrap()
         );
         mgr.undo_blocking();
         assert_eq!(
-            design.to_json(&doc.acquire().transact()),
+            design_json(),
             Any::from_json(r#"{ "text": { "blocks": { "text": "Type something" } } }"#).unwrap()
         );
         mgr.undo_blocking();
-        assert_eq!(
-            design.to_json(&doc.acquire().transact()),
-            Any::from_json(r#"{}"#).unwrap()
-        );
+        assert_eq!(design_json(), Any::from_json(r#"{}"#).unwrap());
         mgr.redo_blocking();
         assert_eq!(
-            design.to_json(&doc.acquire().transact()),
+            design_json(),
             Any::from_json(r#"{ "text": { "blocks": { "text": "Type something" } } }"#).unwrap()
         );
         mgr.redo_blocking();
         assert_eq!(
-            design.to_json(&doc.acquire().transact()),
+            design_json(),
             Any::from_json(r#"{ "text": { "blocks": { "text": "Something" } } }"#).unwrap()
         );
         mgr.redo_blocking();
         assert_eq!(
-            design.to_json(&doc.acquire().transact()),
+            design_json(),
             Any::from_json(r#"{ "text": { "blocks": { "text": "Something else" } } }"#).unwrap()
         );
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim + Out::cast have no NodeRef equivalent yet
     fn consecutive_redo_bug() {
         // https://github.com/yjs/yjs/issues/355
         let doc = Cell::new(Doc::with_client_id(1));
-        let root = doc.acquire_mut().get_or_insert_map("root");
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc, &root);
+        mgr.expand_scope(&doc, "root".into());
 
-        root.insert(
-            &mut doc.acquire_mut().transact_mut(),
-            "a",
-            MapPrelim::from([("x".to_owned(), Any::from(0)), ("y".to_owned(), 0.into())]),
+        let point = node(&doc, "root", |mut root| {
+            let content = Delta::new().insert_attr("x", 0).insert_attr("y", 0);
+            root.insert_attr("a", content).node_id().unwrap()
+        });
+        mgr.reset();
+
+        let mut set_point = |x: i32, y: i32| {
+            node(&doc, point.clone(), |mut point| point.insert_attr("x", x));
+            node(&doc, point.clone(), |mut point| point.insert_attr("y", y));
+        };
+
+        set_point(100, 100);
+        mgr.reset();
+        set_point(200, 200);
+        mgr.reset();
+        set_point(300, 300);
+        mgr.reset();
+
+        let point_json = || node(&doc, point.clone(), |point| point.to_json());
+
+        assert_eq!(
+            point_json(),
+            Any::from_json(r#"{"x":300,"y":300}"#).unwrap()
         );
-        let point = root
-            .get(&doc.acquire().transact(), "a")
-            .unwrap()
-            .cast::<MapRef>()
-            .unwrap();
-        mgr.reset();
-
-        point.insert(&mut doc.acquire_mut().transact_mut(), "x", 100);
-        point.insert(&mut doc.acquire_mut().transact_mut(), "y", 100);
-        mgr.reset();
-
-        point.insert(&mut doc.acquire_mut().transact_mut(), "x", 200);
-        point.insert(&mut doc.acquire_mut().transact_mut(), "y", 200);
-        mgr.reset();
-
-        point.insert(&mut doc.acquire_mut().transact_mut(), "x", 300);
-        point.insert(&mut doc.acquire_mut().transact_mut(), "y", 300);
-        mgr.reset();
-
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":300,"y":300}"#).unwrap());
 
         mgr.undo_blocking(); // x=200, y=200
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":200,"y":200}"#).unwrap());
+        assert_eq!(
+            point_json(),
+            Any::from_json(r#"{"x":200,"y":200}"#).unwrap()
+        );
 
         mgr.undo_blocking(); // x=100, y=100
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":100,"y":100}"#).unwrap());
+        assert_eq!(
+            point_json(),
+            Any::from_json(r#"{"x":100,"y":100}"#).unwrap()
+        );
 
         mgr.undo_blocking(); // x=0, y=0
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
+        assert_eq!(point_json(), Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
 
         mgr.undo_blocking(); // null
-        assert_eq!(root.get(&doc.acquire().transact(), "a"), None);
+        node(&doc, "root", |root| assert_eq!(root.attr("a"), None));
 
         mgr.redo_blocking(); // x=0, y=0
-        let point = root
-            .get(&doc.acquire().transact(), "a")
-            .unwrap()
-            .cast::<MapRef>()
-            .unwrap();
-
-        assert_eq!(actual, Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
+        assert_eq!(point_json(), Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
 
         mgr.redo_blocking(); // x=100, y=100
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":100,"y":100}"#).unwrap());
+        assert_eq!(
+            point_json(),
+            Any::from_json(r#"{"x":100,"y":100}"#).unwrap()
+        );
 
         mgr.redo_blocking(); // x=200, y=200
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":200,"y":200}"#).unwrap());
+        assert_eq!(
+            point_json(),
+            Any::from_json(r#"{"x":200,"y":200}"#).unwrap()
+        );
 
         mgr.redo_blocking(); // x=300, y=300
-        let actual = point.to_json(&doc.acquire().transact());
-        assert_eq!(actual, Any::from_json(r#"{"x":300,"y":300}"#).unwrap());
+        assert_eq!(
+            point_json(),
+            Any::from_json(r#"{"x":300,"y":300}"#).unwrap()
+        );
     }
 
     #[test]
-    // TODO(unified-api): XML types (XmlElementPrelim + insert_attribute) are not part of the new API
     fn undo_xml_bug() {
         // https://github.com/yjs/yjs/issues/304
         const ORIGIN: &str = "origin";
         let doc = Cell::new(Doc::with_client_id(1));
-        let f = doc.acquire_mut().get_or_insert_xml_fragment("t");
         let mut mgr = UndoManager::with_options({
             let mut o = Options::default();
             o.capture_timeout_millis = 0;
             o
         });
-        mgr.expand_scope(&doc, &f);
+        mgr.expand_scope(&doc, "t".into());
         mgr.include_origin(ORIGIN);
 
         // create element
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut_with(ORIGIN);
-            let e = f.insert(&mut txn, 0, XmlElementPrelim::empty("test-node"));
-            e.insert_attribute(&mut txn, "a", "100");
-            e.insert_attribute(&mut txn, "b", "0");
-        }
+        let e = node_with(&doc, ORIGIN, "t", |mut f| {
+            let content = Delta::with_name("test-node")
+                .insert_attr("a", "100".to_string())
+                .insert_attr("b", "0".to_string());
+            f.insert(0, content).node_id().unwrap()
+        });
 
         // change one attribute
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut_with(ORIGIN);
-            let e: XmlElementRef = f.get(&txn, 0).unwrap().try_into().unwrap();
-            e.insert_attribute(&mut txn, "a", "200");
-        }
+        node_with(&doc, ORIGIN, e.clone(), |mut e| {
+            e.insert_attr("a", "200".to_string());
+        });
 
         // change both attributes
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut_with(ORIGIN);
-            let e: XmlElementRef = f.get(&txn, 0).unwrap().try_into().unwrap();
-            e.insert_attribute(&mut txn, "a", "180");
-            e.insert_attribute(&mut txn, "b", "50");
-        }
+        node_with(&doc, ORIGIN, e, |mut e| {
+            e.insert_attr("a", "180".to_string());
+            e.insert_attr("b", "50".to_string());
+        });
 
         mgr.undo_blocking();
         mgr.undo_blocking();
@@ -1895,7 +1815,7 @@ mod test {
         mgr.redo_blocking();
         mgr.redo_blocking();
 
-        let str = f.get_string(&doc.acquire().transact());
+        let str = node(&doc, "t", |f| f.to_string());
         assert!(
             str == r#"<test-node a="180" b="50"></test-node>"#
                 || str == r#"<test-node b="50" a="180"></test-node>"#
@@ -1903,7 +1823,6 @@ mod test {
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim + returned sub-refs have no NodeRef equivalent yet
     fn undo_block_bug() {
         // https://github.com/yjs/yjs/issues/343
         let doc = Cell::new(Doc::with_options({
@@ -1912,51 +1831,22 @@ mod test {
             o.skip_gc = true;
             o
         }));
-        let design = doc.acquire_mut().get_or_insert_map("map");
         let mut mgr = UndoManager::with_options({
             let mut o = Options::default();
             o.capture_timeout_millis = 0;
             o
         });
-        mgr.expand_scope(&doc, &design);
-        let text = {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            design.insert(
-                &mut txn,
-                "text",
-                MapPrelim::from([(
-                    "blocks",
-                    MapPrelim::from([("text".to_owned(), "1".to_owned())]),
-                )]),
-            )
-        };
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            text.insert(
-                &mut txn,
-                "blocks",
-                MapPrelim::from([("text".to_owned(), "1".to_owned())]),
-            );
-        }
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            text.insert(
-                &mut txn,
-                "blocks",
-                MapPrelim::from([("text".to_owned(), "3".to_owned())]),
-            );
-        }
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            text.insert(
-                &mut txn,
-                "blocks",
-                MapPrelim::from([("text".to_owned(), "4".to_owned())]),
-            );
+        mgr.expand_scope(&doc, "map".into());
+
+        let blocks = |text: &str| Delta::new().insert_attr("text", text.to_owned());
+        let text = node(&doc, "map", |mut design| {
+            let content = Delta::new().insert_attr("blocks", blocks("1"));
+            design.insert_attr("text", content).node_id().unwrap()
+        });
+        for content in ["1", "3", "4"] {
+            node(&doc, text.clone(), |mut text| {
+                text.insert_attr("blocks", blocks(content));
+            });
         }
         // {"text":{"blocks":{"text":"4"}}}
         mgr.undo_blocking(); // {"text":{"blocks":{"3"}}}
@@ -1967,7 +1857,7 @@ mod test {
         mgr.redo_blocking(); // {"text":{"blocks":{"text":"2"}}}
         mgr.redo_blocking(); // {"text":{"blocks":{"text":"3"}}}
         mgr.redo_blocking(); // {"text":{}}
-        let actual = design.to_json(&doc.acquire().transact());
+        let actual = node(&doc, "map", |design| design.to_json());
         assert_eq!(
             actual,
             Any::from_json(r#"{"text":{"blocks":{"text":"4"}}}"#).unwrap()
@@ -1991,13 +1881,6 @@ mod test {
         }
 
         let doc1 = Cell::new(Doc::with_client_id(1));
-        let txt = NodePtr::from(
-            doc1.acquire_mut()
-                .transact_mut()
-                .node_mut("test")
-                .unwrap()
-                .as_ref(),
-        );
         doc1.acquire_mut()
             .transact_mut()
             .node_mut("test")
@@ -2007,7 +1890,7 @@ mod test {
 
         send(&doc1, &doc2); // D2: 'Attack ships on fire off the shoulder of Orion.'
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc1, &txt);
+        mgr.expand_scope(&doc1, "test".into());
 
         let attrs = Attrs::from([("bold".into(), true.into())]);
         doc1.acquire_mut()
@@ -2043,150 +1926,122 @@ mod test {
     }
 
     #[test]
-    // TODO(unified-api): XML types (XmlElementPrelim + insert_attribute) are not part of the new API
     fn special_deletion_case() {
         // https://github.com/yjs/yjs/issues/447
         const ORIGIN: &str = "undoable";
         let doc = Cell::new(Doc::with_client_id(1));
-        let f = doc.acquire_mut().get_or_insert_xml_fragment("test");
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc, &f);
+        mgr.expand_scope(&doc, "test".into());
         mgr.include_origin(ORIGIN);
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
-            let e = f.insert(&mut txn, 0, XmlElementPrelim::empty("test"));
-            e.insert_attribute(&mut txn, "a", "1");
-            e.insert_attribute(&mut txn, "b", "2");
-        }
-        let s = f.get_string(&doc.acquire().transact());
+
+        let e = node(&doc, "test", |mut f| {
+            let content = Delta::with_name("test")
+                .insert_attr("a", "1".to_string())
+                .insert_attr("b", "2".to_string());
+            f.insert(0, content).node_id().unwrap()
+        });
+        let as_string = || node(&doc, "test", |f| f.to_string());
+
+        let s = as_string();
         assert!(s == r#"<test a="1" b="2"></test>"# || s == r#"<test b="2" a="1"></test>"#);
+
         {
-            // change attribute "b" and delete test-node
+            // change attribute "b" and delete test-node within a single transaction
             let mut guard = doc.acquire_mut();
             let mut txn = guard.transact_mut_with(ORIGIN);
-            let e: XmlElementRef = f.get(&txn, 0).unwrap().try_into().unwrap();
-            e.insert_attribute(&mut txn, "b", "3");
-            f.remove_range(&mut txn, 0, 1);
+            txn.node_mut(e).unwrap().insert_attr("b", "3".to_string());
+            txn.node_mut("test").unwrap().remove(0, 1);
         }
-        assert_eq!(f.get_string(&doc.acquire().transact()), "");
+        assert_eq!(as_string(), "");
 
         mgr.undo_blocking();
-        let s = f.get_string(&doc.acquire().transact());
+        let s = as_string();
         assert!(s == r#"<test a="1" b="2"></test>"# || s == r#"<test b="2" a="1"></test>"#);
     }
 
     #[test]
-    // TODO(unified-api): text embeds (insert_embed_with_attributes/TextPrelim) + diff have no NodeRef equivalent yet
     fn undo_in_embed() {
         let d1 = Cell::new(Doc::with_client_id(1));
-        let txt1 = d1.acquire_mut().get_or_insert_text("test");
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, &txt1);
+        mgr.expand_scope(&d1, "test".into());
 
         let d2 = Cell::new(Doc::with_client_id(2));
-        let txt2 = d2.acquire_mut().get_or_insert_text("test");
 
         let attrs = Attrs::from([("bold".into(), true.into())]);
-        let nested = txt1.insert_embed_with_attributes(
-            &mut d1.acquire_mut().transact_mut(),
-            0,
-            TextPrelim::new("initial text"),
-            attrs,
-        );
-        assert_eq!(
-            nested.get_string(&d1.acquire().transact()),
-            "initial text".to_string()
-        );
+        let nested = node(&d1, "test", |mut txt1| {
+            let embed = Delta::new().insert_text("initial text");
+            txt1.apply_delta([Delta::new().insert_with(embed, attrs)]);
+            txt1.get(0).unwrap().node_id().unwrap()
+        });
+        let nested_string = || node(&d1, nested.clone(), |nested| nested.to_string());
+
+        assert_eq!(nested_string(), "initial text".to_string());
         mgr.reset();
-        {
-            let mut guard = d1.acquire_mut();
-            let mut txn = guard.transact_mut();
-            let len = nested.len(&txn);
-            nested.remove_range(&mut txn, 0, len);
-        }
-        nested.insert(&mut d1.acquire_mut().transact_mut(), 0, "other text");
-        assert_eq!(
-            nested.get_string(&d1.acquire().transact()),
-            "other text".to_string()
-        );
+        node(&d1, nested.clone(), |mut nested| {
+            let len = nested.len();
+            nested.remove(0, len);
+        });
+        node(&d1, nested.clone(), |mut nested| {
+            nested.insert_text(0, "other text")
+        });
+        assert_eq!(nested_string(), "other text".to_string());
         mgr.undo_blocking();
-        assert_eq!(
-            nested.get_string(&d1.acquire().transact()),
-            "initial text".to_string()
-        );
+        assert_eq!(nested_string(), "initial text".to_string());
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-        let diff = txt2.diff(&d1.acquire().transact(), YChange::identity);
-        let nested2 = diff[0].insert.clone().cast::<TextRef>().unwrap();
+        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+
+        let nested2 = node(&d2, "test", |txt2| txt2.get(0).unwrap().node_id().unwrap());
         assert_eq!(
-            nested2.get_string(&d2.acquire().transact()),
+            node(&d2, nested2, |nested2| nested2.to_string()),
             "initial text".to_string()
         );
 
         mgr.undo_blocking();
-        assert_eq!(nested.len(&d1.acquire().transact()), 0);
+        assert_eq!(node(&d1, nested, |nested| nested.len()), 0);
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim/ArrayPrelim + returned sub-refs + cast have no NodeRef equivalent yet
     fn github_issue_345() {
         // https://github.com/y-crdt/y-crdt/issues/345
         let doc = Cell::new(Doc::new());
-        let map = doc.acquire_mut().get_or_insert_map("r");
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&doc, &map);
+        mgr.expand_scope(&doc, "r".into());
         let client_id = doc.acquire().client_id();
         mgr.include_origin(client_id);
 
-        let s1 = map.insert(
-            &mut doc.acquire_mut().transact_mut_with(client_id),
-            "s1",
-            MapPrelim::default(),
-        );
+        let s1 = node_with(&doc, client_id, "r", |mut map| {
+            map.insert_attr("s1", Delta::new()).node_id().unwrap()
+        });
         mgr.reset();
 
-        {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut_with(client_id);
-            let a = s1.insert(&mut txn, "a", ArrayPrelim::default());
-            a.insert(&mut txn, 0, "a1");
-        }
-        mgr.reset();
-
-        let (a, b) = {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut_with(client_id);
-            let a = s1
-                .get(&txn, "a")
+        let a = node_with(&doc, client_id, s1.clone(), |mut s1| {
+            s1.insert_attr("a", Delta::new().insert("a1".to_string()))
+                .node_id()
                 .unwrap()
-                .cast::<crate::ArrayRef>()
-                .unwrap();
-            let b = s1.insert(&mut txn, "b", ArrayPrelim::default());
-            b.insert(&mut txn, 0, "b1");
-            (a, b)
-        };
+        });
         mgr.reset();
 
-        b.insert(&mut doc.acquire_mut().transact_mut_with(client_id), 1, "b2");
+        let b = node_with(&doc, client_id, s1, |mut s1| {
+            s1.insert_attr("b", Delta::new().insert("b1".to_string()))
+                .node_id()
+                .unwrap()
+        });
         mgr.reset();
 
-        a.insert(&mut doc.acquire_mut().transact_mut_with(client_id), 1, "a3");
+        node_with(&doc, client_id, b, |mut b| b.insert(1, "b2".to_string()));
         mgr.reset();
 
-        a.insert(&mut doc.acquire_mut().transact_mut_with(client_id), 2, "a4");
-        mgr.reset();
+        for (index, value) in [(1, "a3"), (2, "a4"), (3, "a5")] {
+            node_with(&doc, client_id, a.clone(), |mut a| {
+                a.insert(index, value.to_string())
+            });
+            mgr.reset();
+        }
 
-        a.insert(&mut doc.acquire_mut().transact_mut_with(client_id), 3, "a5");
-        mgr.reset();
+        let map_json = || node(&doc, "r", |map| map.to_json());
 
-        let actual = map.to_json(&doc.acquire().transact());
         assert_eq!(
-            actual,
+            map_json(),
             any!({"s1": {"a": ["a1", "a3", "a4", "a5"], "b": ["b1", "b2"]}})
         );
 
@@ -2194,256 +2049,222 @@ mod test {
         mgr.undo_blocking(); // {"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}}
         mgr.undo_blocking(); // {"s1": {"a": ["a1"], "b": ["b1", "b2"]}}
         mgr.undo_blocking(); // {"s1": {"a": ["a1"], "b": ["b1"]}}
-        let actual = map.to_json(&doc.acquire().transact());
-        assert_eq!(actual, any!({"s1": {"a": ["a1"], "b": ["b1"]}}));
+        assert_eq!(map_json(), any!({"s1": {"a": ["a1"], "b": ["b1"]}}));
 
         mgr.redo_blocking();
-        let actual = map.to_json(&doc.acquire().transact());
-        assert_eq!(actual, any!({"s1": {"b": ["b1", "b2"], "a": ["a1"]}}));
+        assert_eq!(map_json(), any!({"s1": {"b": ["b1", "b2"], "a": ["a1"]}}));
 
         mgr.redo_blocking();
-        let actual = map.to_json(&doc.acquire().transact());
-        assert_eq!(actual, any!({"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}}));
-
-        mgr.redo_blocking();
-        let actual = map.to_json(&doc.acquire().transact());
         assert_eq!(
-            actual,
+            map_json(),
+            any!({"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}})
+        );
+
+        mgr.redo_blocking();
+        assert_eq!(
+            map_json(),
             any!({"s1": {"a": ["a1", "a3", "a4"], "b": ["b1", "b2"]}})
         );
 
         mgr.redo_blocking();
-        let actual = map.to_json(&doc.acquire().transact());
         assert_eq!(
-            actual,
+            map_json(),
             any!({"s1": {"a": ["a1", "a3", "a4", "a5"], "b": ["b1", "b2"]}})
         );
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim + returned sub-refs have no NodeRef equivalent yet
     fn github_issue_345_part_2() {
         // https://github.com/y-crdt/y-crdt/issues/345
         let d = Cell::new(Doc::new());
-        let r = d.acquire_mut().get_or_insert_map("r");
-
-        let s1 = r.insert(
-            &mut d.acquire_mut().transact_mut(),
-            "s1",
-            MapPrelim::default(),
-        );
+        let s1 = node(&d, "r", |mut r| {
+            r.insert_attr("s1", Delta::new()).node_id().unwrap()
+        });
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&d, &r);
-        {
-            let mut guard = d.acquire_mut();
-            let mut txn = guard.transact_mut();
-            let b1 = s1.insert(&mut txn, "b1", MapPrelim::default());
-            b1.insert(&mut txn, "f1", 11);
-        }
+        mgr.expand_scope(&d, "r".into());
+        node(&d, s1.clone(), |mut s1| {
+            s1.insert_attr("b1", Delta::new().insert_attr("f1", 11));
+        });
         mgr.reset();
 
-        s1.remove(&mut d.acquire_mut().transact_mut(), "b1");
+        node(&d, s1.clone(), |mut s1| s1.remove_attr("b1"));
         mgr.reset();
 
-        {
-            let mut guard = d.acquire_mut();
-            let mut txn = guard.transact_mut();
-            let b1 = s1.insert(&mut txn, "b1", MapPrelim::default());
-            b1.insert(&mut txn, "f1", 20);
-        }
+        node(&d, s1, |mut s1| {
+            s1.insert_attr("b1", Delta::new().insert_attr("f1", 20));
+        });
         mgr.reset();
 
-        let actual = r.to_json(&d.acquire().transact());
-        assert_eq!(actual, any!({"s1": {"b1": {"f1": 20}}}));
+        let r_json = || node(&d, "r", |r| r.to_json());
+
+        assert_eq!(r_json(), any!({"s1": {"b1": {"f1": 20}}}));
 
         mgr.undo_blocking();
-        let actual = r.to_json(&d.acquire().transact());
-        assert_eq!(actual, any!({"s1": {}}));
+        assert_eq!(r_json(), any!({"s1": {}}));
         assert!(mgr.can_undo(), "should be able to undo");
 
         mgr.undo_blocking();
-        let actual = r.to_json(&d.acquire().transact());
-        assert_eq!(actual, any!({"s1": {"b1": {"f1": 11}}}));
+        assert_eq!(r_json(), any!({"s1": {"b1": {"f1": 11}}}));
         assert!(mgr.can_undo(), "should be able to undo to the init state");
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim/ArrayPrelim + returned sub-refs have no NodeRef equivalent yet
     fn issue_371() {
         let doc = Cell::new(Doc::with_client_id(1));
 
-        let r = doc.acquire_mut().get_or_insert_map("r");
-        let s1 = r.insert(
-            &mut doc.acquire_mut().transact_mut(),
-            "s1",
-            MapPrelim::default(),
-        ); // { s1: {} }
-        let b1_arr = s1.insert(
-            &mut doc.acquire_mut().transact_mut(),
-            "b1",
-            ArrayPrelim::default(),
-        ); // { s1: { b1: [] } }
-        let el1 = b1_arr.insert(
-            &mut doc.acquire_mut().transact_mut(),
-            0,
-            MapPrelim::default(),
-        ); // { s1: { b1: [{}] } }
-        el1.insert(&mut doc.acquire_mut().transact_mut(), "f1", 8); // { s1: { b1: [{ f1: 8 }] } }
-        el1.insert(&mut doc.acquire_mut().transact_mut(), "f2", true); // { s1: { b1: [{ f1: 8, f2: true }] } }
+        let s1 = node(&doc, "r", |mut r| {
+            r.insert_attr("s1", Delta::new()).node_id().unwrap()
+        }); // { s1: {} }
+        let b1_arr = node(&doc, s1, |mut s1| {
+            s1.insert_attr("b1", Delta::new()).node_id().unwrap()
+        }); // { s1: { b1: [] } }
+        let el1 = node(&doc, b1_arr.clone(), |mut b1_arr| {
+            b1_arr.insert(0, Delta::new()).node_id().unwrap()
+        }); // { s1: { b1: [{}] } }
+        node(&doc, el1.clone(), |mut el1| el1.insert_attr("f1", 8)); // { s1: { b1: [{ f1: 8 }] } }
+        node(&doc, el1.clone(), |mut el1| el1.insert_attr("f2", true)); // { s1: { b1: [{ f1: 8, f2: true }] } }
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&doc, &r);
+        mgr.expand_scope(&doc, "r".into());
         {
             let mut guard = doc.acquire_mut();
             let mut txn = guard.transact_mut();
-            let el0 = b1_arr.insert(&mut txn, 0, MapPrelim::default()); // { s1: { b1: [{}, { f1: 8, f2: true }] } }
-            el0.insert(&mut txn, "f1", 8); // { s1: { b1: [{ f1: 8 }, { f1: 8, f2: true }] } }
-            el0.insert(&mut txn, "f2", false); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 8, f2: true }] } }
+            // { s1: { b1: [{ f1: 8, f2: false }, { f1: 8, f2: true }] } }
+            let el0 = Delta::new().insert_attr("f1", 8).insert_attr("f2", false);
+            txn.node_mut(b1_arr).unwrap().insert(0, el0);
 
-            el1.insert(&mut txn, "f1", 13); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: true }] } }
-            el1.remove(&mut txn, "f2"); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13 }] } }
+            let mut el1 = txn.node_mut(el1.clone()).unwrap();
+            el1.insert_attr("f1", 13); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: true }] } }
+            el1.remove_attr("f2"); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13 }] } }
         }
         mgr.reset();
 
-        el1.insert(&mut doc.acquire_mut().transact_mut(), "f2", false); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
+        // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
+        node(&doc, el1.clone(), |mut el1| el1.insert_attr("f2", false));
         mgr.reset();
 
-        el1.insert(&mut doc.acquire_mut().transact_mut(), "f2", true); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: true }] } }
+        // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: true }] } }
+        node(&doc, el1, |mut el1| el1.insert_attr("f2", true));
         mgr.reset();
+
+        let r_json = || node(&doc, "r", |r| r.to_json());
 
         mgr.undo_blocking(); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
         assert_eq!(
-            r.to_json(&doc.acquire().transact()),
+            r_json(),
             any!({ "s1": { "b1": [{ "f1": 8, "f2": false }, { "f1": 13, "f2": false }] } })
         );
         mgr.undo_blocking(); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13 }] } }
         assert_eq!(
-            r.to_json(&doc.acquire().transact()),
+            r_json(),
             any!({ "s1": { "b1": [{ "f1": 8, "f2": false }, { "f1": 13 }] } })
         );
         mgr.undo_blocking(); // { s1: { b1: [{ f1: 8, f2: true }] } }
         assert_eq!(
-            r.to_json(&doc.acquire().transact()),
+            r_json(),
             any!({ "s1": { "b1": [{ "f1": 8, "f2": true }] } })
         );
         assert!(!mgr.undo_blocking()); // no more changes tracked by undo manager
     }
 
     #[test]
-    // TODO(unified-api): nested MapPrelim + returned sub-refs have no NodeRef equivalent yet
     fn issue_371_2() {
         let doc = Cell::new(Doc::with_client_id(1));
-        let r = doc.acquire_mut().get_or_insert_map("r");
-        let s1 = r.insert(
-            &mut doc.acquire_mut().transact_mut(),
-            "s1",
-            MapPrelim::default(),
-        ); // { s1:{} }
-        s1.insert(&mut doc.acquire_mut().transact_mut(), "f2", "AAA"); // { s1: { f2: AAA } }
-        s1.insert(&mut doc.acquire_mut().transact_mut(), "f1", false); // { s1: { f1: false, f2: AAA } }
+        let s1 = node(&doc, "r", |mut r| {
+            r.insert_attr("s1", Delta::new()).node_id().unwrap()
+        }); // { s1:{} }
+        node(&doc, s1.clone(), |mut s1| {
+            s1.insert_attr("f2", "AAA".to_string())
+        }); // { s1: { f2: AAA } }
+        node(&doc, s1.clone(), |mut s1| s1.insert_attr("f1", false)); // { s1: { f1: false, f2: AAA } }
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&doc, &r);
-        s1.remove(&mut doc.acquire_mut().transact_mut(), "f2"); // { s1: { f1: false } }
+        mgr.expand_scope(&doc, "r".into());
+        node(&doc, s1.clone(), |mut s1| s1.remove_attr("f2")); // { s1: { f1: false } }
         mgr.reset();
 
-        s1.insert(&mut doc.acquire_mut().transact_mut(), "f2", "C1"); // { s1: { f1: false, f2: C1 } }
+        node(&doc, s1.clone(), |mut s1| {
+            s1.insert_attr("f2", "C1".to_string())
+        }); // { s1: { f1: false, f2: C1 } }
         mgr.reset();
 
-        s1.insert(&mut doc.acquire_mut().transact_mut(), "f2", "C2"); // { s1: { f1: false, f2: C2 } }
+        node(&doc, s1, |mut s1| s1.insert_attr("f2", "C2".to_string())); // { s1: { f1: false, f2: C2 } }
         mgr.reset();
+
+        let r_json = || node(&doc, "r", |r| r.to_json());
 
         mgr.undo_blocking(); // { s1: { f1: false, f2: C1 } }
-        assert_eq!(
-            r.to_json(&doc.acquire().transact()),
-            any!({ "s1": { "f1": false, "f2": "C1" } })
-        );
+        assert_eq!(r_json(), any!({ "s1": { "f1": false, "f2": "C1" } }));
         mgr.undo_blocking(); // { s1: { f1: false } }
-        assert_eq!(
-            r.to_json(&doc.acquire().transact()),
-            any!({ "s1": { "f1": false } })
-        );
+        assert_eq!(r_json(), any!({ "s1": { "f1": false } }));
         mgr.undo_blocking(); // { s1: { f1: false, f2: AAA } }
-        assert_eq!(
-            r.to_json(&doc.acquire().transact()),
-            any!({ "s1": { "f1": false, "f2": "AAA" } })
-        );
+        assert_eq!(r_json(), any!({ "s1": { "f1": false, "f2": "AAA" } }));
         assert!(!mgr.undo_blocking()); // no more changes tracked by undo manager
     }
 
     #[test]
-    // TODO(unified-api): deeply nested MapPrelim/ArrayPrelim + returned sub-refs have no NodeRef equivalent yet
     fn issue_380() {
         let d = Cell::new(Doc::with_client_id(1));
-        let r = d.acquire_mut().get_or_insert_map("r"); // {r:{}}
-        let s1 = r.insert(
-            &mut d.acquire_mut().transact_mut(),
-            "s1",
-            MapPrelim::default(),
-        ); // {r:{s1:{}}
-        let b1_arr = s1.insert(
-            &mut d.acquire_mut().transact_mut(),
-            "b1",
-            ArrayPrelim::default(),
-        ); // {r:{s1:{b1:[]}}
+        let s1 = node(&d, "r", |mut r| {
+            r.insert_attr("s1", Delta::new()).node_id().unwrap()
+        }); // {r:{s1:{}}
+        let b1_arr = node(&d, s1, |mut s1| {
+            s1.insert_attr("b1", Delta::new()).node_id().unwrap()
+        }); // {r:{s1:{b1:[]}}
 
-        let b1_el1 = b1_arr.insert(&mut d.acquire_mut().transact_mut(), 0, MapPrelim::default()); // {r:{s1:{b1:[{}]}}
-        let b2_arr = b1_el1.insert(
-            &mut d.acquire_mut().transact_mut(),
-            "b2",
-            ArrayPrelim::default(),
-        ); // {r:{s1:{b1:[{b2:[]}]}}
-        let b2_arr_nest = b2_arr.insert(
-            &mut d.acquire_mut().transact_mut(),
-            0,
-            ArrayPrelim::default(),
-        ); // {r:{s1:{b1:[{b2:[[]]}]}}
-        b2_arr_nest.insert(&mut d.acquire_mut().transact_mut(), 0, 232291652); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
-        b2_arr_nest.insert(&mut d.acquire_mut().transact_mut(), 1, -30); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
+        let b1_el1 = node(&d, b1_arr.clone(), |mut b1_arr| {
+            b1_arr.insert(0, Delta::new()).node_id().unwrap()
+        }); // {r:{s1:{b1:[{}]}}
+        let b2_arr = node(&d, b1_el1, |mut b1_el1| {
+            b1_el1.insert_attr("b2", Delta::new()).node_id().unwrap()
+        }); // {r:{s1:{b1:[{b2:[]}]}}
+        let b2_arr_nest = node(&d, b2_arr, |mut b2_arr| {
+            b2_arr.insert(0, Delta::new()).node_id().unwrap()
+        }); // {r:{s1:{b1:[{b2:[[]]}]}}
+        node(&d, b2_arr_nest.clone(), |mut nest| {
+            nest.insert(0, 232291652)
+        }); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
+        node(&d, b2_arr_nest.clone(), |mut nest| nest.insert(1, -30)); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&d, &r);
+        mgr.expand_scope(&d, "r".into());
 
-        {
-            let mut guard = d.acquire_mut();
-            let mut txn = guard.transact_mut();
-            b2_arr_nest.remove(&mut txn, 1); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
-            b2_arr_nest.insert(&mut txn, 1, -5); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
-        }
+        node(&d, b2_arr_nest, |mut nest| {
+            nest.remove(1, 1); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
+            nest.insert(1, -5); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
+        });
         mgr.reset();
 
         {
             let mut guard = d.acquire_mut();
             let mut txn = guard.transact_mut();
 
-            let b1_el0 = b1_arr.insert(&mut txn, 0, MapPrelim::default()); // {r:{s1:{b1:[{},{b2:[[232291652, -5]]}]}}
-            let b2_0_arr = b1_el0.insert(&mut txn, "b2", ArrayPrelim::default()); // {r:{s1:{b1:[{b2:[]},{b2:[[232291652, -5]]}]}}
-            let b2_0_arr_nest = b2_0_arr.insert(&mut txn, 0, ArrayPrelim::default()); // {r:{s1:{b1:[{b2:[[]]},{b2:[[232291652, -5]]}]}}
-            b2_0_arr_nest.insert(&mut txn, 0, 232291652); // {r:{s1:{b1:[{b2:[[232291652]]},{b2:[[232291652, -5]]}]}}
-            b2_0_arr_nest.insert(&mut txn, 1, -6); // {r:{s1:{b1:[{b2:[[232291652, -6]]},{b2:[[232291652, -5]]}]}}
-            b1_arr.remove(&mut txn, 1); // {r:{s1:{b1:[{b2:[[232291652, -6]]}]}}
+            // {r:{s1:{b1:[{b2:[[232291652, -6]]},{b2:[[232291652, -5]]}]}}
+            let b2_0_arr_nest = Delta::new().insert(232291652).insert(-6);
+            let b2_0_arr = Delta::new().insert(b2_0_arr_nest);
+            let b1_el0 = Delta::new().insert_attr("b2", b2_0_arr);
+            txn.node_mut(b1_arr.clone()).unwrap().insert(0, b1_el0);
+            txn.node_mut(b1_arr.clone()).unwrap().remove(1, 1); // {r:{s1:{b1:[{b2:[[232291652, -6]]}]}}
 
-            let b1_el1 = b1_arr.insert(&mut txn, 1, MapPrelim::default()); // {r:{s1:{b1:[{b2:[[232291652, -6]]}, {}]}}
-            b1_el1.insert(&mut txn, "f2", "C1"); // {r:{s1:{b1:[{b2:[[232291652, -6]]}, {f2:C1}]}}
+            // {r:{s1:{b1:[{b2:[[232291652, -6]]}, {f2:C1}]}}
+            let b1_el1 = Delta::new().insert_attr("f2", "C1".to_string());
+            txn.node_mut(b1_arr).unwrap().insert(1, b1_el1);
         }
         mgr.reset();
+
+        let r_json = || node(&d, "r", |r| r.to_json());
+
         assert_eq!(
-            r.to_json(&d.acquire().transact()),
+            r_json(),
             any!({"s1":{"b1":[{"b2":[[232291652, -6]]}, {"f2":"C1"}]}})
         );
 
         mgr.undo_blocking(); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
-        assert_eq!(
-            r.to_json(&d.acquire().transact()),
-            any!({"s1":{"b1":[{"b2":[[232291652, -5]]}]}})
-        );
+        assert_eq!(r_json(), any!({"s1":{"b1":[{"b2":[[232291652, -5]]}]}}));
 
         mgr.undo_blocking(); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
-        assert_eq!(
-            r.to_json(&d.acquire().transact()),
-            any!({"s1":{"b1":[{"b2":[[232291652, -30]]}]}})
-        );
+        assert_eq!(r_json(), any!({"s1":{"b1":[{"b2":[[232291652, -30]]}]}}));
     }
 
     #[test]
@@ -2451,23 +2272,8 @@ mod test {
         let mut um = UndoManager::new();
         let d1 = Cell::new(Doc::new());
         let d2 = Cell::new(Doc::new());
-        let txt1 = NodePtr::from(
-            d1.acquire_mut()
-                .transact_mut()
-                .node_mut("text")
-                .unwrap()
-                .as_ref(),
-        );
-        let txt2 = NodePtr::from(
-            d2.acquire_mut()
-                .transact_mut()
-                .node_mut("text")
-                .unwrap()
-                .as_ref(),
-        );
-
-        um.expand_scope(&d1, &txt1);
-        um.expand_scope(&d2, &txt2);
+        um.expand_scope(&d1, "text".into());
+        um.expand_scope(&d2, "text".into());
 
         d1.acquire_mut()
             .transact_mut()
@@ -2560,24 +2366,9 @@ mod test {
         });
         let d1 = Cell::new(Doc::new());
         let d2 = Cell::new(Doc::new());
-        let txt1 = NodePtr::from(
-            d1.acquire_mut()
-                .transact_mut()
-                .node_mut("text")
-                .unwrap()
-                .as_ref(),
-        );
-        let txt2 = NodePtr::from(
-            d2.acquire_mut()
-                .transact_mut()
-                .node_mut("text")
-                .unwrap()
-                .as_ref(),
-        );
-
-        um.expand_scope(&d1, &txt1);
-        um.expand_scope(&d2, &txt2);
-        um.expand_scope(&d1, &txt1); // doing this twice for test-coverage
+        um.expand_scope(&d1, "text".into());
+        um.expand_scope(&d2, "text".into());
+        um.expand_scope(&d1, "text".into()); // doing this twice for test-coverage
 
         d1.acquire_mut()
             .transact_mut()

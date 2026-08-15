@@ -21,7 +21,7 @@ pub type Attrs = HashMap<Arc<str>, Any>;
 
 /// A batch of [Event]s bubbled up from nested shared collections, passed to deep observers.
 /// They are sorted by the length of their [Event::path], so that top-most events come first.
-pub type Events<'txn> = [Event<'txn>];
+pub type Events<'txn> = [&'txn Event<'txn>];
 
 /// A wrapper around [Node] cell, supplied with a bunch of convenience methods to operate on both
 /// map-like and array-like contents of a [Node].

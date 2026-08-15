@@ -1,6 +1,6 @@
 use crate::block::{Block, ClientID};
 use crate::transaction::ensure_state;
-use crate::{Doc, IdSet, TransactionMut, ID};
+use crate::{Doc, ID, IdSet, TransactionMut};
 use std::collections::HashMap;
 
 #[derive(Default)]

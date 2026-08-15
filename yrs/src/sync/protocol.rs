@@ -543,9 +543,11 @@ mod test {
     #[test]
     fn message_encoding() {
         let mut doc = Doc::new();
-        let mut txn = doc.transact_mut();
-        let mut txt = txn.node_mut("text").unwrap();
-        txt.push_text("hello world");
+        {
+            let mut txn = doc.transact_mut();
+            let mut txt = txn.node_mut("text").unwrap();
+            txt.push_text("hello world");
+        }
         let mut awareness = Awareness::new(doc);
         awareness
             .set_local_state(json!({

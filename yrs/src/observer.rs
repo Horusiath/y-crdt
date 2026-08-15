@@ -173,14 +173,13 @@ impl<F> Default for Observer<F> {
     }
 }
 
-
 #[cfg(test)]
 mod test {
-    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-    use crate::observer::Observer;
     use crate::Origin;
+    use crate::observer::Observer;
 
     #[test]
     fn subscription() {

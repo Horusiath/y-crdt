@@ -5,9 +5,9 @@ pub mod write;
 
 #[cfg(test)]
 mod test {
+    use crate::Any;
     use crate::encoding::read::{Cursor, Read};
     use crate::encoding::write::Write;
-    use crate::Any;
     use proptest::prelude::*;
     use proptest_derive::Arbitrary;
 

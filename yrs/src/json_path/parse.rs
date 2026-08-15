@@ -48,7 +48,7 @@ impl<'a> JsonPath<'a> {
                             return Err(ParseError::InvalidJsonPath(format!(
                                 "Path cannot end with '.': `{}`",
                                 path
-                            )))
+                            )));
                         }
                     }
                 }
@@ -134,7 +134,12 @@ impl<'a> JsonPath<'a> {
                                 while {
                                     match n.parse::<i32>() {
                                         Ok(i) => indices.push(i),
-                                        Err(err) => return Err(ParseError::InvalidJsonPath(format!("substring `{}` doesn't contain valid union of keys or indices: {}", slice, err))),
+                                        Err(err) => {
+                                            return Err(ParseError::InvalidJsonPath(format!(
+                                                "substring `{}` doesn't contain valid union of keys or indices: {}",
+                                                slice, err
+                                            )));
+                                        }
                                     }
                                     match i.next() {
                                         None => false,

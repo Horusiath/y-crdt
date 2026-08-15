@@ -318,11 +318,11 @@ mod test {
     fn range_bounded() {
         let mut doc = Doc::with_client_id(1);
         let mut txn = doc.transact_mut();
-        let array = txn.node_mut("array").unwrap();
+        let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+        array.insert_range(0, [2, 3, 4]);
+        array.insert_range(0, [1]);
+        array.insert_range(4, [5, 6]);
 
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::Before);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 4), Assoc::After);
@@ -339,13 +339,17 @@ mod test {
     #[test]
     fn range_left_exclusive() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
+        let array = txn.node("array").unwrap();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::After);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 4), Assoc::After);
         let res: Vec<_> = array
@@ -361,13 +365,17 @@ mod test {
     #[test]
     fn range_left_exclusive_2() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
+        let array = txn.node("array").unwrap();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 2), Assoc::After);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 4), Assoc::After);
         let res: Vec<_> = array
@@ -383,13 +391,17 @@ mod test {
     #[test]
     fn range_right_exclusive() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
+        let array = txn.node("array").unwrap();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::Before);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 5), Assoc::Before);
         let res: Vec<_> = array
@@ -405,13 +417,17 @@ mod test {
     #[test]
     fn range_right_exclusive_2() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
+        let array = txn.node("array").unwrap();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::Before);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 4), Assoc::Before);
         let res: Vec<_> = array
@@ -427,15 +443,19 @@ mod test {
     #[test]
     fn range_unbounded() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
-        let from = StickyIndex::from_type(&txn, &array, Assoc::Before);
-        let to = StickyIndex::from_type(&txn, &array, Assoc::After);
+        let from = StickyIndex::from_type("array".into(), Assoc::Before);
+        let to = StickyIndex::from_type("array".into(), Assoc::After);
+        let array = txn.node("array").unwrap();
         let res: Vec<_> = array
             .as_ref()
             .start
@@ -452,15 +472,19 @@ mod test {
     #[test]
     fn range_left_unbounded() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
-        let from = StickyIndex::from_type(&txn, &array, Assoc::Before);
+        let from = StickyIndex::from_type("array".into(), Assoc::Before);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 2), Assoc::After);
+        let array = txn.node("array").unwrap();
         let res: Vec<_> = array
             .as_ref()
             .start
@@ -474,15 +498,19 @@ mod test {
     #[test]
     fn range_right_unbounded() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
         let txn = doc.transact();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 2), Assoc::Before);
-        let to = StickyIndex::from_type(&txn, &array, Assoc::After);
+        let to = StickyIndex::from_type("array".into(), Assoc::After);
+        let array = txn.node("array").unwrap();
         let res: Vec<_> = array
             .as_ref()
             .start
@@ -496,15 +524,19 @@ mod test {
     #[test]
     fn range_single_slice() {
         let mut doc = Doc::with_client_id(1);
-        let array = doc.get_or_insert_array("array");
+        {
+            let mut txn = doc.transact_mut();
+            let mut array = txn.node_mut("array").unwrap();
 
-        array.insert_range(&mut doc.transact_mut(), 0, [2, 3, 4]);
-        array.insert_range(&mut doc.transact_mut(), 0, [1]);
-        array.insert_range(&mut doc.transact_mut(), 4, [5, 6]);
+            array.insert_range(0, [2, 3, 4]);
+            array.insert_range(0, [1]);
+            array.insert_range(4, [5, 6]);
+        }
 
-        let txn = doc.transact();
         let from = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::Before);
         let to = StickyIndex::from_id(ID::new(ClientID::new(1), 1), Assoc::After);
+        let txn = doc.transact();
+        let array = txn.node("array").unwrap();
         let res: Vec<_> = array
             .as_ref()
             .start

@@ -418,9 +418,8 @@ impl Doc {
                 branch
             }
             Entry::Vacant(e) => {
-                let mut branch = Node::new(type_ref);
-                let mut branch_ref = NodePtr::from(&mut branch);
-                branch_ref.name = Some(key); // root types are identified by name, see: Node::id
+                let mut branch = Node::new(Some(key), type_ref);
+                let branch_ref = NodePtr::from(&mut branch);
                 e.insert(branch);
                 branch_ref
             }
@@ -955,11 +954,12 @@ mod test {
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
-        Any, Doc, ID, IdSet, In, OffsetKind, Options, Snapshot, StateVector, Subscription,
-        Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, any, uuid_v4,
+        Any, Delta, Doc, ID, IdSet, In, NodeID, NodeRef, OffsetKind, Options, Out, Snapshot,
+        StateVector, Subscription, Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, any,
+        uuid_v4,
     };
     use assert_matches2::assert_matches;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashSet};
     use std::iter::FromIterator;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1714,24 +1714,19 @@ mod test {
     #[test]
     fn root_refs() {
         let mut doc = Doc::new();
+        let mut refs: HashSet<_> = HashSet::from_iter(["text", "array", "map", "xml_elem"]);
         {
-            let _txt = doc.get_or_insert_text("text");
-            let _array = doc.get_or_insert_array("array");
-            let _map = doc.get_or_insert_map("map");
-            let _xml_elem = doc.get_or_insert_xml_fragment("xml_elem");
+            let mut txn = doc.transact_mut();
+            for &name in refs.iter() {
+                txn.node_mut(name);
+            }
         }
 
         let txn = doc.transact();
         for (key, value) in txn.root_refs() {
-            match key {
-                "text" => assert!(value.cast::<TextRef>().is_ok()),
-                "array" => assert!(value.cast::<ArrayRef>().is_ok()),
-                "map" => assert!(value.cast::<MapRef>().is_ok()),
-                "xml_elem" => assert!(value.cast::<XmlFragmentRef>().is_ok()),
-                "xml_text" => assert!(value.cast::<XmlTextRef>().is_ok()),
-                other => panic!("unrecognized root type: '{}'", other),
-            }
+            assert!(refs.remove(key));
         }
+        assert!(refs.is_empty());
     }
 
     // TODO(unified-api): depends on nested ArrayPrelim + cast::<ArrayRef> not yet in new API
@@ -1742,27 +1737,28 @@ mod test {
         let mut d3 = Doc::with_client_id(3);
 
         {
-            let root = d1.get_or_insert_array("array");
-            let mut txn = d1.transact_mut();
-            root.push_back(&mut txn, ArrayPrelim::from(["A"]));
+            let mut t1 = d1.transact_mut();
+            let mut root = t1.node_mut("array").unwrap();
+            root.push_back(Delta::new().insert("A".to_string()));
         }
 
         exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
 
         {
-            let root = d2.get_or_insert_array("array");
             let mut t2 = d2.transact_mut();
-            root.remove(&mut t2, 0);
+            let mut root = t2.node_mut("array").unwrap();
+            root.remove(0, 1);
             d1.transact_mut()
                 .apply_update(Update::decode_v1(&t2.encode_update_v1()).unwrap())
                 .unwrap();
         }
 
         {
-            let root = d3.get_or_insert_array("array");
             let mut t3 = d3.transact_mut();
-            let a3 = root.get(&t3, 0).unwrap().cast::<ArrayRef>().unwrap();
-            a3.push_back(&mut t3, "B");
+            let root = t3.node_mut("array").unwrap();
+            let a3 = root.get(0).unwrap().node_id().unwrap();
+            let mut a3 = t3.node_mut(a3).unwrap();
+            a3.push_back("B".to_string());
             // D1 got update which already removed a3, but this must not cause panic
             d1.transact_mut()
                 .apply_update(Update::decode_v1(&t3.encode_update_v1()).unwrap())
@@ -1771,9 +1767,9 @@ mod test {
 
         exchange_updates(&mut [&mut d1, &mut d2, &mut d3]);
 
-        let r1 = d1.get_or_insert_array("array").to_json(&d1.transact());
-        let r2 = d2.get_or_insert_array("array").to_json(&d2.transact());
-        let r3 = d3.get_or_insert_array("array").to_json(&d3.transact());
+        let r1 = d1.transact().node("array").unwrap().to_json();
+        let r2 = d2.transact().node("array").unwrap().to_json();
+        let r3 = d3.transact().node("array").unwrap().to_json();
 
         assert_eq!(r1, r2);
         assert_eq!(r2, r3);
@@ -2171,54 +2167,6 @@ mod test {
         );
     }
 
-    // TODO(unified-api): depends on Xml types + nested prelims/insert_range not yet in new API
-    #[test]
-    fn to_json() {
-        let mut doc = Doc::new();
-        let mut txn = doc.transact_mut();
-        let text = txn.get_or_insert_text("text");
-        let array = txn.get_or_insert_array("array");
-        let map = txn.get_or_insert_map("map");
-        let xml_fragment = txn.get_or_insert_xml_fragment("xml-fragment");
-        let xml_element = xml_fragment.insert(&mut txn, 0, XmlElementPrelim::empty("xml-element"));
-        let xml_text = xml_fragment.insert(&mut txn, 0, XmlTextPrelim::new(""));
-
-        text.push(&mut txn, "hello");
-        xml_text.push(&mut txn, "world");
-        xml_fragment.insert(&mut txn, 0, XmlElementPrelim::empty("div"));
-        xml_element.insert(&mut txn, 0, XmlElementPrelim::empty("body"));
-        array.insert_range(&mut txn, 0, [1, 2, 3]);
-        map.insert(&mut txn, "key1", "value1");
-
-        // sub documents cannot use their parent's transaction
-        let mut sub_doc = Doc::new();
-        let sub_text = sub_doc.get_or_insert_text("sub-text");
-        let sub_guid = sub_doc.guid().clone();
-        let _sub_uuid = map.insert(&mut txn, "sub-doc", sub_doc);
-        {
-            let sub_doc = txn.doc.subdocs.get_mut(&sub_guid).unwrap();
-            let mut sub_txn = sub_doc.transact_mut();
-            sub_text.push(&mut sub_txn, "sample");
-        }
-
-        drop(txn);
-
-        let txn = doc.transact();
-        let actual = doc.to_json(&txn);
-        let expected = any!({
-            "text": "hello",
-            "array": [1,2,3],
-            "map": {
-                "key1": "value1",
-                "sub-doc": {
-                    "guid": sub_guid.as_ref()
-                }
-            },
-            "xml-fragment": "<div></div>world<xml-element><body></body></xml-element>",
-        });
-        assert_eq!(actual, expected);
-    }
-
     #[test]
     fn apply_snapshot_updates() {
         let update = {
@@ -2397,14 +2345,20 @@ mod test {
         assert!(actual.is_none());
     }
 
-    // TODO(unified-api): depends on nested TextPrelim insertion + TextRef return not yet in new API
-    fn init_test_data<const N: usize>(txn: &mut TransactionMut, data: [&str; N]) -> TextRef {
-        let map = txn.get_or_insert_map("map");
-        let txt = map.insert(txn, "text", TextPrelim::default());
-        for ch in data {
-            txt.insert(txn, 0, ch);
+    fn init_test_data<'tx, 'doc, const N: usize>(
+        txn: &'tx mut TransactionMut<'doc>,
+        data: [&str; N],
+    ) -> NodeRef<&'tx mut TransactionMut<'doc>> {
+        let mut map = txn.node_mut("map").unwrap();
+        let mut delta = Delta::new();
+        for chunk in data {
+            delta.insert_text(chunk);
         }
-        txt
+        if let Out::Node(txt) = map.insert_attr("text", In::Node(delta)) {
+            txn.node_mut(txt).unwrap()
+        } else {
+            unreachable!()
+        }
     }
 
     // TODO(unified-api): depends on init_test_data (nested TextPrelim) not yet in new API
@@ -2415,7 +2369,6 @@ mod test {
             skip_gc: true,
             ..Default::default()
         });
-        let map = doc.get_or_insert_map("map");
 
         {
             // create some initial data
@@ -2423,7 +2376,8 @@ mod test {
             init_test_data(&mut txn, ["c", "b", "a"]);
 
             // drop nested type
-            map.remove(&mut txn, "text");
+            let mut map = txn.node_mut("map").unwrap();
+            map.remove_attr("text");
         }
 
         // verify that skip_gc works and we have access to an original text content
@@ -2467,25 +2421,25 @@ mod test {
             skip_gc: true,
             ..Default::default()
         });
-        let m0 = doc.get_or_insert_map("map");
         let s1 = {
             let mut tx = doc.transact_mut();
+            let _m0 = tx.node_mut("map");
             let t1 = init_test_data(&mut tx, ["c", "b", "a"]); // <1#1..3>
-            assert_eq!(t1.get_string(&tx), "abc");
+            assert_eq!(t1.to_string(), "abc");
             tx.snapshot()
         };
 
         let s2 = {
             let mut tx = doc.transact_mut();
             let t2 = init_test_data(&mut tx, ["f", "e", "d"]); // <1#5..7>
-            assert_eq!(t2.get_string(&tx), "def");
+            assert_eq!(t2.to_string(), "def");
             tx.snapshot()
         };
 
         let s3 = {
             let mut tx = doc.transact_mut();
             let t3 = init_test_data(&mut tx, ["i", "h", "g"]); // <1#9..11>
-            assert_eq!(t3.get_string(&tx), "ghi");
+            assert_eq!(t3.to_string(), "ghi");
             tx.snapshot()
         };
 
@@ -2493,13 +2447,10 @@ mod test {
         {
             let doc_restored = restore_from_snapshot(&doc, &s1).unwrap();
             let txn = doc_restored.transact();
-            let m0_restored = txn.get_map("map").unwrap();
-            let txt = m0_restored
-                .get(&txn, "text")
-                .unwrap()
-                .cast::<TextRef>()
-                .unwrap();
-            assert_eq!(txt.get_string(&txn), "abc");
+            let m0_restored = txn.node("map").unwrap();
+            let txt = m0_restored.attr("text").unwrap().cast::<NodeID>().unwrap();
+            let txt = txn.node(txt).unwrap();
+            assert_eq!(txt.to_string(), "abc");
         }
 
         // verify that blocks 'abc' are not GCed and available
@@ -2540,8 +2491,8 @@ mod test {
         // try to restore data to s1 again
         let doc_restored = restore_from_snapshot(&doc, &s1).unwrap();
         let txn = doc_restored.transact();
-        let m0_restored = txn.get_map("map").unwrap();
-        let txt = m0_restored.get(&txn, "text");
+        let m0_restored = txn.node("map").unwrap();
+        let txt = m0_restored.attr("text");
         assert!(
             txt.is_none(),
             "we restored snapshot s1, but it's content should be already GCed"
@@ -2551,13 +2502,10 @@ mod test {
         {
             let doc_restored = restore_from_snapshot(&doc, &s2).unwrap();
             let txn = doc_restored.transact();
-            let m0_restored = txn.get_map("map").unwrap();
-            let txt = m0_restored
-                .get(&txn, "text")
-                .unwrap()
-                .cast::<TextRef>()
-                .unwrap();
-            assert_eq!(txt.get_string(&txn), "def");
+            let m0_restored = txn.node("map").unwrap();
+            let txt = m0_restored.attr("text").unwrap().node_id().unwrap();
+            let txt = txn.node(txt).unwrap();
+            assert_eq!(txt.to_string(), "def");
         }
     }
 

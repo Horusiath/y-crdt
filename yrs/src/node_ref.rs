@@ -221,8 +221,12 @@ where
     }
 
     /// Inserts a single value at the given index.
-    pub fn insert(&mut self, index: u32, content: impl Into<In>) {
-        self.insert_item(index, content.into());
+    pub fn insert(&mut self, index: u32, value: impl Into<In>) -> Out {
+        self.insert_item(index, value.into())
+    }
+
+    pub fn insert_range(&mut self, index: u32, values: impl IntoIterator<Item = impl Into<In>>) {
+        todo!()
     }
 
     /// Inserts a string of text at the given index.
@@ -423,10 +427,7 @@ impl Cursor {
     fn get(&self) -> Option<Out> {
         let item = self.curr?;
         match &item.content {
-            ItemContent::Any(values) => values
-                .get(self.offset as usize)
-                .cloned()
-                .map(Out::Any),
+            ItemContent::Any(values) => values.get(self.offset as usize).cloned().map(Out::Any),
             ItemContent::String(slice) => {
                 let c = slice.chars().nth(self.offset as usize)?;
                 Some(Out::Any(Any::String(c.to_string().into())))

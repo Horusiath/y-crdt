@@ -138,10 +138,7 @@ impl<P: From<NodePtr>> TryFrom<Out> for WeakRef<P> {
     }
 }
 
-impl<P> WeakRef<P>
-where
-    P: SharedRef + Map,
-{
+impl<P> WeakRef<P> {
     /// Tries to dereference a value for linked [Map] entry, performing automatic conversion if
     /// possible. If conversion was not possible or element didn't exist, an error case will be
     /// returned.
@@ -197,10 +194,7 @@ where
     }
 }
 
-impl<P> WeakRef<P>
-where
-    P: SharedRef + Array,
-{
+impl<P> WeakRef<P> {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakRef] quotation
     /// range.
     pub fn unquote<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a, D> {
@@ -209,18 +203,6 @@ where
         } else {
             Unquote::empty()
         }
-    }
-}
-
-impl<V> AsPrelim for WeakRef<V>
-where
-    V: AsRef<Node> + TryFrom<ItemPtr>,
-{
-    type Prelim = WeakPrelim<V>;
-
-    fn as_prelim<D: Deref<Target = Doc>>(&self, _txn: &Transaction<D>) -> Self::Prelim {
-        let source = self.try_source().unwrap();
-        WeakPrelim::with_source(source.clone())
     }
 }
 
@@ -259,52 +241,11 @@ impl<P> WeakPrelim<P> {
     }
 }
 
-impl<P> WeakPrelim<P>
-where
-    P: SharedRef + Array,
-{
+impl<P> WeakPrelim<P> {
     /// Returns an iterator over [Out]s existing in a scope of the current [WeakPrelim] quotation
     /// range.
     pub fn unquote<'a, D: Deref<Target = Doc>>(&self, txn: &'a Transaction<D>) -> Unquote<'a, D> {
         self.source.unquote(txn)
-    }
-}
-
-impl<P> WeakPrelim<P>
-where
-    P: SharedRef + Map,
-{
-    pub fn try_deref_raw<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<Out> {
-        self.source.unquote(txn).next()
-    }
-
-    pub fn try_deref<D, V>(&self, txn: &Transaction<D>) -> Result<V, Option<V::Error>>
-    where
-        D: Deref<Target = Doc>,
-        V: TryFrom<Out>,
-    {
-        if let Some(value) = self.try_deref_raw(txn) {
-            match V::try_from(value) {
-                Ok(value) => Ok(value),
-                Err(value) => Err(Some(value)),
-            }
-        } else {
-            Err(None)
-        }
-    }
-}
-
-impl<P: AsRef<Node>> From<WeakRef<P>> for WeakPrelim<P> {
-    fn from(value: WeakRef<P>) -> Self {
-        let branch = value.0.as_ref();
-        if let TypeRef::WeakLink(source) = &branch.type_ref {
-            WeakPrelim {
-                source: source.clone(),
-                _marker: PhantomData::default(),
-            }
-        } else {
-            panic!("Defect: WeakRef's underlying branch is not matching expected weak ref.")
-        }
     }
 }
 

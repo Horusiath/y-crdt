@@ -4,7 +4,7 @@ use crate::encoding::read::Error;
 use crate::node::{Node, NodePtr};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{ClientID, Doc, ID, NodeID, Transaction};
+use crate::{ClientID, Doc, ID, NodeID, NodeRef, Transaction};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -58,11 +58,7 @@ impl StickyIndex {
         Self::new(IndexScope::Relative(id), assoc)
     }
 
-    pub fn from_type<D, B>(node: NodeID, assoc: Assoc) -> Self
-    where
-        D: Deref<Target = Doc>,
-        B: AsRef<Node>,
-    {
+    pub fn from_type(node: NodeID, assoc: Assoc) -> Self {
         Self::new(IndexScope::Absolute(node), assoc)
     }
 
@@ -586,16 +582,15 @@ impl Decode for Assoc {
 /// Trait used to retrieve a [StickyIndex] corresponding to a given human-readable index.
 /// Unlike standard indexes [StickyIndex] enables to track the location inside of a shared
 /// y-types, even in the face of concurrent updates.
-pub trait IndexedSequence: AsRef<Node> {
+impl<T, D> NodeRef<T>
+where
+    T: Deref<Target = Transaction<D>>,
+    D: Deref<Target = Doc>,
+{
     /// Returns a [StickyIndex] equivalent to a human-readable `index`.
     /// Returns `None` if `index` is beyond the length of current sequence.
-    fn sticky_index<D: Deref<Target = Doc>>(
-        &self,
-        txn: &Transaction<D>,
-        index: u32,
-        assoc: Assoc,
-    ) -> Option<StickyIndex> {
-        StickyIndex::at(txn, NodePtr::from(self.as_ref()), index, assoc)
+    pub fn sticky_index(&self, index: u32, assoc: Assoc) -> Option<StickyIndex> {
+        StickyIndex::at(self.txn(), NodePtr::from(self.as_ref()), index, assoc)
     }
 }
 
@@ -627,17 +622,18 @@ mod test {
     use crate::sticky_index::Assoc;
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{Doc, ID, IndexScope, IndexedSequence, NodeRef, StickyIndex, Transaction};
+    use crate::{Delta, Doc, ID, IndexScope, NodeID, NodeRef, StickyIndex, Transaction};
     use serde::{Deserialize, Serialize};
 
-    fn check_sticky_indexes(doc: &Doc, text: NodeRef<&Transaction<&Doc>>) {
+    fn check_sticky_indexes(doc: &Doc, text: impl Into<NodeID>) {
         // test if all positions are encoded and restored correctly
         let txn = doc.transact();
+        let text = txn.node(text).unwrap();
         let len = text.len();
         for i in 0..len {
             // for all types of associations..
             for assoc in [Assoc::After, Assoc::Before] {
-                let rel_pos = text.sticky_index(&txn, i, assoc).unwrap();
+                let rel_pos = text.sticky_index(i, assoc).unwrap();
                 let encoded = rel_pos.encode_v1();
                 let decoded = StickyIndex::decode_v1(&encoded).unwrap();
                 let abs_pos = decoded
@@ -652,87 +648,91 @@ mod test {
     #[test]
     fn sticky_index_case_1() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
 
         {
             let mut txn = doc.transact_mut();
-            txt.insert(&mut txn, 0, "1");
-            txt.insert(&mut txn, 0, "abc");
-            txt.insert(&mut txn, 0, "z");
-            txt.insert(&mut txn, 0, "y");
-            txt.insert(&mut txn, 0, "x");
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert_text(0, "1");
+            txt.insert_text(0, "abc");
+            txt.insert_text(0, "z");
+            txt.insert_text(0, "y");
+            txt.insert_text(0, "x");
         }
 
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&doc, "test");
     }
 
     #[test]
     fn sticky_index_case_2() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
-
-        txt.insert(&mut doc.transact_mut(), 0, "abc");
-        check_sticky_indexes(&doc, &txt);
+        {
+            let mut txn = doc.transact_mut();
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert_text(0, "abc");
+        }
+        check_sticky_indexes(&doc, "test");
     }
 
     #[test]
     fn sticky_index_case_3() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
 
         {
             let mut txn = doc.transact_mut();
-            txt.insert(&mut txn, 0, "abc");
-            txt.insert(&mut txn, 0, "1");
-            txt.insert(&mut txn, 0, "xyz");
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert_text(0, "abc");
+            txt.insert_text(0, "1");
+            txt.insert_text(0, "xyz");
         }
 
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&doc, "test");
     }
 
     #[test]
     fn sticky_index_case_4() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
-
-        txt.insert(&mut doc.transact_mut(), 0, "1");
-        check_sticky_indexes(&doc, &txt);
+        {
+            let mut txn = doc.transact_mut();
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert_text(0, "1");
+        }
+        check_sticky_indexes(&doc, "test");
     }
 
     #[test]
     fn sticky_index_case_5() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
 
         {
             let mut txn = doc.transact_mut();
-            txt.insert(&mut txn, 0, "2");
-            txt.insert(&mut txn, 0, "1");
+            let mut txt = txn.node_mut("test").unwrap();
+            txt.insert_text(0, "2");
+            txt.insert_text(0, "1");
         }
 
-        check_sticky_indexes(&doc, &txt);
+        check_sticky_indexes(&doc, "test");
     }
 
     #[test]
     fn sticky_index_case_6() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
-        check_sticky_indexes(&doc, &txt);
+        doc.transact_mut().node_mut("test").unwrap();
+        check_sticky_indexes(&doc, "test");
     }
 
     #[test]
     fn sticky_index_association_difference() {
         let mut doc = Doc::with_client_id(1);
-        let txt = doc.get_or_insert_text("test");
 
         let mut txn = doc.transact_mut();
-        txt.insert(&mut txn, 0, "2");
-        txt.insert(&mut txn, 0, "1");
+        let mut txt = txn.node_mut("test").unwrap();
+        txt.insert_text(0, "2");
+        txt.insert_text(0, "1");
 
-        let rpos_right = txt.sticky_index(&mut txn, 1, Assoc::After).unwrap();
-        let rpos_left = txt.sticky_index(&mut txn, 1, Assoc::Before).unwrap();
+        let rpos_right = txt.sticky_index(1, Assoc::After).unwrap();
+        let rpos_left = txt.sticky_index(1, Assoc::Before).unwrap();
 
-        txt.insert(&mut txn, 1, "x");
+        txt.insert_text(1, "x");
 
         let pos_right = rpos_right.get_offset(&txn).unwrap();
         let pos_left = rpos_left.get_offset(&txn).unwrap();
@@ -798,17 +798,24 @@ mod test {
     fn sticky_index_nested_type_scope_resolves_to_type_end_when_right_associated() {
         // example of tiptap published collaborative cursor at the end of line of text, which is represented as a nested type
         let mut doc = Doc::with_client_id(1);
-        let fragment = doc.get_or_insert_xml_fragment("prosemirror");
         let mut txn = doc.transact_mut();
-        let paragraph = fragment.insert(&mut txn, 0, XmlElementPrelim::empty("paragraph"));
-        let text = paragraph.insert(&mut txn, 0, XmlTextPrelim::new("hello"));
+        let mut fragment = txn.node_mut("prosemirror").unwrap();
+        let paragraph = fragment
+            .insert(0, Delta::with_name("paragraph"))
+            .node_id()
+            .unwrap();
+        let mut paragraph = txn.node_mut(paragraph).unwrap();
+        let text = paragraph
+            .insert(0, Delta::new().insert_text("hello"))
+            .node_id()
+            .unwrap();
 
-        let end = StickyIndex::from_type(&txn, &text, Assoc::After);
+        let end = StickyIndex::from_type(text.clone(), Assoc::After);
         let offset = end.get_offset(&txn).unwrap();
         assert_eq!(offset.index, 5);
 
         // the left-associated twin keeps pointing at the type's start
-        let start = StickyIndex::from_type(&txn, &text, Assoc::Before);
+        let start = StickyIndex::from_type(text, Assoc::Before);
         let offset = start.get_offset(&txn).unwrap();
         assert_eq!(offset.index, 0);
 

@@ -278,7 +278,7 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = &'a Any> + 'a>;
 #[cfg(test)]
 mod test {
     use crate::json_path::JsonPath;
-    use crate::{any, Any, JsonPathEval};
+    use crate::{Any, JsonPathEval, any};
 
     fn mixed_sample() -> Any {
         any!({

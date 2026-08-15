@@ -395,61 +395,50 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = Out> + 'a>;
 #[cfg(test)]
 mod test {
     use crate::updates::decoder::Decode;
-    use crate::{Doc, In, JsonPath, JsonPathEval, Out, Update, any};
+    use crate::{Delta, Doc, In, JsonPath, JsonPathEval, Out, Update, any};
 
     fn mixed_sample() -> Doc {
         let mut doc = Doc::new();
         let mut tx = doc.transact_mut();
-        let users = tx.get_or_insert_array("users");
+        let mut users = tx.node_mut("users").unwrap();
         users.insert(
-            &mut tx,
             0,
-            MapPrelim::from([
-                ("name".to_string(), In::Any(any!("Alice"))),
-                ("surname".into(), In::Any(any!("Smith"))),
-                ("age".into(), In::Any(any!(25))),
-                (
-                    "friends".into(),
-                    In::from(ArrayPrelim::from([
-                        any!({ "name": "Bob", "nick": "boreas" }),
-                        any!({ "nick": "crocodile91" }),
-                    ])),
+            Delta::new()
+                .insert_attr("name", any!("Alice"))
+                .insert_attr("surname", any!("Smith"))
+                .insert_attr("age", any!(25))
+                .insert_attr(
+                    "friends",
+                    Delta::new()
+                        .insert(any!({ "name": "Bob", "nick": "boreas" }))
+                        .insert(any!({ "nick": "crocodile91" })),
                 ),
-            ]),
         );
         users.insert(
-            &mut tx,
             1,
-            MapPrelim::from([
-                ("name".to_string(), In::Any(any!("Bob"))),
-                ("nick".into(), In::Any(any!("boreas"))),
-                ("age".into(), In::Any(any!(30))),
-            ]),
+            Delta::new()
+                .insert_attr("name", any!("Bob"))
+                .insert_attr("nick", any!("boreas"))
+                .insert_attr("age", any!(30)),
         );
         users.insert(
-            &mut tx,
             2,
-            MapPrelim::from([
-                ("nick".to_string(), In::Any(any!("crocodile91"))),
-                ("age".into(), In::Any(any!(35))),
-            ]),
+            Delta::new()
+                .insert_attr("nick", any!("crocodile91"))
+                .insert_attr("age", any!(35)),
         );
         users.insert(
-            &mut tx,
             3,
-            MapPrelim::from([
-                ("name".to_string(), In::Any(any!("Damian"))),
-                ("surname".into(), In::Any(any!("Smith"))),
-                ("age".into(), In::Any(any!(30))),
-            ]),
+            Delta::new()
+                .insert_attr("name", any!("Damian"))
+                .insert_attr("surname", any!("Smith"))
+                .insert_attr("age", any!(30)),
         );
         users.insert(
-            &mut tx,
             4,
-            MapPrelim::from([
-                ("name".to_string(), In::Any(any!("Elise"))),
-                ("age".into(), In::Any(any!(35))),
-            ]),
+            Delta::new()
+                .insert_attr("name", any!("Elise"))
+                .insert_attr("age", any!(35)),
         );
         drop(tx);
         doc

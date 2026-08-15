@@ -4,12 +4,12 @@ use crate::encoding::serde::{from_any, to_any};
 use crate::ids::{IdMapInner, IdRanges, Merge};
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{IdSet, ID};
-use serde::de::DeserializeOwned;
+use crate::{ID, IdSet};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
-use std::collections::btree_map::Entry;
 use std::collections::HashSet;
+use std::collections::btree_map::Entry;
 use std::hash::Hash;
 use std::ops::{Deref, Range};
 use std::sync::Arc;
@@ -528,7 +528,7 @@ mod test {
     use crate::id_map::{ContentAttribute, Diff, IdMap};
     use crate::updates::decoder::Decode;
     use crate::updates::encoder::Encode;
-    use crate::{IdSet, ID};
+    use crate::{ID, IdSet};
     use serde::Serialize;
     use std::hash::Hash;
 

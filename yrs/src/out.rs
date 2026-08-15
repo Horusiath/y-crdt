@@ -1,5 +1,5 @@
 use crate::block::ItemPtr;
-use crate::{Any, NodeID, Uuid};
+use crate::{Any, In, NodeID, Uuid};
 use std::convert::TryFrom;
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -30,6 +30,24 @@ impl Out {
         T: TryFrom<Self, Error = Self>,
     {
         T::try_from(self)
+    }
+
+    pub fn node_id(self) -> Option<NodeID> {
+        match self {
+            Out::Node(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<Out> for NodeID {
+    type Error = Out;
+
+    fn try_from(value: Out) -> Result<Self, Self::Error> {
+        match value {
+            Out::Node(id) => Ok(id),
+            out => Err(out),
+        }
     }
 }
 

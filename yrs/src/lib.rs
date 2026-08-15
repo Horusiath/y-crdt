@@ -678,7 +678,6 @@ pub use crate::state_vector::Snapshot;
 pub use crate::state_vector::StateVector;
 pub use crate::sticky_index::Assoc;
 pub use crate::sticky_index::IndexScope;
-pub use crate::sticky_index::IndexedSequence;
 pub use crate::sticky_index::Offset;
 pub use crate::sticky_index::StickyIndex;
 pub use crate::transact::TransactionAcqError;

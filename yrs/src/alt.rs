@@ -1,11 +1,11 @@
 //! `alt` module contains a set of auxiliary functions that can be used for common operations
 //! over document [Update]s directly on their binary representation.
 
+use crate::StateVector;
 use crate::encoding::read::{Cursor, Error};
 use crate::update::Update;
 use crate::updates::decoder::{Decode, DecoderV2};
 use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
-use crate::StateVector;
 
 /// Merges a sequence of updates (encoded using lib0 v1 encoding) together, producing another
 /// update (also lib0 v1 encoded) in the result. Returned binary is a combination of all input

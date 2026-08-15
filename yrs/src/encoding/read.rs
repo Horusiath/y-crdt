@@ -8,7 +8,9 @@ pub enum Error {
     #[error("failed to decode variable length integer")]
     InvalidVarInt,
 
-    #[error("while trying to read more data (expected: {0} bytes), an unexpected end of buffer was reached")]
+    #[error(
+        "while trying to read more data (expected: {0} bytes), an unexpected end of buffer was reached"
+    )]
     EndOfBuffer(usize),
 
     #[error("while reading, an unexpected value was found")]

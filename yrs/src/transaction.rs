@@ -757,8 +757,9 @@ impl<'doc> Transaction<&'doc mut Doc> {
                     Some(name) => TypeRef::XmlElement(name.clone()),
                     None => TypeRef::Undefined,
                 };
+                let inner = Node::new(node.name.clone(), type_ref);
                 remainder = Some(node);
-                ItemContent::Node(Node::new(type_ref))
+                ItemContent::Node(inner)
             }
             In::Doc(doc) => {
                 let options = doc.options.clone();

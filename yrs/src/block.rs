@@ -2007,7 +2007,7 @@ impl ItemContent {
             )),
             BLOCK_ITEM_TYPE_REF_NUMBER => {
                 let type_ref = TypeRef::decode(decoder)?;
-                Ok(ItemContent::Node(Node::new(type_ref)))
+                Ok(ItemContent::Node(Node::new(None, type_ref)))
             }
             BLOCK_ITEM_ANY_REF_NUMBER => {
                 let len = decoder.read_len()? as usize;
@@ -2134,7 +2134,9 @@ impl Clone for ItemContent {
             ItemContent::Embed(json) => ItemContent::Embed(json.clone()),
             ItemContent::Format(key, value) => ItemContent::Format(key.clone(), value.clone()),
             ItemContent::String(chunk) => ItemContent::String(chunk.clone()),
-            ItemContent::Node(branch) => ItemContent::Node(Node::new(branch.type_ref.clone())),
+            ItemContent::Node(branch) => {
+                ItemContent::Node(Node::new(branch.name.clone(), branch.type_ref.clone()))
+            }
         }
     }
 }

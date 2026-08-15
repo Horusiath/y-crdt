@@ -1,5 +1,5 @@
 use criterion::*;
-use yrs::{ClientID, IdSet, ID};
+use yrs::{ClientID, ID, IdSet};
 
 const CLIENT_A: ClientID = ClientID::new(1);
 const CLIENT_B: ClientID = ClientID::new(2);

@@ -64,14 +64,6 @@ pub enum AttrOp<T = Out> {
 }
 
 impl<T> Delta<T> {
-    pub fn new() -> Self {
-        Delta {
-            name: None,
-            children: Vec::new(),
-            attrs: HashMap::new(),
-        }
-    }
-
     pub fn with_name(name: impl Into<Arc<str>>) -> Self {
         Delta {
             name: Some(name.into()),
@@ -100,10 +92,8 @@ impl<T> Delta<T> {
                 .collect(),
         }
     }
-}
 
-impl Delta<In> {
-    pub fn insert_text(&mut self, text: impl Into<String>) -> &mut Self {
+    pub fn insert_text(mut self, text: impl Into<String>) -> Self {
         self.children.push(Op::InsertText {
             text: text.into(),
             format: None,
@@ -112,7 +102,7 @@ impl Delta<In> {
     }
 
     /// Appends a text insert operation with formatting attributes.
-    pub fn insert_text_with(&mut self, text: impl Into<String>, format: Attrs) -> &mut Self {
+    pub fn insert_text_with(mut self, text: impl Into<String>, format: Attrs) -> Self {
         self.children.push(Op::InsertText {
             text: text.into(),
             format: Some(Box::new(format)),
@@ -120,8 +110,84 @@ impl Delta<In> {
         self
     }
 
+    /// Appends a delete operation for `len` elements.
+    pub fn remove(mut self, len: u32) -> Self {
+        self.children.push(Op::Remove { len, prev: None });
+        self
+    }
+
+    /// Appends a retain (skip) operation for `len` elements.
+    pub fn retain(mut self, len: u32) -> Self {
+        self.children.push(Op::Retain { len, format: None });
+        self
+    }
+
+    /// Appends a retain operation with a formatting change.
+    pub fn retain_with(mut self, len: u32, format: Attrs) -> Self {
+        self.children.push(Op::Retain {
+            len,
+            format: Some(Box::new(format)),
+        });
+        self
+    }
+
+    /// Appends a modify operation that applies a nested delta to an embedded child.
+    pub fn modify(mut self, delta: Self) -> Self {
+        self.children.push(Op::Modify {
+            delta: Box::new(delta),
+            format: None,
+        });
+        self
+    }
+
+    /// Appends a modify operation with a formatting change.
+    pub fn modify_with(mut self, delta: Self, format: Attrs) -> Self {
+        self.children.push(Op::Modify {
+            delta: Box::new(delta),
+            format: Some(Box::new(format)),
+        });
+        self
+    }
+
+    /// Removes an attribute by key.
+    pub fn remove_attr(mut self, key: impl Into<Arc<str>>) -> Self {
+        self.attrs.insert(key.into(), AttrOp::Remove { prev: None });
+        self
+    }
+
+    /// Applies a nested delta to an attribute whose value is a node.
+    pub fn modify_attr(mut self, key: impl Into<Arc<str>>, delta: Self) -> Self {
+        self.attrs.insert(
+            key.into(),
+            AttrOp::Modify {
+                delta: Box::new(delta),
+            },
+        );
+        self
+    }
+
+    /// Composes another delta on top of this one. The result represents
+    /// applying `self` followed by `other`.
+    pub fn join(&mut self, other: Self) -> &mut Self {
+        self.children.extend(other.children);
+        for (key, value) in other.attrs {
+            self.attrs.insert(key, value);
+        }
+        self
+    }
+}
+
+impl Delta<In> {
+    pub fn new() -> Self {
+        Delta {
+            name: None,
+            children: Vec::new(),
+            attrs: HashMap::new(),
+        }
+    }
+
     /// Appends a single content value insert operation.
-    pub fn insert(&mut self, content: impl Into<In>) -> &mut Self {
+    pub fn insert(mut self, content: impl Into<In>) -> Self {
         if let Some(Op::Insert { items, format }) = self.children.last_mut() {
             if format.is_none() {
                 items.push(content.into());
@@ -136,7 +202,7 @@ impl Delta<In> {
     }
 
     /// Appends a single content value insert operation with formatting attributes.
-    pub fn insert_with(&mut self, content: impl Into<In>, format: Attrs) -> &mut Self {
+    pub fn insert_with(mut self, content: impl Into<In>, format: Attrs) -> Self {
         self.children.push(Op::Insert {
             items: vec![content.into()],
             format: Some(Box::new(format)),
@@ -144,47 +210,8 @@ impl Delta<In> {
         self
     }
 
-    /// Appends a delete operation for `len` elements.
-    pub fn remove(&mut self, len: u32) -> &mut Self {
-        self.children.push(Op::Remove { len, prev: None });
-        self
-    }
-
-    /// Appends a retain (skip) operation for `len` elements.
-    pub fn retain(&mut self, len: u32) -> &mut Self {
-        self.children.push(Op::Retain { len, format: None });
-        self
-    }
-
-    /// Appends a retain operation with a formatting change.
-    pub fn retain_with(&mut self, len: u32, format: Attrs) -> &mut Self {
-        self.children.push(Op::Retain {
-            len,
-            format: Some(Box::new(format)),
-        });
-        self
-    }
-
-    /// Appends a modify operation that applies a nested delta to an embedded child.
-    pub fn modify(&mut self, delta: Delta<In>) -> &mut Self {
-        self.children.push(Op::Modify {
-            delta: Box::new(delta),
-            format: None,
-        });
-        self
-    }
-
-    /// Appends a modify operation with a formatting change.
-    pub fn modify_with(&mut self, delta: Delta<In>, format: Attrs) -> &mut Self {
-        self.children.push(Op::Modify {
-            delta: Box::new(delta),
-            format: Some(Box::new(format)),
-        });
-        self
-    }
-
     /// Sets an attribute to the given value.
-    pub fn insert_attr(&mut self, key: impl Into<Arc<str>>, value: impl Into<In>) -> &mut Self {
+    pub fn insert_attr(mut self, key: impl Into<Arc<str>>, value: impl Into<In>) -> Self {
         self.attrs.insert(
             key.into(),
             AttrOp::Update {
@@ -194,38 +221,28 @@ impl Delta<In> {
         );
         self
     }
+}
 
-    /// Removes an attribute by key.
-    pub fn remove_attr(&mut self, key: impl Into<Arc<str>>) -> &mut Self {
-        self.attrs.insert(key.into(), AttrOp::Remove { prev: None });
-        self
+impl Delta<Out> {
+    pub fn out() -> Self {
+        Self::default()
     }
+}
 
-    /// Applies a nested delta to an attribute whose value is a node.
-    pub fn modify_attr(&mut self, key: impl Into<Arc<str>>, delta: Delta<In>) -> &mut Self {
-        self.attrs.insert(
-            key.into(),
-            AttrOp::Modify {
-                delta: Box::new(delta),
-            },
-        );
-        self
-    }
-
-    /// Composes another delta on top of this one. The result represents
-    /// applying `self` followed by `other`.
-    pub fn join(&mut self, other: Delta<In>) -> &mut Self {
-        self.children.extend(other.children);
-        for (key, value) in other.attrs {
-            self.attrs.insert(key, value);
-        }
-        self
+impl From<Delta<In>> for In {
+    #[inline]
+    fn from(value: Delta<In>) -> Self {
+        In::Node(value)
     }
 }
 
 impl<T> Default for Delta<T> {
     fn default() -> Self {
-        Self::new()
+        Delta {
+            name: None,
+            children: vec![],
+            attrs: Default::default(),
+        }
     }
 }
 

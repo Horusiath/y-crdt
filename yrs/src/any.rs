@@ -832,7 +832,7 @@ macro_rules! any_internal {
     // Any Serialize type: numbers, strings, struct literals, variables etc.
     // Must be below every other rule.
     ($other:expr) => {
-        ($other).into()
+        $crate::any::Any::from($other)
     };
 }
 
