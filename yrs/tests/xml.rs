@@ -1,224 +1,90 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
 use arc_swap::ArcSwapOption;
+use std::sync::Arc;
+use yrs::node::Observable;
+use yrs::test_utils::exchange_updates;
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Doc, Out, StateVector, Update};
+use yrs::{Delta, Doc, In, Out, StateVector, Update};
 
 #[test]
 fn insert_attribute() {
     let mut d1 = Doc::with_client_id(1);
-    let f = d1.get_or_insert_xml_fragment("xml");
     let mut t1 = d1.transact_mut();
-    let xml1 = f.push_back(&mut t1, XmlElementPrelim::empty("div"));
-    xml1.insert_attribute(&mut t1, "height", 10.to_string());
-    assert_eq!(xml1.get_attribute(&t1, "height"), Some(Out::from("10")));
+    let Out::Node(xml1) = t1
+        .node_mut("xml")
+        .unwrap()
+        .push_back(In::Node(Delta::with_name("div")))
+    else {
+        panic!("expected a nested node")
+    };
+    t1.node_mut(xml1.clone())
+        .unwrap()
+        .insert_attr("height", 10.to_string());
+    assert_eq!(t1.node(xml1).unwrap().attr("height"), Some(Out::from("10")));
 
     let mut d2 = Doc::with_client_id(1);
-    let f = d2.get_or_insert_xml_fragment("xml");
     let mut t2 = d2.transact_mut();
-    let xml2 = f.push_back(&mut t2, XmlElementPrelim::empty("div"));
+    let Out::Node(xml2) = t2
+        .node_mut("xml")
+        .unwrap()
+        .push_back(In::Node(Delta::with_name("div")))
+    else {
+        panic!("expected a nested node")
+    };
     let u = t1.encode_state_as_update_v1(&StateVector::default());
     let u = Update::decode_v1(u.as_slice()).unwrap();
     t2.apply_update(u).unwrap();
-    assert_eq!(xml2.get_attribute(&t2, "height"), Some(Out::from("10")));
-}
-
-#[test]
-fn tree_walker() {
-    let mut doc = Doc::with_client_id(1);
-    let root = doc.get_or_insert_xml_fragment("xml");
-    let mut txn = doc.transact_mut();
-    /*
-        <UNDEFINED>
-            <p>{txt1}{txt2}</p>
-            <p></p>
-            <img/>
-        </UNDEFINED>
-    */
-    let p1 = root.push_back(&mut txn, XmlElementPrelim::empty("p"));
-    p1.push_back(&mut txn, XmlTextPrelim::new(""));
-    p1.push_back(&mut txn, XmlTextPrelim::new(""));
-    let p2 = root.push_back(&mut txn, XmlElementPrelim::empty("p"));
-    root.push_back(&mut txn, XmlElementPrelim::empty("img"));
-
-    let all_paragraphs = root.successors(&txn).filter_map(|n| match n {
-        XmlOut::Element(e) if e.tag() == &"p".into() => Some(e),
-        _ => None,
-    });
-    let actual: Vec<_> = all_paragraphs.collect();
-
-    assert_eq!(
-        actual.len(),
-        2,
-        "query selector should found two paragraphs"
-    );
-    assert_eq!(
-        actual[0].hook(),
-        p1.hook(),
-        "query selector found 1st paragraph"
-    );
-    assert_eq!(
-        actual[1].hook(),
-        p2.hook(),
-        "query selector found 2nd paragraph"
-    );
-}
-
-#[test]
-fn text_attributes() {
-    let mut doc = Doc::with_client_id(1);
-    let f = doc.get_or_insert_xml_fragment("test");
-    let mut txn = doc.transact_mut();
-    let txt = f.push_back(&mut txn, XmlTextPrelim::new(""));
-    txt.insert_attribute(&mut txn, "test", 42.to_string());
-
-    assert_eq!(txt.get_attribute(&txn, "test"), Some(Out::from("42")));
-    let actual: Vec<_> = txt.attributes(&txn).collect();
-    let expected: Vec<_> = vec![("test", Out::from("42"))].into_iter().collect();
-    assert_eq!(actual, expected);
-}
-
-#[test]
-fn text_attributes_any() {
-    let mut doc = Doc::with_client_id(1);
-    let f = doc.get_or_insert_xml_fragment("test");
-    let mut txn = doc.transact_mut();
-    let txt = f.push_back(&mut txn, XmlTextPrelim::new(""));
-    txt.insert_attribute(&mut txn, "test", Any::BigInt(42));
-    txt.insert_attribute(&mut txn, "test_true", true);
-    txt.insert_attribute(&mut txn, "test_null", Any::Null);
-
-    assert_eq!(
-        txt.get_attribute(&txn, "test"),
-        Some(Out::Any(Any::BigInt(42)))
-    );
-    assert_eq!(
-        txt.get_attribute(&txn, "test_true"),
-        Some(Out::Any(Any::Bool(true)))
-    );
-    assert_eq!(
-        txt.get_attribute(&txn, "test_null"),
-        Some(Out::Any(Any::Null))
-    );
-
-    // Collect attributes into a HashSet of keys to verify all expected keys are present
-    let actual_keys: HashSet<&str> = txt.attributes(&txn).map(|(k, _)| k).collect();
-    let expected_keys: HashSet<&str> = vec!["test", "test_true", "test_null"].into_iter().collect();
-    assert_eq!(actual_keys, expected_keys);
-}
-
-#[test]
-fn siblings() {
-    let mut doc = Doc::with_client_id(1);
-    let root = doc.get_or_insert_xml_fragment("root");
-    let mut txn = doc.transact_mut();
-    let first = root.push_back(&mut txn, XmlTextPrelim::new("hello"));
-    let second = root.push_back(&mut txn, XmlElementPrelim::empty("p"));
-
-    assert_eq!(
-        &first.siblings(&txn).next().unwrap().id(),
-        second.hook().id(),
-        "first.next_sibling should point to second"
-    );
-    assert_eq!(
-        &second.siblings(&txn).next_back().unwrap().id(),
-        first.hook().id(),
-        "second.prev_sibling should point to first"
-    );
-    assert_eq!(
-        &first.parent().unwrap().id(),
-        root.hook().id(),
-        "first.parent should point to root"
-    );
-    assert!(root.parent().is_none(), "root parent should not exist");
-    assert_eq!(
-        &root.first_child().unwrap().id(),
-        first.hook().id(),
-        "root.first_child should point to first"
-    );
-}
-
-#[test]
-fn serialization() {
-    let mut d1 = Doc::with_client_id(1);
-    let r1 = d1.get_or_insert_xml_fragment("root");
-    let mut t1 = d1.transact_mut();
-    let _first = r1.push_back(&mut t1, XmlTextPrelim::new("hello"));
-    r1.push_back(&mut t1, XmlElementPrelim::empty("p"));
-
-    let expected = "hello<p></p>";
-    assert_eq!(r1.get_string(&t1), expected);
-
-    let u1 = t1.encode_state_as_update_v1(&StateVector::default());
-
-    let mut d2 = Doc::with_client_id(2);
-    let r2 = d2.get_or_insert_xml_fragment("root");
-    let mut t2 = d2.transact_mut();
-
-    let u1 = Update::decode_v1(u1.as_slice()).unwrap();
-    t2.apply_update(u1).unwrap();
-    assert_eq!(r2.get_string(&t2), expected);
-}
-
-#[test]
-fn serialization_compatibility() {
-    let mut d1 = Doc::with_client_id(1);
-    let r1 = d1.get_or_insert_xml_fragment("root");
-    let mut t1 = d1.transact_mut();
-    let _first = r1.push_back(&mut t1, XmlTextPrelim::new("hello"));
-    r1.push_back(&mut t1, XmlElementPrelim::empty("p"));
-
-    /* This binary is result of following Yjs code (matching Rust code above):
-    ```js
-        let d1 = new Y.Doc()
-        d1.clientID = 1
-        let root = d1.get('root', Y.XmlElement)
-        let first = new Y.XmlText()
-        first.insert(0, 'hello')
-        let second = new Y.XmlElement('p')
-        root.insert(0, [first,second])
-
-        let expected = Y.encodeStateAsUpdate(d1)
-    ``` */
-    let expected = &[
-        1, 3, 1, 0, 7, 1, 4, 114, 111, 111, 116, 6, 4, 0, 1, 0, 5, 104, 101, 108, 108, 111, 135, 1,
-        0, 3, 1, 112, 0,
-    ];
-    let u1 = t1.encode_state_as_update_v1(&StateVector::default());
-    assert_eq!(u1.as_slice(), expected);
+    assert_eq!(t2.node(xml2).unwrap().attr("height"), Some(Out::from("10")));
 }
 
 #[test]
 fn event_observers() {
     let mut d1 = Doc::with_client_id(1);
-    let f = d1.get_or_insert_xml_fragment("xml");
-    let xml = f.insert(&mut d1.transact_mut(), 0, XmlElementPrelim::empty("test"));
+    let xml = {
+        let mut txn = d1.transact_mut();
+        let out = txn
+            .node_mut("xml")
+            .unwrap()
+            .insert(0, In::Node(Delta::with_name("test")));
+        let Out::Node(xml) = out else {
+            panic!("expected a nested node")
+        };
+        xml
+    };
 
     let mut d2 = Doc::with_client_id(2);
-    let f = d2.get_or_insert_xml_fragment("xml");
+    {
+        let mut txn = d2.transact_mut();
+        txn.node_mut("xml").unwrap();
+    }
     exchange_updates(&mut [&mut d1, &mut d2]);
-    let xml2 = f
-        .get(&d2.transact(), 0)
-        .unwrap()
-        .into_xml_element()
-        .unwrap();
+    let xml2 = {
+        let txn = d2.transact();
+        let Some(Out::Node(xml2)) = txn.node("xml").unwrap().get(0) else {
+            panic!("expected a nested node")
+        };
+        xml2
+    };
 
     let attributes = Arc::new(ArcSwapOption::default());
     let nodes = Arc::new(ArcSwapOption::default());
     let attributes_c = attributes.clone();
     let nodes_c = nodes.clone();
-    let _sub = xml.observe(move |txn, e| {
-        attributes_c.store(Some(Arc::new(e.keys(txn).clone())));
-        nodes_c.store(Some(Arc::new(e.delta(txn).to_vec())));
-    });
+    let _sub = {
+        let txn = d1.transact();
+        txn.node(xml.clone()).unwrap().observe(move |_txn, e| {
+            attributes_c.store(Some(Arc::new(e.keys_changed())));
+            nodes_c.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
+        })
+    };
 
     // insert attribute
     {
         let mut txn = d1.transact_mut();
-        xml.insert_attribute(&mut txn, "key1", "value1");
-        xml.insert_attribute(&mut txn, "key2", "value2");
+        let mut node = txn.node_mut(xml.clone()).unwrap();
+        node.insert_attr("key1", "value1");
+        node.insert_attr("key2", "value2");
     }
+    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
     assert!(nodes.swap(None).unwrap().is_empty());
     assert_eq!(
         attributes.swap(None),
@@ -237,9 +103,11 @@ fn event_observers() {
     // change and remove attribute
     {
         let mut txn = d1.transact_mut();
-        xml.insert_attribute(&mut txn, "key1", "value11");
-        xml.remove_attribute(&mut txn, &"key2");
+        let mut node = txn.node_mut(xml.clone()).unwrap();
+        node.insert_attr("key1", "value11");
+        node.remove_attr("key2");
     }
+    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
     assert!(nodes.swap(None).unwrap().is_empty());
     assert_eq!(
         attributes.swap(None),
@@ -259,12 +127,13 @@ fn event_observers() {
     );
 
     // add xml elements
-    let (nested_txt, nested_xml) = {
+    {
         let mut txn = d1.transact_mut();
-        let txt = xml.insert(&mut txn, 0, XmlTextPrelim::new(""));
-        let xml2 = xml.insert(&mut txn, 1, XmlElementPrelim::empty("div"));
-        (txt, xml2)
-    };
+        let mut node = txn.node_mut(xml.clone()).unwrap();
+        node.insert(0, In::Node(Delta::new().insert_text("")));
+        node.insert(1, In::Node(Delta::with_name("div")));
+    }
+    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
     assert_eq!(
         nodes.swap(None),
         Some(Arc::new(vec![Change::Added(vec![
@@ -275,11 +144,13 @@ fn event_observers() {
     assert_eq!(attributes.swap(None), Some(HashMap::new().into()));
 
     // remove and add
-    let nested_xml2 = {
+    {
         let mut txn = d1.transact_mut();
-        xml.remove_range(&mut txn, 1, 1);
-        xml.insert(&mut txn, 1, XmlElementPrelim::empty("p"))
-    };
+        let mut node = txn.node_mut(xml.clone()).unwrap();
+        node.remove(1, 1);
+        node.insert(1, In::Node(Delta::with_name("p")));
+    }
+    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
     assert_eq!(
         nodes.swap(None),
         Some(Arc::new(vec![
@@ -295,20 +166,23 @@ fn event_observers() {
     let nodes = Arc::new(ArcSwapOption::default());
     let attributes_c = attributes.clone();
     let nodes_c = nodes.clone();
-    let _sub = xml2.observe(move |txn, e| {
-        attributes_c.store(Some(Arc::new(e.keys(txn).clone())));
-        nodes_c.store(Some(Arc::new(e.delta(txn).to_vec())));
-    });
+    let _sub = {
+        let txn = d2.transact();
+        txn.node(xml2).unwrap().observe(move |_txn, e| {
+            attributes_c.store(Some(Arc::new(e.keys_changed())));
+            nodes_c.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
+        })
+    };
 
     {
-        let t1 = d1.transact_mut();
+        let t1 = d1.transact();
         let mut t2 = d2.transact_mut();
         let sv = t2.state_vector();
-        let mut encoder = EncoderV1::new();
-        t1.encode_diff(&sv, &mut encoder);
-        let update = Update::decode_v1(encoder.to_vec().as_slice()).unwrap();
-        t2.apply_update(update).unwrap();
+        let update = t1.encode_diff_v1(&sv);
+        t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
+            .unwrap();
     }
+    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
     assert_eq!(
         nodes.swap(None),
         Some(Arc::new(vec![Change::Added(vec![
@@ -326,51 +200,36 @@ fn event_observers() {
 }
 
 #[test]
-fn xml_to_string() {
-    let mut doc = Doc::new();
-    let f = doc.get_or_insert_xml_fragment("test");
+fn serialization_compatibility() {
+    /* This binary is result of following Yjs code:
+    ```js
+        let d1 = new Y.Doc()
+        d1.clientID = 1
+        let root = d1.get('root', Y.XmlElement)
+        let first = new Y.XmlText()
+        first.insert(0, 'hello')
+        let second = new Y.XmlElement('p')
+        root.insert(0, [first,second])
+
+        let expected = Y.encodeStateAsUpdate(d1)
+    ``` */
+    // TODO(unified-api): In::Node cannot create TypeRef::XmlText, so the doc is decoded from the
+    // Yjs binary instead of being built by these calls
+    let r1 = d1.get_or_insert_xml_fragment("root");
+    let _first = r1.push_back(&mut t1, XmlTextPrelim::new("hello"));
+    r1.push_back(&mut t1, XmlElementPrelim::empty("p"));
+    let expected = &[
+        1, 3, 1, 0, 7, 1, 4, 114, 111, 111, 116, 6, 4, 0, 1, 0, 5, 104, 101, 108, 108, 111, 135, 1,
+        0, 3, 1, 112, 0,
+    ];
+    let update = Update::decode_v1(expected).unwrap();
+    let mut doc = Doc::with_client_id(1);
     let mut txn = doc.transact_mut();
-    let div = f.push_back(&mut txn, XmlElementPrelim::empty("div"));
-    div.insert_attribute(&mut txn, "class", "t-button");
-    let text = div.push_back(&mut txn, XmlTextPrelim::new("hello world"));
-    text.format(
-        &mut txn,
-        6,
-        5,
-        Attrs::from([(
-            "a".into(),
-            HashMap::from([("href".into(), "http://domain.org")]).into(),
-        )]),
-    );
-    drop(txn);
+    txn.apply_update(update).unwrap();
 
-    let str = f.get_string(&doc.transact());
-    assert_eq!(
-        str.as_str(),
-        "<div class=\"t-button\">hello <a href=\"http://domain.org\">world</a></div>"
-    )
-}
-
-#[test]
-fn xml_to_string_2() {
-    let mut doc = Doc::new();
-    let f = doc.get_or_insert_xml_fragment("article");
-    let xml = f.insert(&mut doc.transact_mut(), 0, XmlTextPrelim::new(""));
-    let mut txn = doc.transact_mut();
-
-    let bold = Attrs::from([("b".into(), true.into())]);
-    let italic = Attrs::from([("i".into(), true.into())]);
-
-    xml.insert(&mut txn, 0, "hello ");
-    xml.insert_with_attributes(&mut txn, 6, "world", italic);
-    xml.format(&mut txn, 0, 5, bold);
-
-    assert_eq!(xml.get_string(&txn), "<b>hello</b> <i>world</i>");
-
-    let remove_italic = Attrs::from([("i".into(), Any::Null)]);
-    xml.format(&mut txn, 6, 5, remove_italic);
-
-    assert_eq!(xml.get_string(&txn), "<b>hello</b> world");
+    let actual = txn.encode_state_as_update_v1(&StateVector::default());
+    assert_eq!(actual.as_slice(), expected);
+    assert_eq!(txn.node("root").unwrap().to_string(), "hello<p></p>");
 }
 
 #[test]

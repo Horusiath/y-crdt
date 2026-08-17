@@ -6,6 +6,7 @@ license = "MIT"
 authors = ["Kevin Jahns <kevin.jahns@pm.me>", "Bartosz Sypytkowski <b.sypytkowski@gmail.com>"]
 keywords = ["crdt", "yrs"]
 edition = "2024"
+autotests = false
 homepage = "https://github.com/y-crdt/y-crdt/"
 repository = "https://github.com/y-crdt/y-crdt/"
 readme = "./README.md"
@@ -35,6 +36,10 @@ rand = "0.8.5"
 assert_matches2 = "0.1"
 uuid = "1.16.0"
 arc-swap = "1.9.2"
+
+[[test]]
+name = "lib"
+path = "tests/lib.rs"
 
 [[bench]]
 name = "benches"

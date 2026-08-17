@@ -9,15 +9,11 @@ use yrs::IdSet;
 use yrs::Update;
 use yrs::block::{Block, ClientID, Item, ItemContent};
 use yrs::encoding::read::Read;
-use yrs::node::Node;
+use yrs::node::{Node, TypePtr, TypeRef};
 use yrs::test_utils::Blocks;
-use yrs::types::xml::XmlFragment;
-use yrs::types::{TypePtr, TypeRef};
 use yrs::updates::decoder::{Decode, Decoder, DecoderV1};
 use yrs::updates::encoder::Encode;
-use yrs::{
-    Any, ArrayPrelim, Doc, ID, Map, MapPrelim, MapRef, StateVector, Xml, XmlElementRef, XmlTextRef,
-};
+use yrs::{Any, Delta, Doc, ID, In, Out, StateVector};
 
 #[test]
 fn text_insert_delete() {
@@ -262,7 +258,7 @@ fn xml_fragment_insert() {
             None,
             TypePtr::Named("fragment-name".into()),
             None,
-            ItemContent::Node(Node::new(TypeRef::XmlText)),
+            ItemContent::Node(Node::new(None, TypeRef::XmlText)),
         )
         .unwrap()
         .into(),
@@ -274,7 +270,7 @@ fn xml_fragment_insert() {
             None,
             TypePtr::Unknown,
             None,
-            ItemContent::Node(Node::new(TypeRef::XmlElement("node-name".into()))),
+            ItemContent::Node(Node::new(Some("node-name".into()), TypeRef::XmlElement("node-name".into()))),
         )
         .unwrap()
         .into(),
@@ -350,11 +346,14 @@ fn utf32_lib0_v2_decoding() {
         0, 19, 8, 1, 5, 1, 1, 1, 1, 9, 2, 4, 4, 4, 4, 4,
     ];
     let mut doc = Doc::new();
-    let mut txn = doc.transact_mut();
     let update = Update::decode_v2(data).unwrap();
-    txn.apply_update(update).unwrap();
+    doc.transact_mut().apply_update(update).unwrap();
+    let txn = doc.transact();
     let xml = txn.node("prosemirror").unwrap();
-    let actual: XmlElementRef = xml.get(0).unwrap().try_into().unwrap();
+    let Out::Node(div) = xml.get(0).unwrap() else {
+        panic!("expected a nested node")
+    };
+    let div = txn.node(div).unwrap();
 
     let expected_attrs = HashMap::from([
         ("b_id", "JXbASa-a92j".to_string()),
@@ -362,15 +361,13 @@ fn utf32_lib0_v2_decoding() {
         ("tagName", "div".to_string()),
         ("lineHeight", "".to_string()),
     ]);
-    let actual_attrs: HashMap<&str, String> = actual
-        .attributes(&txn)
-        .map(|(k, v)| (k, v.to_string()))
-        .collect();
+    let actual_attrs: HashMap<&str, String> = div.attrs().map(|(k, v)| (k, v.to_string())).collect();
     assert_eq!(actual_attrs, expected_attrs);
 
-    let txt = actual.get(&txn, 0).unwrap().try_into().unwrap();
-
-    assert_eq!(txt.get_string(&txn), "在の韩国🇰🇷🇨🇳🇯🇵");
+    let Out::Node(txt) = div.get(0).unwrap() else {
+        panic!("expected a nested node")
+    };
+    assert_eq!(txn.node(txt).unwrap().to_string(), "在の韩国🇰🇷🇨🇳🇯🇵");
 }
 
 /// Verify if given `payload` can be deserialized into series
@@ -382,7 +379,8 @@ fn roundtrip_v1(payload: &[u8], expected: &Vec<Block>) {
     let blocks: Vec<&Block> = Blocks::new(&u.blocks).collect();
     assert_eq!(blocks, expected, "failed to decode V1");
 
-    let doc: Doc = u.into();
+    let mut doc = Doc::new();
+    doc.transact_mut().apply_update(u).unwrap();
     let serialized = doc.encode_v1();
     assert_eq!(serialized, payload, "failed to encode V1");
 }
@@ -394,7 +392,8 @@ fn roundtrip_v2(payload: &[u8], expected: &Vec<Block>) {
     let blocks: Vec<&Block> = Blocks::new(&u.blocks).collect();
     assert_eq!(blocks, expected, "failed to decode V2");
 
-    let doc: Doc = u.into();
+    let mut doc = Doc::new();
+    doc.transact_mut().apply_update(u).unwrap();
     let serialized = doc.encode_v2();
     assert_eq!(serialized, payload, "failed to encode V2");
 }
@@ -402,33 +401,26 @@ fn roundtrip_v2(payload: &[u8], expected: &Vec<Block>) {
 #[test]
 fn negative_zero_decoding_v2() {
     let mut doc = Doc::new();
-    let root = doc.get_or_insert_map("root");
     let mut txn = doc.transact_mut();
+    let mut root = txn.node_mut("root").unwrap();
 
-    root.insert(&mut txn, "sequence", MapPrelim::default()); //NOTE: This is how I put nested map.
-    let sequence = root
-        .get(&txn, "sequence")
-        .unwrap()
-        .cast::<MapRef>()
-        .unwrap();
-    sequence.insert(&mut txn, "id", "V9Uk9pxUKZIrW6cOkC0Rg".to_string());
-    sequence.insert(&mut txn, "cuts", ArrayPrelim::default());
-    sequence.insert(&mut txn, "name", "new sequence".to_string());
-
-    root.insert(&mut txn, "__version__", 1);
-    root.insert(&mut txn, "face_expressions", ArrayPrelim::default());
-    root.insert(&mut txn, "characters", ArrayPrelim::default());
-    let expected = root.to_json(&txn);
+    let sequence = Delta::new()
+        .insert_attr("id", "V9Uk9pxUKZIrW6cOkC0Rg".to_string())
+        .insert_attr("cuts", In::Node(Delta::new()))
+        .insert_attr("name", "new sequence".to_string());
+    root.insert_attr("sequence", In::Node(sequence));
+    root.insert_attr("__version__", 1);
+    root.insert_attr("face_expressions", In::Node(Delta::new()));
+    root.insert_attr("characters", In::Node(Delta::new()));
+    let expected = root.to_json();
 
     let buffer = txn.encode_state_as_update_v2(&StateVector::default());
-
     let u = Update::decode_v2(&buffer).unwrap();
 
     let mut doc2 = Doc::new();
-    let root = doc2.get_or_insert_map("root");
     let mut txn = doc2.transact_mut();
     txn.apply_update(u).unwrap();
-    let actual = root.to_json(&txn);
+    let actual = txn.node("root").unwrap().to_json();
 
     assert_eq!(actual, expected);
 }

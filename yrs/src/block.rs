@@ -210,7 +210,7 @@ impl<'a> BlockRef<'a> {
     }
 }
 
-pub(crate) enum Block {
+pub enum Block {
     Item(Box<Item>),
     GC(BlockRange),
     Skip(BlockRange),
@@ -305,7 +305,7 @@ impl Block {
         }
     }
 
-    pub fn as_slice(&self) -> BlockSlice {
+    pub(crate) fn as_slice(&self) -> BlockSlice {
         match self {
             Block::Item(item) => {
                 let ptr = ItemPtr::from(item.as_ref());
@@ -1464,7 +1464,8 @@ impl std::fmt::Display for BlockRange {
 }
 
 impl Item {
-    pub(crate) fn new(
+    #[doc(hidden)]
+    pub fn new(
         id: ID,
         left: Option<ItemPtr>,
         origin: Option<ID>,

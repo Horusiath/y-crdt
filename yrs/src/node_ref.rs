@@ -366,10 +366,9 @@ where
     }
 
     /// Removes an attribute by name.
-    pub fn remove_attr(&mut self, name: &str) {
-        if let Some(&item) = self.ptr.map.get(name) {
-            self.txn.delete(item);
-        }
+    pub fn remove_attr(&mut self, name: &str) -> Option<Out> {
+        let ptr = self.ptr;
+        ptr.remove(self.txn_mut(), name)
     }
 
     /// Removes all attributes.

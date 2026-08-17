@@ -41,3 +41,24 @@ impl_from_any!(String);
 impl_from_any!(std::sync::Arc<str>);
 impl_from_any!(Vec<u8>);
 impl_from_any!(&[u8]);
+impl_from_any!(&str);
+
+impl<T> From<Option<T>> for In
+where
+    T: Into<Any>,
+{
+    #[inline]
+    fn from(value: Option<T>) -> Self {
+        In::Any(Any::from(value))
+    }
+}
+
+impl<T> From<std::collections::HashMap<String, T>> for In
+where
+    T: Into<Any>,
+{
+    #[inline]
+    fn from(value: std::collections::HashMap<String, T>) -> Self {
+        In::Any(Any::from(value))
+    }
+}

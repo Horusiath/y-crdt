@@ -38,6 +38,10 @@ impl NodePtr {
         txn: &'txn Transaction<&'txn Doc>,
         subs: HashSet<Option<Arc<str>>>,
     ) -> Option<Event<'txn>> {
+        // TODO(unified-api): make_event is unimplemented; skip event creation when nobody listens
+        if !self.observers.has_subscribers() && !self.deep_observers.has_subscribers() {
+            return None;
+        }
         let e = self.make_event(txn, subs)?;
         self.observers.trigger(|fun| fun(txn, &e));
         Some(e)
@@ -1173,7 +1177,7 @@ impl std::fmt::Display for Node {
 
 /// Type pointer - used to localize a complex [Node] node within a scope of a document store.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum TypePtr {
+pub enum TypePtr {
     /// Temporary value - used only when block is deserialized right away, but had not been
     /// integrated into block store yet. As part of block integration process, items are
     /// repaired and their fields (including parent) are being rewired.

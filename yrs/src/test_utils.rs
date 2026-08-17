@@ -535,7 +535,7 @@ impl TestPeer {
     }
 }
 
-pub(crate) trait RngExt {
+pub trait RngExt {
     fn between(&mut self, x: u32, y: u32) -> u32;
 
     fn random_string(&mut self) -> String;
@@ -557,7 +557,7 @@ impl RngExt for Rng {
     }
 }
 
-pub(crate) struct Blocks<'a> {
+pub struct Blocks<'a> {
     current_client: std::vec::IntoIter<(&'a ClientID, &'a VecDeque<Block>)>,
     current_block: Option<std::collections::vec_deque::Iter<'a, Block>>,
 }

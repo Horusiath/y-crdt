@@ -647,10 +647,11 @@ mod slice;
 mod state_vector;
 mod sticky_index;
 pub mod sync;
-#[cfg(test)]
+#[doc(hidden)]
 pub mod test_utils;
 mod transact;
 pub mod undo;
+#[cfg(feature = "weak")]
 mod weak;
 
 pub use crate::alt::{
@@ -664,7 +665,9 @@ pub use crate::delta::Delta;
 pub use crate::doc::Doc;
 pub use crate::doc::OffsetKind;
 pub use crate::doc::Options;
-pub use crate::event::{SubdocsEvent, SubdocsEventIter, TransactionCleanupEvent, UpdateEvent};
+pub use crate::event::{
+    Event, SubdocsEvent, SubdocsEventIter, TransactionCleanupEvent, UpdateEvent,
+};
 pub use crate::id_map::{AttrRange, ContentAttribute, ContentAttributes, Diff, IdMap};
 pub use crate::id_set::IdSet;
 pub use crate::input::In;

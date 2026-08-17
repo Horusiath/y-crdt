@@ -20,7 +20,7 @@ use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct BlockSet {
+pub struct BlockSet {
     pub(crate) clients: HashMap<ClientID, VecDeque<Block>, BuildHasherDefault<ClientHasher>>,
 }
 
@@ -161,8 +161,10 @@ impl BlockSet {
 /// Update is conceptually similar to a block store itself, however the work patters are different.
 #[derive(Default, PartialEq)]
 pub struct Update {
-    pub(crate) blocks: BlockSet,
-    pub(crate) delete_set: IdSet,
+    #[doc(hidden)]
+    pub blocks: BlockSet,
+    #[doc(hidden)]
+    pub delete_set: IdSet,
 }
 
 impl Update {

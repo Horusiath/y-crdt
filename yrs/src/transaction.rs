@@ -1269,6 +1269,9 @@ impl<D> Drop for Transaction<D> {
             Some(s) if s.committed => return,
             _ => {}
         }
+        if std::thread::panicking() {
+            return; // committing during unwind would double-panic on unimplemented paths
+        }
         // SAFETY: Only Transaction<&mut Doc> can have state that is not None and not committed.
         // Transaction<&Doc> is always constructed with state = None.
         // Both variants have identical layout due to #[repr(C)] and pointer-sized D.

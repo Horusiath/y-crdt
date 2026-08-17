@@ -1,4 +1,6 @@
 use crate::node::Attrs;
+#[cfg(feature = "weak")]
+use crate::weak::LinkSource;
 use crate::{In, Out};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +19,9 @@ pub struct Delta<T = Out> {
     pub children: Vec<Op<T>>,
     /// Operations on the node's attributes.
     pub attrs: HashMap<Arc<str>, AttrOp<T>>,
+
+    #[cfg(feature = "weak")]
+    pub link: Option<LinkSource>,
 }
 
 /// A single operation on the ordered children axis of a [Delta].
@@ -69,6 +74,8 @@ impl<T> Delta<T> {
             name: Some(name.into()),
             children: Vec::new(),
             attrs: HashMap::new(),
+            #[cfg(feature = "weak")]
+            link: None,
         }
     }
 
@@ -90,6 +97,8 @@ impl<T> Delta<T> {
                 .into_iter()
                 .map(|(k, op)| (k, op.map_inner(f)))
                 .collect(),
+            #[cfg(feature = "weak")]
+            link: self.link.clone(),
         }
     }
 
@@ -183,6 +192,16 @@ impl Delta<In> {
             name: None,
             children: Vec::new(),
             attrs: HashMap::new(),
+            #[cfg(feature = "weak")]
+            link: None,
+        }
+    }
+
+    #[cfg(feature = "weak")]
+    pub fn link(link: LinkSource) -> Self {
+        Delta {
+            link: Some(link),
+            ..Delta::default()
         }
     }
 
@@ -242,6 +261,8 @@ impl<T> Default for Delta<T> {
             name: None,
             children: vec![],
             attrs: Default::default(),
+            #[cfg(feature = "weak")]
+            link: None,
         }
     }
 }

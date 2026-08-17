@@ -1,13 +1,12 @@
 use arc_swap::ArcSwapOption;
 use fastrand::Rng;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use yrs::test_utils::exchange_updates;
+use yrs::node::{DeepObservable, Observable, Path, PathSegment};
+use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Doc, NodeRef, Out, StateVector, Transaction, Update, any};
+use yrs::{Any, Delta, Doc, In, NodeRef, Out, StateVector, Transaction, Update, any};
 
 #[test]
 fn map_basic() {
@@ -68,7 +67,7 @@ fn map_basic() {
 fn map_get_set() {
     let mut d1 = Doc::with_client_id(1);
     let mut t1 = d1.transact_mut();
-    let mut m1 = t1.node_mut("map");
+    let mut m1 = t1.node_mut("map").unwrap();
 
     m1.insert_attr("stuff", "stuffy");
     m1.insert_attr("null", None as Option<String>);
@@ -112,27 +111,32 @@ fn map_get_set_sync_with_conflicts() {
 #[test]
 fn map_len_remove() {
     let mut d1 = Doc::with_client_id(1);
-    let m1 = d1.get_or_insert_map("map");
     let mut t1 = d1.transact_mut();
+    let mut m1 = t1.node_mut("map").unwrap();
 
-    let key1 = "stuff".to_owned();
-    let key2 = "other-stuff".to_owned();
+    let key1 = "stuff";
+    let key2 = "other-stuff";
 
-    m1.insert(&mut t1, key1.clone(), "c0");
-    m1.insert(&mut t1, key2.clone(), "c1");
-    assert_eq!(m1.len(&t1), 2);
+    m1.insert_attr(key1, "c0");
+    m1.insert_attr(key2, "c1");
+    assert_eq!(m1.attr_len(), 2);
+
+    // TODO(unified-api): `remove_attr` doesn't return the removed value
+    assert_eq!(m1.remove_attr(&key1), Some(Out::from("c0")));
+    assert_eq!(m1.remove_attr(&key1), None);
+    assert_eq!(m1.remove_attr(&key2), Some(Out::from("c1")));
 
     // remove 'stuff'
-    assert_eq!(m1.remove(&mut t1, &key1), Some(Out::from("c0")));
-    assert_eq!(m1.len(&t1), 1);
+    assert_eq!(m1.remove_attr(key1), Some(Out::from("c0")));
+    assert_eq!(m1.attr_len(), 1);
 
     // remove 'stuff' again - nothing should happen
-    assert_eq!(m1.remove(&mut t1, &key1), None);
-    assert_eq!(m1.len(&t1), 1);
+    assert_eq!(m1.remove_attr(key1), None);
+    assert_eq!(m1.attr_len(), 1);
 
     // remove 'other-stuff'
-    assert_eq!(m1.remove(&mut t1, &key2), Some(Out::from("c1")));
-    assert_eq!(m1.len(&t1), 0);
+    assert_eq!(m1.remove_attr(key2), Some(Out::from("c1")));
+    assert_eq!(m1.attr_len(), 0);
 }
 
 #[test]
@@ -308,21 +312,21 @@ fn map_get_set_remove_with_3_way_conflicts() {
 #[test]
 fn insert_and_remove_events() {
     let mut d1 = Doc::with_client_id(1);
-    let m1 = d1.get_or_insert_map("map");
-
     let entries = Arc::new(ArcSwapOption::default());
     let entries_c = entries.clone();
-    let _sub = m1.observe(move |txn, e| {
-        let keys = e.keys(txn);
-        entries_c.store(Some(Arc::new(keys.clone())));
-    });
+    let _sub = {
+        let mut txn = d1.transact_mut();
+        txn.node_mut("map").unwrap().observe(move |_txn, e| {
+            entries_c.store(Some(Arc::new(e.keys_changed())));
+        })
+    };
 
     // insert new entry
     {
         let mut txn = d1.transact_mut();
-        m1.insert(&mut txn, "a", 1);
-        // txn is committed at the end of this scope
+        txn.node_mut("map").unwrap().insert_attr("a", 1);
     }
+    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         entries.swap(None),
         Some(Arc::new(HashMap::from([(
@@ -334,8 +338,9 @@ fn insert_and_remove_events() {
     // update existing entry once
     {
         let mut txn = d1.transact_mut();
-        m1.insert(&mut txn, "a", 2);
+        txn.node_mut("map").unwrap().insert_attr("a", 2);
     }
+    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         entries.swap(None),
         Some(Arc::new(HashMap::from([(
@@ -347,9 +352,11 @@ fn insert_and_remove_events() {
     // update existing entry twice
     {
         let mut txn = d1.transact_mut();
-        m1.insert(&mut txn, "a", 3);
-        m1.insert(&mut txn, "a", 4);
+        let mut m1 = txn.node_mut("map").unwrap();
+        m1.insert_attr("a", 3);
+        m1.insert_attr("a", 4);
     }
+    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         entries.swap(None),
         Some(Arc::new(HashMap::from([(
@@ -361,8 +368,9 @@ fn insert_and_remove_events() {
     // remove existing entry
     {
         let mut txn = d1.transact_mut();
-        m1.remove(&mut txn, "a");
+        txn.node_mut("map").unwrap().remove_attr("a");
     }
+    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         entries.swap(None),
         Some(Arc::new(HashMap::from([(
@@ -374,9 +382,11 @@ fn insert_and_remove_events() {
     // add another entry and update it
     {
         let mut txn = d1.transact_mut();
-        m1.insert(&mut txn, "b", 1);
-        m1.insert(&mut txn, "b", 2);
+        let mut m1 = txn.node_mut("map").unwrap();
+        m1.insert_attr("b", 1);
+        m1.insert_attr("b", 2);
     }
+    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         entries.swap(None),
         Some(Arc::new(HashMap::from([(
@@ -388,32 +398,33 @@ fn insert_and_remove_events() {
     // add and remove an entry
     {
         let mut txn = d1.transact_mut();
-        m1.insert(&mut txn, "c", 1);
-        m1.remove(&mut txn, "c");
+        let mut m1 = txn.node_mut("map").unwrap();
+        m1.insert_attr("c", 1);
+        m1.remove_attr("c");
     }
     assert_eq!(entries.swap(None), Some(HashMap::new().into()));
 
     // copy updates over
     let mut d2 = Doc::with_client_id(2);
-    let m2 = d2.get_or_insert_map("map");
-
     let entries = Arc::new(ArcSwapOption::default());
     let entries_c = entries.clone();
-    let _sub = m2.observe(move |txn, e| {
-        let keys = e.keys(txn);
-        entries_c.store(Some(Arc::new(keys.clone())));
-    });
+    let _sub = {
+        let mut txn = d2.transact_mut();
+        txn.node_mut("map").unwrap().observe(move |_txn, e| {
+            entries_c.store(Some(Arc::new(e.keys_changed())));
+        })
+    };
 
     {
-        let t1 = d1.transact_mut();
+        let t1 = d1.transact();
         let mut t2 = d2.transact_mut();
 
         let sv = t2.state_vector();
-        let mut encoder = EncoderV1::new();
-        t1.encode_diff(&sv, &mut encoder);
-        t2.apply_update(Update::decode_v1(encoder.to_vec().as_slice()).unwrap())
+        let update = t1.encode_diff_v1(&sv);
+        t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
     }
+    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         entries.swap(None),
         Some(Arc::new(HashMap::from([(
@@ -425,39 +436,33 @@ fn insert_and_remove_events() {
 
 fn map_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 3] {
     fn set(doc: &mut Doc, rng: &mut Rng) {
-        let map = doc.get_or_insert_map("map");
-        let mut txn = doc.transact_mut();
         let key = rng.choice(["one", "two"]).unwrap();
         let value: String = rng.random_string();
-        map.insert(&mut txn, key.to_string(), value);
+        doc.transact_mut()
+            .node_mut("map")
+            .unwrap()
+            .insert_attr(key, value);
     }
 
     fn set_type(doc: &mut Doc, rng: &mut Rng) {
-        let map = doc.get_or_insert_map("map");
-        let mut txn = doc.transact_mut();
         let key = rng.choice(["one", "two", "three"]).unwrap();
-        if rng.f32() <= 0.33 {
-            map.insert(
-                &mut txn,
-                key.to_string(),
-                ArrayPrelim::from(vec![1, 2, 3, 4]),
-            );
-        } else if rng.f32() <= 0.33 {
-            map.insert(&mut txn, key.to_string(), TextPrelim::new("deeptext"));
+        let (a, b) = (rng.f32(), rng.f32());
+        let mut txn = doc.transact_mut();
+        let mut map = txn.node_mut("map").unwrap();
+        if a <= 0.33 {
+            let arr = Delta::new().insert(1).insert(2).insert(3).insert(4);
+            map.insert_attr(key, In::Node(arr));
+        } else if b <= 0.33 {
+            map.insert_attr(key, In::Node(Delta::new().insert_text("deeptext")));
         } else {
-            map.insert(
-                &mut txn,
-                key.to_string(),
-                MapPrelim::from([("deepkey".to_owned(), "deepvalue")]),
-            );
+            let nested = Delta::new().insert_attr("deepkey", "deepvalue");
+            map.insert_attr(key, In::Node(nested));
         }
     }
 
     fn delete(doc: &mut Doc, rng: &mut Rng) {
-        let map = doc.get_or_insert_map("map");
-        let mut txn = doc.transact_mut();
         let key = rng.choice(["one", "two"]).unwrap();
-        map.remove(&mut txn, key);
+        doc.transact_mut().node_mut("map").unwrap().remove_attr(key);
     }
     [Box::new(set), Box::new(set_type), Box::new(delete)]
 }
@@ -474,33 +479,61 @@ fn fuzzy_test_6() {
 #[test]
 fn observe_deep() {
     let mut doc = Doc::with_client_id(1);
-    let map = doc.get_or_insert_map("map");
-
     let paths = Arc::new(Mutex::new(vec![]));
     let calls = Arc::new(AtomicU32::new(0));
     let paths_copy = paths.clone();
     let calls_copy = calls.clone();
-    let _sub = map.observe_deep(move |_txn, e| {
-        let path: Vec<Path> = e.iter().map(Event::path).collect();
-        paths_copy.lock().unwrap().push(path);
-        calls_copy.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    });
+    let _sub = {
+        let mut txn = doc.transact_mut();
+        txn.node_mut("map").unwrap().observe_deep(move |_txn, e| {
+            let path: Vec<Path> = e.iter().map(|e| e.path()).collect();
+            paths_copy.lock().unwrap().push(path);
+            calls_copy.fetch_add(1, Ordering::Relaxed);
+        })
+    };
 
-    let nested = map.insert(&mut doc.transact_mut(), "map", MapPrelim::default());
-    nested.insert(
-        &mut doc.transact_mut(),
-        "array",
-        ArrayPrelim::from(Vec::<String>::default()),
-    );
-    let nested2 = nested
-        .get(&doc.transact(), "array")
-        .unwrap()
-        .cast::<ArrayRef>()
-        .unwrap();
-    nested2.insert(&mut doc.transact_mut(), 0, "content");
+    let nested = {
+        let mut txn = doc.transact_mut();
+        let out = txn
+            .node_mut("map")
+            .unwrap()
+            .insert_attr("map", In::Node(Delta::new()));
+        let Out::Node(nested) = out else {
+            panic!("expected a nested node")
+        };
+        nested
+    };
+    let nested2 = {
+        let mut txn = doc.transact_mut();
+        let out = txn
+            .node_mut(nested.clone())
+            .unwrap()
+            .insert_attr("array", In::Node(Delta::new()));
+        let Out::Node(nested2) = out else {
+            panic!("expected a nested node")
+        };
+        nested2
+    };
+    {
+        let mut txn = doc.transact_mut();
+        txn.node_mut(nested2).unwrap().insert(0, "content");
+    }
 
-    let nested_text = nested.insert(&mut doc.transact_mut(), "text", TextPrelim::new("text"));
-    nested_text.push(&mut doc.transact_mut(), "!");
+    let nested_text = {
+        let mut txn = doc.transact_mut();
+        let out = txn
+            .node_mut(nested.clone())
+            .unwrap()
+            .insert_attr("text", In::Node(Delta::new().insert_text("text")));
+        let Out::Node(nested_text) = out else {
+            panic!("expected a nested node")
+        };
+        nested_text
+    };
+    {
+        let mut txn = doc.transact_mut();
+        txn.node_mut(nested_text).unwrap().push_text("!");
+    }
 
     assert_eq!(calls.load(Ordering::Relaxed), 5);
     let actual = paths.lock().unwrap();
@@ -523,65 +556,36 @@ fn observe_deep() {
 }
 
 #[test]
-fn get_or_init() {
-    let mut doc = Doc::with_client_id(1);
-    let mut txn = doc.transact_mut();
-    let map = txn.get_or_insert_map("map");
-
-    let m: MapRef = map.get_or_init(&mut txn, "nested");
-    m.insert(&mut txn, "key", 1);
-    let m: MapRef = map.get_or_init(&mut txn, "nested");
-    assert_eq!(m.get(&txn, "key"), Some(Out::from(1)));
-
-    let m: ArrayRef = map.get_or_init(&mut txn, "nested");
-    m.insert(&mut txn, 0, 1);
-    let m: ArrayRef = map.get_or_init(&mut txn, "nested");
-    assert_eq!(m.get(&txn, 0), Some(Out::from(1)));
-
-    let m: TextRef = map.get_or_init(&mut txn, "nested");
-    m.insert(&mut txn, 0, "a");
-    let m: TextRef = map.get_or_init(&mut txn, "nested");
-    assert_eq!(m.get_string(&txn), "a".to_string());
-
-    let m: XmlFragmentRef = map.get_or_init(&mut txn, "nested");
-    m.insert(&mut txn, 0, XmlTextPrelim::new("b"));
-    let m: XmlFragmentRef = map.get_or_init(&mut txn, "nested");
-    assert_eq!(m.get_string(&txn), "b".to_string());
-
-    let m: XmlTextRef = map.get_or_init(&mut txn, "nested");
-    m.insert(&mut txn, 0, "c");
-    let m: XmlTextRef = map.get_or_init(&mut txn, "nested");
-    assert_eq!(m.get_string(&txn), "c".to_string());
-}
-
-#[test]
 fn try_update() {
     let mut doc = Doc::new();
     let mut txn = doc.transact_mut();
-    let map = txn.get_or_insert_map("map");
+    let mut map = txn.node_mut("map").unwrap();
 
-    assert!(map.try_update(&mut txn, "key", 1), "new entry");
-    assert_eq!(map.get(&txn, "key"), Some(Out::from(1)));
+    assert!(map.try_update("key", 1), "new entry");
+    assert_eq!(map.attr("key"), Some(Out::from(1)));
 
     assert!(
         !map.try_update(&mut txn, "key", 1),
         "unchanged entry shouldn't trigger update"
     );
-    assert_eq!(map.get(&txn, "key"), Some(Out::from(1)));
+    assert_eq!(map.attr("key"), Some(Out::from(1)));
 
-    assert!(map.try_update(&mut txn, "key", 2), "entry should change");
-    assert_eq!(map.get(&txn, "key"), Some(Out::from(2)));
+    assert!(map.try_update("key", 2), "entry should change");
+    assert_eq!(map.attr("key"), Some(Out::from(2)));
 
-    map.remove(&mut txn, "key");
+    map.remove_attr("key");
     assert!(
-        map.try_update(&mut txn, "key", 2),
+        map.try_update("key", 2),
         "removed entry should trigger update"
     );
-    assert_eq!(map.get(&txn, "key"), Some(Out::from(2)));
+    assert_eq!(map.attr("key"), Some(Out::from(2)));
 }
 
 #[test]
 fn get_as() {
+    use serde::Deserialize;
+    // TODO(unified-api): Map::get_as (serde deserialization) has no NodeRef equivalent
+
     #[derive(Debug, PartialEq, Deserialize)]
     struct Order {
         shipment_address: String,
@@ -599,35 +603,38 @@ fn get_as() {
 
     let mut doc = Doc::new();
     let mut txn = doc.transact_mut();
-    let map = txn.get_or_insert_map("map");
+    let mut map = txn.node_mut("map").unwrap();
 
-    map.insert(
-        &mut txn,
+    map.insert_attr(
         "orders",
-        ArrayPrelim::from([In::from(MapPrelim::from([
-            ("shipment_address", In::from("123 Main St")),
-            (
-                "items",
-                In::from(MapPrelim::from([
-                    (
-                        "item1",
-                        In::from(MapPrelim::from([
-                            ("name", In::from("item1")),
-                            ("price", In::from(1.99)),
-                            ("quantity", In::from(2)),
-                        ])),
+        Delta::new().insert(In::from(
+            Delta::new()
+                .insert_attr("shipment_address", In::from("123 Main St"))
+                .insert_attr(
+                    "items",
+                    In::from(
+                        Delta::new()
+                            .insert_attr(
+                                "item1",
+                                In::from(
+                                    Delta::new()
+                                        .insert_attr("name", In::from("item1"))
+                                        .insert_attr("price", In::from(1.99))
+                                        .insert_attr("quantity", In::from(2)),
+                                ),
+                            )
+                            .insert_attr(
+                                "item2",
+                                In::from(
+                                    Delta::new()
+                                        .insert_attr("name", In::from("item2"))
+                                        .insert_attr("price", In::from(2.99))
+                                        .insert_attr("quantity", In::from(1)),
+                                ),
+                            ),
                     ),
-                    (
-                        "item2",
-                        In::from(MapPrelim::from([
-                            ("name", In::from("item2")),
-                            ("price", In::from(2.99)),
-                            ("quantity", In::from(1)),
-                        ])),
-                    ),
-                ])),
-            ),
-        ]))]),
+                ),
+        )),
     );
 
     let expected = Order {
@@ -703,15 +710,13 @@ fn multi_threading() {
 fn test_delete_not_applied_map() {
     // -- Setup: Doc A creates initial state, Doc B clones via update --
     let mut doc_a = Doc::new();
-    let root_a = doc_a.get_or_insert_map("root");
     let mut doc_b = Doc::new();
-    let root_b = doc_b.get_or_insert_map("root");
 
     // Doc A: create root Map with nested sub-Map
     {
-        let root_a = doc_a.get_or_insert_map("root");
         let mut txn = doc_a.transact_mut();
-        root_a.insert(&mut txn, "sub", MapPrelim::default()); // { sub: {} }
+        let mut root_a = txn.node_mut("root").unwrap();
+        root_a.insert_attr("sub", In::Node(Delta::new())); // { sub: {} }
     }
 
     // Clone to Doc B
@@ -727,10 +732,11 @@ fn test_delete_not_applied_map() {
 
     // -- Step 1: Doc B writes into the sub-Map, syncs to Doc A --
     {
-        let root_b = doc_b.get_or_insert_map("root");
         let mut txn = doc_b.transact_mut();
-        let sub: MapRef = root_b.get(&txn, "sub").unwrap().cast().unwrap();
-        sub.insert(&mut txn, "x", 1i64); // { sub: { x: 1 } }
+        let Out::Node(sub) = txn.node("root").unwrap().attr("sub").unwrap() else {
+            panic!("expected a nested node")
+        };
+        txn.node_mut(sub).unwrap().insert_attr("x", 1i64); // { sub: { x: 1 } }
     }
 
     doc_a
@@ -743,10 +749,10 @@ fn test_delete_not_applied_map() {
 
     // -- Step 2: Doc B adds a new key AND deletes the sub-Map --
     {
-        let root_b = doc_b.get_or_insert_map("root");
         let mut txn = doc_b.transact_mut();
-        root_b.insert(&mut txn, "key", "value"); // { sub: { x: 1 }, key: 'value' }
-        root_b.remove(&mut txn, "sub"); // { key: 'value' }
+        let mut root_b = txn.node_mut("root").unwrap();
+        root_b.insert_attr("key", "value"); // { sub: { x: 1 }, key: 'value' }
+        root_b.remove_attr("sub"); // { key: 'value' }
     }
 
     doc_a
@@ -758,8 +764,9 @@ fn test_delete_not_applied_map() {
     {
         let tx_a = doc_a.transact();
         let tx_b = doc_b.transact();
-        let keys_a: Vec<_> = root_a.keys(&tx_a).collect();
-        let keys_b: Vec<_> = root_b.keys(&tx_b).collect();
+        let (root_a, root_b) = (tx_a.node("root").unwrap(), tx_b.node("root").unwrap());
+        let keys_a: Vec<_> = root_a.attr_keys().collect();
+        let keys_b: Vec<_> = root_b.attr_keys().collect();
         assert_eq!(keys_a, vec!["key"]);
         assert_eq!(keys_b, vec!["key"]);
     }
@@ -768,9 +775,8 @@ fn test_delete_not_applied_map() {
     // Use sv_b_saved (from before step 2) to match the Python reproduction exactly:
     // Python uses sv_b captured after step 1, before step 2 operations.
     {
-        let root_a = doc_a.get_or_insert_map("root");
         let mut txn = doc_a.transact_mut();
-        root_a.remove(&mut txn, "key");
+        txn.node_mut("root").unwrap().remove_attr("key");
     }
 
     doc_b
@@ -781,7 +787,8 @@ fn test_delete_not_applied_map() {
     // -- Verify convergence --
     let tx_a = doc_a.transact();
     let tx_b = doc_b.transact();
-    let keys_a: Vec<_> = root_a.keys(&tx_a).collect();
-    let keys_b: Vec<_> = root_b.keys(&tx_b).collect();
+    let (root_a, root_b) = (tx_a.node("root").unwrap(), tx_b.node("root").unwrap());
+    let keys_a: Vec<_> = root_a.attr_keys().collect();
+    let keys_b: Vec<_> = root_b.attr_keys().collect();
     assert_eq!(keys_a, keys_b);
 }
