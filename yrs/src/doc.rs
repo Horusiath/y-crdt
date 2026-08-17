@@ -17,7 +17,6 @@ use crate::{Observer, error};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::convert::TryFrom;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -351,6 +350,23 @@ impl Doc {
     /// document, which contains it.
     pub fn parent_doc(&self) -> Option<Uuid> {
         self.transact().parent_doc()
+    }
+
+    pub fn node(&self, node_id: NodeID) -> Option<NodePtr> {
+        match node_id.into() {
+            NodeID::Root(name) => Some(NodePtr::from(self.types.get(name.as_ref())?)),
+            NodeID::Nested(id) => {
+                let item = self.blocks.get_item(&id)?;
+                if item.is_deleted() {
+                    return None;
+                }
+                if let ItemContent::Node(node) = &item.content {
+                    Some(NodePtr::from(node))
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     pub fn node_id(&self) -> Option<NodeID> {
@@ -958,6 +974,7 @@ mod test {
         StateVector, Subscription, Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, any,
         uuid_v4,
     };
+    use arc_swap::ArcSwapOption;
     use assert_matches2::assert_matches;
     use std::collections::{BTreeSet, HashSet};
     use std::iter::FromIterator;
@@ -2352,7 +2369,7 @@ mod test {
         let mut map = txn.node_mut("map").unwrap();
         let mut delta = Delta::new();
         for chunk in data {
-            delta.insert_text(chunk);
+            delta = delta.insert_text(chunk);
         }
         if let Out::Node(txt) = map.insert_attr("text", In::Node(delta)) {
             txn.node_mut(txt).unwrap()

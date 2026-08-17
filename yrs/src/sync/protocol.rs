@@ -5,8 +5,6 @@ use crate::sync::{Awareness, AwarenessUpdate, awareness};
 use crate::updates::decoder::{Decode, Decoder, DecoderV1};
 use crate::updates::encoder::{Encode, Encoder};
 use crate::{StateVector, Update};
-#[cfg(feature = "sync")]
-use async_trait::async_trait;
 use smallvec::SmallVec;
 #[cfg(feature = "sync")]
 use smallvec::smallvec;
@@ -41,10 +39,6 @@ use thiserror::Error;
 pub struct DefaultProtocol;
 
 impl Protocol for DefaultProtocol {}
-
-#[cfg(feature = "sync")]
-#[async_trait]
-impl AsyncProtocol for DefaultProtocol {}
 
 /// Trait implementing a y-sync protocol. The default implementation can be found in
 /// [DefaultProtocol], but its implementation steps can be potentially changed by the user if
@@ -179,155 +173,6 @@ pub trait Protocol {
     /// Y-sync protocol enables to extend its own settings with custom handles. These can be
     /// implemented here. By default, it returns an [Error::Unsupported].
     fn missing_handle(
-        &self,
-        _awareness: &mut Awareness,
-        tag: u8,
-        _data: Vec<u8>,
-    ) -> Result<Option<Message>, Error> {
-        Err(Error::Unsupported(tag))
-    }
-}
-
-/// Trait implementing a y-sync protocol using awaitable transaction API. The default implementation
-/// can be found in [DefaultProtocol], but its implementation steps can be potentially changed by
-/// the user if necessary.
-///
-/// Only available with the `sync` feature enabled.
-#[cfg(feature = "sync")]
-#[async_trait]
-pub trait AsyncProtocol {
-    /// To be called whenever a new connection has been accepted. Returns a list of
-    /// messages to be sent back to initiator.
-    async fn start<E>(&self, awareness: &Awareness) -> Result<SmallVec<[Message; 1]>, Error>
-    where
-        E: Encoder,
-    {
-        let (sv, update) = {
-            let update = awareness.update()?;
-            let sv = awareness.doc().transact().state_vector();
-            (sv, update)
-        };
-        Ok(smallvec![
-            Message::Sync(SyncMessage::SyncStep1(sv)),
-            Message::Awareness(update),
-        ])
-    }
-
-    /// Y-sync protocol message handler.
-    async fn handle(
-        &self,
-        awareness: &mut Awareness,
-        data: &[u8],
-    ) -> Result<SmallVec<[Message; 1]>, Error> {
-        let mut decoder = DecoderV1::new(Cursor::new(data));
-        let mut reader = MessageReader::new(&mut decoder);
-        let mut responses = SmallVec::new();
-        while let Some(result) = reader.next() {
-            let message = result?;
-            if let Some(response) = self.handle_message(awareness, message).await? {
-                responses.push(response);
-            }
-        }
-        Ok(responses)
-    }
-
-    /// Handles incoming y-sync [Message] within the context of current awareness structure.
-    /// Returns an optional reply message that should be sent back to message sender.
-    async fn handle_message(
-        &self,
-        awareness: &mut Awareness,
-        message: Message,
-    ) -> Result<Option<Message>, Error> {
-        match message {
-            Message::Sync(SyncMessage::SyncStep1(state_vector)) => {
-                self.handle_sync_step1(awareness, state_vector).await
-            }
-            Message::Sync(SyncMessage::SyncStep2(update)) => {
-                let update = Update::decode_v1(&update)?;
-                self.handle_sync_step2(awareness, update).await
-            }
-            Message::Sync(SyncMessage::Update(update)) => {
-                let update = Update::decode_v1(&update)?;
-                self.handle_update(awareness, update).await
-            }
-            Message::Auth(deny_reason) => self.handle_auth(awareness, deny_reason).await,
-            Message::AwarenessQuery => self.handle_awareness_query(awareness).await,
-            Message::Awareness(update) => self.handle_awareness_update(awareness, update).await,
-            Message::Custom(tag, data) => self.missing_handle(awareness, tag, data).await,
-        }
-    }
-
-    /// Y-sync protocol sync-step-1 - given a [StateVector] of a remote side, calculate missing
-    /// updates. Returns a sync-step-2 message containing a calculated update.
-    async fn handle_sync_step1(
-        &self,
-        awareness: &mut Awareness,
-        sv: StateVector,
-    ) -> Result<Option<Message>, Error> {
-        let update = awareness.doc().transact().encode_state_as_update_v1(&sv);
-        Ok(Some(Message::Sync(SyncMessage::SyncStep2(update))))
-    }
-
-    /// Handle reply for a sync-step-1 send from this replica previously. By default just apply
-    /// an update to current `awareness` document instance.
-    async fn handle_sync_step2(
-        &self,
-        awareness: &mut Awareness,
-        update: Update,
-    ) -> Result<Option<Message>, Error> {
-        let mut txn = awareness.doc_mut().transact_mut();
-        txn.apply_update(update)?;
-        Ok(None)
-    }
-
-    /// Handle continuous update send from the client. By default just apply an update to a current
-    /// `awareness` document instance.
-    async fn handle_update(
-        &self,
-        awareness: &mut Awareness,
-        update: Update,
-    ) -> Result<Option<Message>, Error> {
-        self.handle_sync_step2(awareness, update).await
-    }
-
-    /// Handle authorization message. By default if reason for auth denial has been provided,
-    /// send back [Error::PermissionDenied].
-    async fn handle_auth(
-        &self,
-        _awareness: &mut Awareness,
-        deny_reason: Option<String>,
-    ) -> Result<Option<Message>, Error> {
-        if let Some(reason) = deny_reason {
-            Err(Error::PermissionDenied { reason })
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Returns an [AwarenessUpdate] which is a serializable representation of a current `awareness`
-    /// instance.
-    async fn handle_awareness_query(
-        &self,
-        awareness: &mut Awareness,
-    ) -> Result<Option<Message>, Error> {
-        let update = awareness.update()?;
-        Ok(Some(Message::Awareness(update)))
-    }
-
-    /// Reply to awareness query or just incoming [AwarenessUpdate], where current `awareness`
-    /// instance is being updated with incoming data.
-    async fn handle_awareness_update(
-        &self,
-        awareness: &mut Awareness,
-        update: AwarenessUpdate,
-    ) -> Result<Option<Message>, Error> {
-        awareness.apply_update(update)?;
-        Ok(None)
-    }
-
-    /// Y-sync protocol enables to extend its own settings with custom handles. These can be
-    /// implemented here. By default it returns an [Error::Unsupported].
-    async fn missing_handle(
         &self,
         _awareness: &mut Awareness,
         tag: u8,
@@ -692,11 +537,11 @@ mod test {
 
         let a2_clients: HashMap<_, _> = a2
             .iter()
-            .flat_map(|(id, state)| state.data.map(|data| (id, data)))
+            .flat_map(|(id, state)| state.data.as_ref().map(|data| (id, data.clone())))
             .collect();
         assert_eq!(
             a2_clients,
-            HashMap::from([(ClientID::new(1), "{\"x\":3}".into())])
+            HashMap::from([(&ClientID::new(1), "{\"x\":3}".into())])
         );
     }
 }

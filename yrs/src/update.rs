@@ -412,15 +412,15 @@ impl Update {
             match &item.content {
                 ItemContent::Node(branch) => {
                     if let TypeRef::WeakLink(source) = &branch.type_ref {
-                        let start = source.quote_start.id();
-                        let end = source.quote_end.id();
+                        let start = source.start().id();
+                        let end = source.end().id();
                         if let Some(start) = start {
                             if store.blocks.is_missing(start) {
                                 return Ok(Some(start.client));
                             }
                         }
                         if start != end {
-                            if let Some(end) = &source.quote_end.id() {
+                            if let Some(end) = &source.end().id() {
                                 if store.blocks.is_missing(end) {
                                     return Ok(Some(end.client));
                                 }
@@ -1132,6 +1132,8 @@ mod test {
 
         txt2.insert_text(0, "bbb");
         txt2.insert_text(2, "bbb");
+        drop(txt1);
+        drop(txt2);
 
         let binary1 = t1.encode_update_v1();
         let binary2 = t2.encode_update_v1();
@@ -1153,6 +1155,8 @@ mod test {
         t3.apply_update(u12).unwrap();
         let txt3 = t3.node_mut("test").unwrap();
 
+        let txt1 = t1.node("test").unwrap();
+        let txt2 = t2.node("test").unwrap();
         let str1 = txt1.to_string();
         let str2 = txt2.to_string();
         let str3 = txt3.to_string();
@@ -1239,12 +1243,12 @@ mod test {
         });
         {
             let mut txn = doc.transact_mut();
-            let prosemirror = txn.node("prosemirror").unwrap();
             let u = Update::decode_v2(&before).unwrap();
             txn.apply_update(u).unwrap();
+            let prosemirror = txn.node("prosemirror").unwrap();
             let linknote = prosemirror.get(0);
             let actual = linknote.and_then(|xml| match xml {
-                Out::Node(elem) => Some(elem.tag().clone()),
+                Out::Node(elem) => txn.node(elem).unwrap().name().cloned(),
                 _ => None,
             });
             assert_eq!(actual, Some("linknote".into()));
@@ -1279,23 +1283,23 @@ mod test {
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("r")]);
+            .apply_delta([Delta::new().insert("r".to_string())]);
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("o")]);
+            .apply_delta([Delta::new().insert("o".to_string())]);
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("n")]);
+            .apply_delta([Delta::new().insert("n".to_string())]);
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("e")]);
+            .apply_delta([Delta::new().insert("e".to_string())]);
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("n")]);
+            .apply_delta([Delta::new().insert("n".to_string())]);
         drop(sub);
         drop(d0);
 
@@ -1351,9 +1355,8 @@ mod test {
             .apply_update(Update::decode_v1(&updates[4]).unwrap())
             .unwrap();
 
-        let txt5 = d5.transact().node("textBlock").unwrap();
-        let str = txt5.to_string();
-        assert_eq!(str, "nenor");
+        let str5 = d5.transact().node("textBlock").unwrap().to_string();
+        assert_eq!(str5, "nenor");
     }
 
     #[test]

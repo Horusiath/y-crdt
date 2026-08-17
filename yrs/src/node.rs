@@ -748,7 +748,7 @@ pub enum TypeRef {
     XmlText = TYPE_REFS_XML_TEXT,
     SubDoc = TYPE_REFS_DOC,
     #[cfg(feature = "weak")]
-    WeakLink(Arc<crate::weak::LinkSource>) = TYPE_REFS_WEAK,
+    WeakLink(crate::weak::LinkSource) = TYPE_REFS_WEAK,
     Undefined = TYPE_REFS_UNDEFINED,
 }
 
@@ -777,23 +777,25 @@ impl TypeRef {
         if !is_single {
             info |= WEAK_REF_FLAGS_QUOTE;
         };
-        if data.quote_start.is_root() || data.quote_end.is_root() {
+        let qstart = data.start();
+        let qend = data.end();
+        if qstart.is_root() || qend.is_root() {
             info |= WEAK_REF_FLAGS_PARENT_ROOT;
         }
-        if !data.quote_start.is_relative() {
+        if !qstart.is_relative() {
             info |= WEAK_REF_FLAGS_START_UNBOUNDED;
         }
-        if !data.quote_end.is_relative() {
+        if !qend.is_relative() {
             info |= WEAK_REF_FLAGS_END_UNBOUNDED;
         }
-        if data.quote_start.assoc == Assoc::After {
+        if qstart.assoc == Assoc::After {
             info |= WEAK_REF_FLAGS_START_ASSOC;
         }
-        if data.quote_end.assoc == Assoc::After {
+        if qend.assoc == Assoc::After {
             info |= WEAK_REF_FLAGS_END_ASSOC;
         }
         encoder.write_u8(info);
-        match data.quote_start.scope() {
+        match qstart.scope() {
             IndexScope::Relative(id) | IndexScope::Absolute(NodeID::Nested(id)) => {
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
@@ -803,7 +805,7 @@ impl TypeRef {
             }
         }
 
-        match data.quote_end.scope() {
+        match qend.scope() {
             IndexScope::Relative(id) if !is_single => {
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
@@ -822,9 +824,7 @@ impl TypeRef {
     }
 
     #[cfg(feature = "weak")]
-    fn decode_weak_link<D: Decoder>(
-        decoder: &mut D,
-    ) -> Result<Arc<crate::weak::LinkSource>, Error> {
+    fn decode_weak_link<D: Decoder>(decoder: &mut D) -> Result<crate::weak::LinkSource, Error> {
         let flags = decoder.read_u8()?;
         let is_single = flags & WEAK_REF_FLAGS_QUOTE == 0;
         let start_assoc = if flags & WEAK_REF_FLAGS_START_ASSOC == WEAK_REF_FLAGS_START_ASSOC {
@@ -878,7 +878,7 @@ impl TypeRef {
         };
         let start = StickyIndex::new(start_scope, start_assoc);
         let end = StickyIndex::new(end_scope, end_assoc);
-        Ok(Arc::new(crate::weak::LinkSource::new(start, end)))
+        Ok(crate::weak::LinkSource::new(start, end))
     }
 }
 
@@ -1144,9 +1144,9 @@ impl std::fmt::Display for Node {
             #[cfg(feature = "weak")]
             TypeRef::WeakLink(w) => {
                 if w.is_single() {
-                    write!(f, "WeakRef({})", w.quote_start)
+                    write!(f, "WeakRef({})", w.start())
                 } else {
-                    write!(f, "WeakRef({}..{})", w.quote_start, w.quote_end)
+                    write!(f, "WeakRef({}..{})", w.start(), w.end())
                 }
             }
             TypeRef::Undefined => {

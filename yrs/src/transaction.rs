@@ -234,21 +234,8 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
 
     #[inline]
     pub fn node<N: Into<NodeID>>(&self, id: N) -> Option<NodeRef<&Self>> {
-        let node = match id.into() {
-            NodeID::Root(name) => NodePtr::from(self.doc.types.get(name.as_ref())?),
-            NodeID::Nested(id) => {
-                let item = self.doc.blocks.get_item(&id)?;
-                if item.is_deleted() {
-                    return None;
-                }
-                if let ItemContent::Node(node) = &item.content {
-                    NodePtr::from(node)
-                } else {
-                    return None;
-                }
-            }
-        };
-        Some(NodeRef::new(node, self))
+        let ptr = self.doc.node(id.into())?;
+        Some(NodeRef::new(ptr, self))
     }
 
     /// If current document has been inserted as a sub-document, returns the guid of its parent

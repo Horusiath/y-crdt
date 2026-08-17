@@ -1,7 +1,7 @@
-use dashmap::{DashMap, Entry};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Formatter;
 use std::sync::Arc;
 use thiserror::Error;
@@ -35,7 +35,7 @@ type AwarenessUpdateFn = Box<dyn FnMut(&Awareness, &Event, Option<&Origin>) + 's
 /// Before a client disconnects, it should propagate a `null` state with an updated clock.
 pub struct Awareness {
     doc: Doc,
-    states: DashMap<ClientID, ClientState>,
+    states: HashMap<ClientID, ClientState>,
     clock: Arc<dyn Clock>,
     on_update: Observer<AwarenessUpdateFn>,
     on_change: Observer<AwarenessUpdateFn>,
@@ -59,7 +59,7 @@ impl Awareness {
     {
         Awareness {
             doc,
-            states: DashMap::new(),
+            states: HashMap::new(),
             clock: Arc::new(clock),
             on_update: Observer::new(),
             on_change: Observer::new(),
@@ -170,8 +170,8 @@ impl Awareness {
     /// Returns a state map of all the clients tracked by current [Awareness] instance. Those
     /// states are identified by their corresponding [ClientID]s. The associated state is
     /// represented and replicated to other clients as a JSON string.
-    pub fn iter(&self) -> AwarenessIter {
-        AwarenessIter(self.states.iter())
+    pub fn iter(&self) -> impl Iterator<Item = (&ClientID, &ClientState)> {
+        self.states.iter()
     }
 
     /// Returns a JSON string state representation of a current [Awareness] instance.
@@ -183,7 +183,7 @@ impl Awareness {
     /// Returns a JSON string state representation of a current [Awareness] instance.
     pub fn local_state_raw(&self) -> Option<Arc<str>> {
         let e = self.states.get(&self.doc.client_id())?;
-        let json_str = e.value().clone().data?;
+        let json_str = e.data.clone()?;
         Some(json_str)
     }
 
@@ -303,13 +303,7 @@ impl Awareness {
         let clients: Vec<_> = self
             .states
             .iter()
-            .flat_map(|e| {
-                if e.data.is_none() {
-                    None
-                } else {
-                    Some(*e.key())
-                }
-            })
+            .flat_map(|(key, e)| if e.data.is_none() { None } else { Some(*key) })
             .collect();
         self.update_with_clients(clients)
     }
@@ -502,17 +496,6 @@ impl std::fmt::Debug for Awareness {
     }
 }
 
-pub struct AwarenessIter<'a>(dashmap::iter::Iter<'a, ClientID, ClientState>);
-
-impl<'a> Iterator for AwarenessIter<'a> {
-    type Item = (ClientID, ClientState);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let e = self.0.next()?;
-        Some((*e.key(), e.value().clone()))
-    }
-}
-
 /// Summary of applying an [AwarenessUpdate] over [Awareness::apply_update_summary] method.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AwarenessUpdateSummary {
@@ -660,15 +643,15 @@ impl Event {
 
 #[cfg(test)]
 mod test {
-    use serde_json::{Value, json};
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
     use crate::Doc;
     use crate::block::ClientID;
     use crate::sync::awareness::{AwarenessUpdateSummary, Event};
     use crate::sync::{Awareness, AwarenessUpdate};
     use crate::updates::decoder::Decode;
+    use arc_swap::ArcSwapOption;
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn decode_rejects_length_amplification() {

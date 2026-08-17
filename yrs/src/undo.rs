@@ -165,12 +165,22 @@ where
     }
 
     /// Extends a list of shared types tracked by current undo manager by a given `scope`.
-    pub fn expand_scope(&mut self, doc: &Cell<Doc>, scope: NodeID) {
+    /// Returns `true` if UndoManager scope was successfully extended.
+    /// Returns `false` if a given `scope` didn't exist within provided `doc`.
+    pub fn expand_scope(&mut self, doc: &Cell<Doc>, scope: NodeID) -> bool {
         let origin = Origin::from(Arc::as_ptr(&self.state) as usize);
         let inner_mut = Arc::get_mut(&mut self.state).unwrap();
         let ptr1 = AtomicPtr::new(inner_mut as *mut Inner<M>);
         let ptr2 = AtomicPtr::new(inner_mut as *mut Inner<M>);
-        let guid = doc.acquire().guid().clone();
+        let (node_ptr, guid) = {
+            let doc_ref = doc.acquire();
+            let ptr = match doc_ref.node(scope) {
+                Some(ptr) => ptr,
+                None => return false,
+            };
+            let guid = doc_ref.guid().clone();
+            (ptr, guid)
+        };
 
         if !inner_mut.docs.contains_key(&guid) {
             inner_mut.options.tracked_origins.insert(origin.clone());
@@ -192,9 +202,9 @@ where
 
             inner_mut.docs.insert(guid, doc.clone());
         }
-        let ptr = NodePtr::from(scope.as_ref());
         let inner = Arc::get_mut(&mut self.state).unwrap();
-        inner.scope.insert(ptr);
+        inner.scope.insert(node_ptr);
+        true
     }
 
     pub fn docs(&self) -> impl Iterator<Item = &Cell<Doc>> {

@@ -450,8 +450,8 @@ mod test {
         let path = JsonPath::parse("$.users").unwrap();
         let tx = doc.transact();
         let values: Vec<_> = tx.json_path(&path).collect();
-        let expected = tx.get("users").unwrap();
-        assert_eq!(values, vec![expected]);
+        let expected = tx.node("users").unwrap().id();
+        assert_eq!(values, vec![Out::Node(expected)]);
     }
 
     #[test]

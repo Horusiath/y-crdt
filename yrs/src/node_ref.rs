@@ -200,13 +200,10 @@ where
         &mut *self.txn
     }
 
-    /// Inserts a single value at the given index into the list (sequence) component of this type.
-    ///
-    /// Returns the integrated value or `None` if the inserted content was empty.
-    fn insert_item(&mut self, index: u32, content: In) -> Option<ItemPtr> {
+    /// Returns an insert position at a given index, skipping over deleted blocks (like Yjs does).
+    fn insert_position(&mut self, index: u32) -> ItemPosition {
         let this = self.ptr;
         if let Some(mut pos) = find_position(this, &mut *self.txn, index) {
-            // skip over deleted blocks, just like Yjs does
             while let Some(right) = pos.right.as_ref() {
                 if right.is_deleted() {
                     pos.forward();
@@ -214,19 +211,45 @@ where
                     break;
                 }
             }
-            self.txn.create_item(&pos, content, None)
+            pos
         } else {
             panic!("The type or the position doesn't exist!");
         }
     }
 
-    /// Inserts a single value at the given index.
-    pub fn insert(&mut self, index: u32, value: impl Into<In>) -> Out {
-        self.insert_item(index, value.into())
+    /// Inserts a single value at the given index into the list (sequence) component of this type.
+    ///
+    /// Returns the integrated value or `None` if the inserted content was empty.
+    fn insert_item(&mut self, index: u32, content: In) -> Option<ItemPtr> {
+        let pos = self.insert_position(index);
+        self.txn.create_item(&pos, content, None)
     }
 
+    /// Inserts a single value at the given index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is greater than the current length of this type's children.
+    pub fn insert(&mut self, index: u32, value: impl Into<In>) -> Out {
+        let ptr = self
+            .insert_item(index, value.into())
+            .expect("cannot insert empty value");
+        ptr.content.get_last().unwrap()
+    }
+
+    /// Inserts multiple values one after another, starting at the given index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is greater than the current length of this type's children.
     pub fn insert_range(&mut self, index: u32, values: impl IntoIterator<Item = impl Into<In>>) {
-        todo!()
+        let mut pos = self.insert_position(index);
+        for value in values {
+            if let Some(item) = self.txn.create_item(&pos, value.into(), None) {
+                pos.right = Some(item);
+                pos.forward(); // move insert position past the newly created item
+            }
+        }
     }
 
     /// Inserts a string of text at the given index.
