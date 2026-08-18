@@ -690,6 +690,8 @@ pub use crate::transaction::Transaction;
 pub use crate::transaction::TransactionMut;
 pub use crate::transaction::TransactionState;
 pub use crate::update::Update;
+#[cfg(feature = "weak")]
+pub use crate::weak::{LinkSource, Quotable, QuoteError, Unquote};
 
 pub use crate::cell::Acquire;
 pub use crate::cell::AcquireMut;

@@ -270,7 +270,10 @@ fn xml_fragment_insert() {
             None,
             TypePtr::Unknown,
             None,
-            ItemContent::Node(Node::new(Some("node-name".into()), TypeRef::XmlElement("node-name".into()))),
+            ItemContent::Node(Node::new(
+                Some("node-name".into()),
+                TypeRef::XmlElement("node-name".into()),
+            )),
         )
         .unwrap()
         .into(),
@@ -361,7 +364,8 @@ fn utf32_lib0_v2_decoding() {
         ("tagName", "div".to_string()),
         ("lineHeight", "".to_string()),
     ]);
-    let actual_attrs: HashMap<&str, String> = div.attrs().map(|(k, v)| (k, v.to_string())).collect();
+    let actual_attrs: HashMap<&str, String> =
+        div.attrs().map(|(k, v)| (k, v.to_string())).collect();
     assert_eq!(actual_attrs, expected_attrs);
 
     let Out::Node(txt) = div.get(0).unwrap() else {

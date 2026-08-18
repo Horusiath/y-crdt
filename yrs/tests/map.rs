@@ -669,6 +669,7 @@ fn get_as() {
 fn multi_threading() {
     use std::sync::{Arc, RwLock};
     use std::thread::{sleep, spawn};
+    use std::time::Duration;
 
     let doc = Arc::new(RwLock::new(Doc::with_client_id(1)));
 

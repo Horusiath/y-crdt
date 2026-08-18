@@ -101,6 +101,25 @@ where
             Unquote::empty()
         }
     }
+
+    /// Returns a [LinkSource] pointing at an attribute stored under a given `key`, or `None` if
+    /// no such attribute exists.
+    pub fn link(&self, key: &str) -> Option<LinkSource> {
+        let item = self.as_ref().map.get(key)?;
+        let start = StickyIndex::from_id(item.id().clone(), Assoc::Before);
+        let end = StickyIndex::from_id(item.id().clone(), Assoc::After);
+        Some(LinkSource::new(start, end))
+    }
+
+    /// Returns a [LinkSource] quoting a given range of children of the current node.
+    ///
+    /// See [Quotable::quote] for the description of range inclusivity semantics and errors.
+    pub fn quote<R>(&self, range: R) -> Result<LinkSource, QuoteError>
+    where
+        R: RangeBounds<u32>,
+    {
+        quote_range(NodePtr::from(self.as_ref()), self.txn().doc(), range)
+    }
 }
 
 #[repr(transparent)]
@@ -310,90 +329,97 @@ pub trait Quotable: AsRef<Node> + Sized {
         D: Deref<Target = Doc>,
         R: RangeBounds<u32>,
     {
-        let this = NodePtr::from(self.as_ref());
-        let start = match range.start_bound() {
-            Bound::Included(&i) => Some((i, Assoc::Before)),
-            Bound::Excluded(&i) => Some((i, Assoc::After)),
-            Bound::Unbounded => None,
-        };
-        let end = match range.end_bound() {
-            Bound::Included(&i) => Some((i, Assoc::After)),
-            Bound::Excluded(&i) => Some((i, Assoc::Before)),
-            Bound::Unbounded => None,
-        };
-        let encoding = txn.doc().options.offset_kind;
-        let mut start_index = 0;
-        let mut remaining = start_index;
-        let mut curr = None;
-        let mut i = this.start.to_iter();
+        quote_range(NodePtr::from(self.as_ref()), txn.doc(), range)
+    }
+}
 
-        let start = if let Some((start_i, assoc_start)) = start {
-            start_index = start_i;
-            remaining = start_index;
-            // figure out the first ID
-            curr = i.next();
-            while let Some(item) = curr.as_deref() {
-                if remaining == 0 {
+/// Computes a [LinkSource] quoting a `range` of children of a given node.
+fn quote_range<R>(this: NodePtr, doc: &Doc, range: R) -> Result<LinkSource, QuoteError>
+where
+    R: RangeBounds<u32>,
+{
+    let start = match range.start_bound() {
+        Bound::Included(&i) => Some((i, Assoc::Before)),
+        Bound::Excluded(&i) => Some((i, Assoc::After)),
+        Bound::Unbounded => None,
+    };
+    let end = match range.end_bound() {
+        Bound::Included(&i) => Some((i, Assoc::After)),
+        Bound::Excluded(&i) => Some((i, Assoc::Before)),
+        Bound::Unbounded => None,
+    };
+    let encoding = doc.options.offset_kind;
+    let mut start_index = 0;
+    let mut remaining = start_index;
+    let mut curr = None;
+    let mut i = this.start.to_iter();
+
+    let start = if let Some((start_i, assoc_start)) = start {
+        start_index = start_i;
+        remaining = start_index;
+        // figure out the first ID
+        curr = i.next();
+        while let Some(item) = curr.as_deref() {
+            if remaining == 0 {
+                break;
+            }
+            if !item.is_deleted() && item.is_countable() {
+                let len = item.content_len(encoding);
+                if remaining < len {
                     break;
                 }
-                if !item.is_deleted() && item.is_countable() {
-                    let len = item.content_len(encoding);
-                    if remaining < len {
-                        break;
-                    }
-                    remaining -= len;
-                }
-                curr = i.next();
+                remaining -= len;
             }
-            let start_id = if let Some(item) = curr.as_deref() {
-                let mut id = item.id.clone();
-                id.clock += if let ItemContent::String(s) = &item.content {
-                    s.block_offset(remaining, encoding)
-                } else {
-                    remaining
-                };
-                id
-            } else {
-                return Err(QuoteError::OutOfBounds);
-            };
-            StickyIndex::new(IndexScope::Relative(start_id), assoc_start)
-        } else {
             curr = i.next();
-            StickyIndex::new(IndexScope::Absolute(this.id()), Assoc::Before)
-        };
-
-        let end = if let Some((end_index, assoc_end)) = end {
-            // figure out the last ID
-            remaining = end_index - start_index + remaining;
-            while let Some(item) = curr.as_deref() {
-                if !item.is_deleted() && item.is_countable() {
-                    let len = item.content_len(encoding);
-                    if remaining < len {
-                        break;
-                    }
-                    remaining -= len;
-                }
-                curr = i.next();
-            }
-            let end_id = if let Some(item) = curr.as_deref() {
-                let mut id = item.id.clone();
-                id.clock += if let ItemContent::String(s) = &item.content {
-                    s.block_offset(remaining, encoding)
-                } else {
-                    remaining
-                };
-                id
+        }
+        let start_id = if let Some(item) = curr.as_deref() {
+            let mut id = item.id.clone();
+            id.clock += if let ItemContent::String(s) = &item.content {
+                s.block_offset(remaining, encoding)
             } else {
-                return Err(QuoteError::OutOfBounds);
+                remaining
             };
-            StickyIndex::new(IndexScope::Relative(end_id), assoc_end)
+            id
         } else {
-            StickyIndex::new(IndexScope::Absolute(this.id()), Assoc::After)
+            return Err(QuoteError::OutOfBounds);
         };
+        StickyIndex::new(IndexScope::Relative(start_id), assoc_start)
+    } else {
+        curr = i.next();
+        StickyIndex::new(IndexScope::Absolute(this.id()), Assoc::Before)
+    };
 
-        let source = LinkSource::new(start, end);
-        Ok(source)
-    }
+    let end = if let Some((end_index, assoc_end)) = end {
+        // figure out the last ID
+        remaining = end_index - start_index + remaining;
+        while let Some(item) = curr.as_deref() {
+            if !item.is_deleted() && item.is_countable() {
+                let len = item.content_len(encoding);
+                if remaining < len {
+                    break;
+                }
+                remaining -= len;
+            }
+            curr = i.next();
+        }
+        let end_id = if let Some(item) = curr.as_deref() {
+            let mut id = item.id.clone();
+            id.clock += if let ItemContent::String(s) = &item.content {
+                s.block_offset(remaining, encoding)
+            } else {
+                remaining
+            };
+            id
+        } else {
+            return Err(QuoteError::OutOfBounds);
+        };
+        StickyIndex::new(IndexScope::Relative(end_id), assoc_end)
+    } else {
+        StickyIndex::new(IndexScope::Absolute(this.id()), Assoc::After)
+    };
+
+    let source = LinkSource::new(start, end);
+    Ok(source)
 }
 
 /// Error that may appear in result of [Quotable::quote] method call.
