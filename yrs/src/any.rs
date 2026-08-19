@@ -289,8 +289,11 @@ impl Number {
     pub const F64_MAX_SAFE_INTEGER: f64 = Self::I64_MAX_SAFE_INTEGER as f64;
     pub const F64_MIN_SAFE_INTEGER: f64 = -Self::F64_MAX_SAFE_INTEGER;
 
-    pub fn from_safe(value: f64) -> Self {
-        if value >= Self::F64_MIN_SAFE_INTEGER && value <= Self::F64_MAX_SAFE_INTEGER {
+    pub fn try_i64(value: f64) -> Self {
+        if value.trunc() == value
+            && value >= Self::F64_MIN_SAFE_INTEGER
+            && value <= Self::F64_MAX_SAFE_INTEGER
+        {
             Number::Int(value as i64)
         } else {
             Number::Float(value)

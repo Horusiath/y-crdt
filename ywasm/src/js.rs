@@ -140,7 +140,7 @@ impl Js {
         } else if self.0.is_undefined() {
             Ok(ValueRef::Any(Any::Undefined))
         } else if let Some(f) = self.0.as_f64() {
-            Ok(ValueRef::Any(Any::Number(Number::from_safe(f))))
+            Ok(ValueRef::Any(Any::Number(Number::try_i64(f))))
         } else if let Some(b) = self.0.as_bool() {
             Ok(ValueRef::Any(Any::Bool(b)))
         } else if self.0.is_bigint() {
