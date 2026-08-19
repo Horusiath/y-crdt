@@ -338,7 +338,8 @@ impl Update {
                     let local_clock = state
                         .entry(id.client)
                         .or_insert_with(|| txn.store.blocks.get_clock(&id.client));
-                    let offset = (*local_clock as i32) - (id.clock as i32);
+                    // i64: clocks span the whole u32 range, an i32 diff would wrap
+                    let offset = (*local_clock as i64) - (id.clock as i64);
 
                     if let Some(missing) =
                         Self::missing_dependency(&mut stack_head, &mut txn.store)?

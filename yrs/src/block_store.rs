@@ -48,7 +48,7 @@ impl ClientBlockList {
     /// found using binary search algorithm, or a index under which this block should be inserted.
     pub(crate) fn find_index(&self, clock: u32) -> Option<usize> {
         let mut left = 0;
-        let mut right = self.inner.len() - 1;
+        let mut right = self.inner.len().checked_sub(1)?; // empty list owns no clock
         let mut block = unsafe { &*self.inner[right].get() };
         let (mut start, mut end) = block.clock_range();
         if start == clock {
@@ -67,7 +67,7 @@ impl ClientBlockList {
                     }
                     left = mid + 1;
                 } else {
-                    right = mid - 1;
+                    right = mid.checked_sub(1)?; // clock precedes the first block
                 }
                 mid = (left + right) / 2;
             }
