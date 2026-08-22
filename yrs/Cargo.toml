@@ -34,7 +34,6 @@ flate2 = "1"
 ropey = "1.6.0"
 proptest = "1.2"
 proptest-derive = "0.8.0"
-rand = "0.10"
 assert_matches2 = "0.1"
 uuid = "1.16.0"
 

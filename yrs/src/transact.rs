@@ -237,7 +237,6 @@ pub enum TransactionAcqError {
 #[cfg(test)]
 mod test {
     use crate::{Doc, GetString, Text, Transact};
-    use rand::random;
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
@@ -257,7 +256,7 @@ mod test {
             std::thread::spawn(move || {
                 // let mut txn = d.try_transact_mut().unwrap(); // this will hang forever
                 let mut txn = d.transact_mut();
-                let n = random::<u64>() % 5;
+                let n = fastrand::u64(0..5);
                 std::thread::sleep(Duration::from_millis(n * 100));
                 t.insert(&mut txn, 0, "a");
                 drop(txn);
