@@ -1,7 +1,5 @@
 use criterion::*;
-use rand::distributions::Alphanumeric;
-use rand::prelude::StdRng;
-use rand::{Rng, RngCore, SeedableRng};
+use fastrand::Rng;
 use std::cell::Cell;
 use std::collections::HashMap;
 use yrs::encoding::read::{Cursor, Read};
@@ -22,12 +20,8 @@ enum ArrayOp {
     Delete(u32, u32),
 }
 
-fn b1_1<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
-    let sample: Vec<_> = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|c| c.to_string())
-        .collect();
+fn b1_1(rng: &mut Rng, size: usize) -> Vec<TextOp> {
+    let sample: Vec<_> = (0..size).map(|_| rng.alphanumeric().to_string()).collect();
 
     (0..size as u32)
         .into_iter()
@@ -36,21 +30,13 @@ fn b1_1<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
         .collect()
 }
 
-fn b1_2<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
-    let s: String = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|c| c as char)
-        .collect();
+fn b1_2(rng: &mut Rng, size: usize) -> Vec<TextOp> {
+    let s: String = (0..size).map(|_| rng.alphanumeric()).collect();
     vec![TextOp::Insert(0, s)]
 }
 
-fn b1_3<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
-    let sample: Vec<_> = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|c| c.to_string())
-        .collect();
+fn b1_3(rng: &mut Rng, size: usize) -> Vec<TextOp> {
+    let sample: Vec<_> = (0..size).map(|_| rng.alphanumeric().to_string()).collect();
 
     (0..size as u32)
         .into_iter()
@@ -59,76 +45,58 @@ fn b1_3<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
         .collect()
 }
 
-fn b1_4<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
-    let sample: Vec<_> = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|c| c.to_string())
-        .collect();
+fn b1_4(rng: &mut Rng, size: usize) -> Vec<TextOp> {
+    let sample: Vec<_> = (0..size).map(|_| rng.alphanumeric().to_string()).collect();
 
     (0..size as u32)
         .into_iter()
         .zip(sample)
         .map(|(i, str)| {
-            let idx = rng.gen_range(0..i.max(1));
+            let idx = rng.u32(0..i.max(1));
             TextOp::Insert(idx, str)
         })
         .collect()
 }
 
-fn gen_string<R: RngCore>(rng: &mut R, min: usize, max: usize) -> String {
-    let len = rng.gen_range(min..max);
-    rng.sample_iter(&Alphanumeric)
-        .take(len)
-        .map(|x| x as char)
-        .collect()
+fn gen_string(rng: &mut Rng, min: usize, max: usize) -> String {
+    let len = rng.usize(min..max);
+    (0..len).map(|_| rng.alphanumeric()).collect()
 }
 
-fn b1_5<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
+fn b1_5(rng: &mut Rng, size: usize) -> Vec<TextOp> {
     (0..size as u32)
         .into_iter()
         .map(|i| {
             let str = gen_string(rng, 2, 10);
-            let idx = rng.gen_range(0..i.max(1));
+            let idx = rng.u32(0..i.max(1));
             TextOp::Insert(idx, str)
         })
         .collect()
 }
 
-fn b1_6<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
-    let s: String = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|x| x as char)
-        .collect();
+fn b1_6(rng: &mut Rng, size: usize) -> Vec<TextOp> {
+    let s: String = (0..size).map(|_| rng.alphanumeric()).collect();
     let len = s.len() as u32;
     vec![TextOp::Insert(0, s), TextOp::Delete(0, len)]
 }
 
-fn b1_7<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
+fn b1_7(rng: &mut Rng, size: usize) -> Vec<TextOp> {
     let total_len = Cell::new(0u32);
     (0..size as u32)
         .into_iter()
         .map(|_| {
             let total = total_len.get();
-            let idx = if total == 0 {
-                0
-            } else {
-                rng.gen_range(0..total)
-            };
-            if total == idx || rng.gen_bool(0.5) {
+            let idx = if total == 0 { 0 } else { rng.u32(0..total) };
+            if total == idx || rng.bool() {
                 let str = {
-                    let len = rng.gen_range(2..10);
+                    let len = rng.u32(2..10);
                     total_len.set(total + len);
-                    rng.sample_iter(&Alphanumeric)
-                        .take(len as usize)
-                        .map(|x| x as char)
-                        .collect()
+                    (0..len).map(|_| rng.alphanumeric()).collect()
                 };
                 TextOp::Insert(idx, str)
             } else {
                 let hi = (total - idx).min(9);
-                let len = if hi == 1 { 1 } else { rng.gen_range(1..hi) };
+                let len = if hi == 1 { 1 } else { rng.u32(1..hi) };
                 total_len.set(total - len);
                 TextOp::Delete(idx, len)
             }
@@ -136,29 +104,29 @@ fn b1_7<R: RngCore>(rng: &mut R, size: usize) -> Vec<TextOp> {
         .collect()
 }
 
-fn b1_8<R: RngCore>(rng: &mut R, size: usize) -> Vec<ArrayOp> {
+fn b1_8(rng: &mut Rng, size: usize) -> Vec<ArrayOp> {
     let ops: Vec<ArrayOp> = (0..size)
-        .map(|i| ArrayOp::Insert(i as u32, vec![rng.gen()]))
+        .map(|i| ArrayOp::Insert(i as u32, vec![rng.u32(..)]))
         .collect();
     ops
 }
 
-fn b1_9<R: RngCore>(rng: &mut R, size: usize) -> Vec<ArrayOp> {
-    let sample: Vec<u32> = (0..size).map(|_| rng.gen()).collect();
+fn b1_9(rng: &mut Rng, size: usize) -> Vec<ArrayOp> {
+    let sample: Vec<u32> = (0..size).map(|_| rng.u32(..)).collect();
     vec![ArrayOp::Insert(0, sample)]
 }
 
-fn b1_10<R: RngCore>(rng: &mut R, size: usize) -> Vec<ArrayOp> {
+fn b1_10(rng: &mut Rng, size: usize) -> Vec<ArrayOp> {
     (0..size)
-        .map(|_| ArrayOp::Insert(0, vec![rng.gen()]))
+        .map(|_| ArrayOp::Insert(0, vec![rng.u32(..)]))
         .collect()
 }
 
-fn b1_11<R: RngCore>(rng: &mut R, size: usize) -> Vec<ArrayOp> {
+fn b1_11(rng: &mut Rng, size: usize) -> Vec<ArrayOp> {
     (0..size)
         .map(|i| {
-            let idx = rng.gen_range(0..(i as u32).max(1));
-            let values = vec![rng.gen()];
+            let idx = rng.u32(0..(i as u32).max(1));
+            let values = vec![rng.u32(..)];
             ArrayOp::Insert(idx, values)
         })
         .collect()
@@ -166,12 +134,12 @@ fn b1_11<R: RngCore>(rng: &mut R, size: usize) -> Vec<ArrayOp> {
 
 fn text_benchmark<F>(c: &mut Criterion, name: &str, gen: F)
 where
-    F: FnOnce(&mut StdRng, usize) -> Vec<TextOp>,
+    F: FnOnce(&mut Rng, usize) -> Vec<TextOp>,
 {
     let input = {
         let doc = Doc::new();
         let txt = doc.get_or_insert_text("text");
-        let mut rng = StdRng::seed_from_u64(SEED);
+        let mut rng = Rng::with_seed(SEED);
         let ops = gen(&mut rng, N);
         (doc, txt, ops)
     };
@@ -195,12 +163,12 @@ where
 
 fn array_benchmark<F>(c: &mut Criterion, name: &str, gen: F)
 where
-    F: FnOnce(&mut StdRng, usize) -> Vec<ArrayOp>,
+    F: FnOnce(&mut Rng, usize) -> Vec<ArrayOp>,
 {
     let input = {
         let doc = Doc::new();
         let array = doc.get_or_insert_array("text");
-        let mut rng = StdRng::seed_from_u64(SEED);
+        let mut rng = Rng::with_seed(SEED);
         let ops = gen(&mut rng, N);
         (doc, array, ops)
     };
@@ -226,7 +194,7 @@ where
 
 fn concurrent_text_benchmark<F>(c: &mut Criterion, name: &str, gen: F)
 where
-    F: FnOnce(&mut StdRng, usize) -> Vec<(TextOp, TextOp)>,
+    F: FnOnce(&mut Rng, usize) -> Vec<(TextOp, TextOp)>,
 {
     let input = {
         let d1 = Doc::new();
@@ -235,7 +203,7 @@ where
         let d2 = Doc::new();
         let t2 = d2.get_or_insert_text("text");
 
-        let mut rng = StdRng::seed_from_u64(SEED);
+        let mut rng = Rng::with_seed(SEED);
         let ops = gen(&mut rng, N);
         (d1, t1, d2, t2, ops)
     };
@@ -269,31 +237,23 @@ where
     );
 }
 
-fn b2_1<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
-    let s1 = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|x| x as char)
-        .collect();
-    let s2 = rng
-        .sample_iter(&Alphanumeric)
-        .take(size)
-        .map(|x| x as char)
-        .collect();
+fn b2_1(rng: &mut Rng, size: usize) -> Vec<(TextOp, TextOp)> {
+    let s1 = (0..size).map(|_| rng.alphanumeric()).collect();
+    let s2 = (0..size).map(|_| rng.alphanumeric()).collect();
     let a = TextOp::Insert(0, s1);
     let b = TextOp::Insert(0, s2);
     vec![(a, b)]
 }
 
-fn b2_2<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
+fn b2_2(rng: &mut Rng, size: usize) -> Vec<(TextOp, TextOp)> {
     (0..size as u32)
         .into_iter()
         .map(|i| {
-            let ca: char = rng.sample_iter(&Alphanumeric).next().unwrap() as char;
-            let ia = rng.gen_range(0..i.max(1));
+            let ca = rng.alphanumeric();
+            let ia = rng.u32(0..i.max(1));
 
-            let cb: char = rng.sample_iter(&Alphanumeric).next().unwrap() as char;
-            let ib = rng.gen_range(0..i.max(1));
+            let cb = rng.alphanumeric();
+            let ib = rng.u32(0..i.max(1));
 
             (
                 TextOp::Insert(ia, ca.to_string()),
@@ -303,19 +263,19 @@ fn b2_2<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
         .collect()
 }
 
-fn b2_3<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
+fn b2_3(rng: &mut Rng, size: usize) -> Vec<(TextOp, TextOp)> {
     let total_len1 = Cell::new(0u32);
     let total_len2 = Cell::new(0u32);
     (0..size as u32)
         .into_iter()
         .map(|_| {
             let t1 = total_len1.get();
-            let i1 = rng.gen_range(0..t1.max(1));
+            let i1 = rng.u32(0..t1.max(1));
             let s1 = gen_string(rng, 3, 9);
             total_len1.set(t1 + s1.len() as u32);
 
             let t2 = total_len2.get();
-            let i2 = rng.gen_range(0..t2.max(1));
+            let i2 = rng.u32(0..t2.max(1));
             let s2 = gen_string(rng, 3, 9);
             total_len2.set(t2 + s2.len() as u32);
 
@@ -324,20 +284,20 @@ fn b2_3<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
         .collect()
 }
 
-fn b2_4<R: RngCore>(rng: &mut R, size: usize) -> Vec<(TextOp, TextOp)> {
+fn b2_4(rng: &mut Rng, size: usize) -> Vec<(TextOp, TextOp)> {
     let mut total_len1 = Cell::new(0u32);
     let mut total_len2 = Cell::new(0u32);
 
-    fn make_op<R: RngCore>(rng: &mut R, total: &mut Cell<u32>) -> TextOp {
+    fn make_op(rng: &mut Rng, total: &mut Cell<u32>) -> TextOp {
         let t = total.get();
-        let idx = rng.gen_range(0..t.max(1));
-        if t == idx || rng.gen_bool(0.5) {
+        let idx = rng.u32(0..t.max(1));
+        if t == idx || rng.bool() {
             let str = gen_string(rng, 3, 9);
             total.set(t + str.len() as u32);
             TextOp::Insert(idx, str)
         } else {
             let hi = (t - idx).min(9);
-            let len = if hi == 1 { 1 } else { rng.gen_range(1..hi) };
+            let len = if hi == 1 { 1 } else { rng.u32(1..hi) };
             total.set(t - len);
             TextOp::Delete(idx, len)
         }
