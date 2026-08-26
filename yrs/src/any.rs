@@ -143,37 +143,36 @@ impl Any {
             }
             Any::Number(num) => {
                 match *num {
-                    Number::Int(n)
-                        if n >= Number::I64_MIN_SAFE_INTEGER
-                            && n <= Number::I64_MAX_SAFE_INTEGER =>
-                    {
-                        // TYPE 125: INTEGER
-                        encoder.write_u8(125);
-                        encoder.write_var(n)
-                    }
                     Number::Int(n) => {
-                        // TYPE 122: BigInt
-                        encoder.write_u8(122);
-                        encoder.write_i64(n)
-                    }
-                    Number::Float(n)
-                        if n.trunc() == n
-                            && n >= Number::F64_MIN_SAFE_INTEGER
-                            && n <= Number::F64_MAX_SAFE_INTEGER =>
-                    {
-                        // TYPE 125: INTEGER
-                        encoder.write_u8(125);
-                        encoder.write_var(n as i64)
-                    }
-                    Number::Float(n) if (n as f32) as f64 == n => {
-                        // TYPE 124: FLOAT32
-                        encoder.write_u8(124);
-                        encoder.write_f32(n as f32)
+                        // ensure max compatibility with yjs lib0 number encoding
+                        if n >= -0x7FFFFFFF && n <= 0x7FFFFFFF {
+                            // TYPE 125: INTEGER
+                            encoder.write_u8(125);
+                            encoder.write_var(n)
+                        } else if (n as f32) as i64 == n {
+                            // TYPE 124: FLOAT32
+                            encoder.write_u8(124);
+                            encoder.write_f32(n as f32)
+                        } else if (n as f64) as i64 == n {
+                            // TYPE 123: FLOAT64
+                            encoder.write_u8(123);
+                            encoder.write_f64(n as f64)
+                        } else {
+                            // TYPE 122: BigInt
+                            encoder.write_u8(122);
+                            encoder.write_i64(n)
+                        }
                     }
                     Number::Float(n) => {
-                        // TYPE 123: FLOAT64
-                        encoder.write_u8(123);
-                        encoder.write_f64(n)
+                        if (n as f32) as f64 == n {
+                            // TYPE 124: FLOAT32
+                            encoder.write_u8(124);
+                            encoder.write_f32(n as f32)
+                        } else {
+                            // TYPE 123: FLOAT64
+                            encoder.write_u8(123);
+                            encoder.write_f64(n)
+                        }
                     }
                 }
             }
@@ -395,6 +394,16 @@ impl<'de> Deserialize<'de> for Number {
 
             fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
                 write!(formatter, "number")
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if v > (i64::MAX as u64) {
+                    return Err(E::custom("integer outside of bounds of i64"));
+                }
+                Ok(Number::Int(v as i64))
             }
 
             fn visit_i64<E>(self, value: i64) -> Result<Number, E> {
@@ -1019,6 +1028,7 @@ macro_rules! any_expect_expr_comma {
 mod test {
     use crate::any::Any;
     use crate::encoding::read::Cursor;
+    use crate::Number;
 
     #[test]
     fn decode_map_rejects_length_amplification() {
@@ -1043,5 +1053,32 @@ mod test {
             Any::decode(&mut cursor).is_err(),
             "an oversized Any::Array length must be rejected, not eagerly allocated"
         );
+    }
+
+    fn hex(n: Number) -> String {
+        let mut buf = Vec::new();
+        Any::Number(n).encode(&mut buf);
+        buf.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    #[test]
+    fn number_encoding_yjs_compat() {
+        assert_eq!(hex(Number::Int(0)), "7d00");
+        assert_eq!(hex(Number::Int(42)), "7d2a");
+        assert_eq!(hex(Number::Int(-42)), "7d6a");
+        assert_eq!(hex(Number::Int(2147483647)), "7dbfffffff0f");
+        // above 2^31 lib0 stops using the var int tag, even for whole numbers
+        assert_eq!(hex(Number::Int(2147483648)), "7c4f000000");
+        assert_eq!(hex(Number::Int(-2147483648)), "7ccf000000");
+        assert_eq!(hex(Number::Int(4294967295)), "7b41efffffffe00000");
+        assert_eq!(hex(Number::Int(9007199254740991)), "7b433fffffffffffff");
+        assert_eq!(hex(Number::Float(1.5)), "7c3fc00000");
+        assert_eq!(hex(Number::Float(1.1)), "7b3ff199999999999a");
+        assert_eq!(hex(Number::Float(2147483648.0)), "7c4f000000");
+        assert_eq!(hex(Number::Float(5e9)), "7c4f9502f9");
+        assert_eq!(hex(Number::Float(1e30)), "7b46293e5939a08cea");
+        assert_eq!(hex(Number::Float(f64::NAN)), "7b7ff8000000000000");
+        assert_eq!(hex(Number::Float(f64::INFINITY)), "7c7f800000");
+        assert_eq!(hex(Number::Float(f64::NEG_INFINITY)), "7cff800000");
     }
 }
