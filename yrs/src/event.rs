@@ -1,9 +1,11 @@
 use crate::node::{NodePtr, Path};
 use crate::transaction::Subdocs;
 use crate::{
-    Delta, Doc, IdSet, NodeRef, StateVector, Transaction, TransactionMut, TransactionState, Uuid,
+    Delta, Doc, ID, IdSet, NodeRef, Out, StateVector, Transaction, TransactionMut,
+    TransactionState, Uuid,
 };
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// An update event passed to a callback subscribed with [Doc::observe_update_v1]/[Doc::observe_update_v2].
 pub struct UpdateEvent {
@@ -97,8 +99,9 @@ impl<'a> ExactSizeIterator for SubdocsEventIter<'a> {
 }
 
 pub struct Event<'txn> {
-    doc: &'txn Doc,
+    node_ptr: NodePtr,
     state: &'txn TransactionState,
+    keys_changed: HashSet<Arc<str>>,
 }
 
 impl<'txn> Event<'txn> {
@@ -132,23 +135,29 @@ impl<'txn> Event<'txn> {
     }
 
     /// Attribute keys that changed.
-    pub fn keys_changed(&self) -> bool {
-        todo!()
+    pub fn keys_changed(&self) -> &HashSet<Arc<str>> {
+        &self.keys_changed
     }
 
-    pub fn delta(&self, options: /* todo */ ()) -> impl Iterator<Item = Delta> {
+    pub fn delta(&self, options: /* todo */ ()) -> impl Iterator<Item = Delta<Out>> {
+        todo!();
+        #[allow(unreachable_code)]
+        std::iter::empty()
+    }
+
+    pub fn deep_delta(&self) -> impl Iterator<Item = Delta<Out>> {
         todo!();
         #[allow(unreachable_code)]
         std::iter::empty()
     }
 
     /// Was this node deleted?
-    pub fn is_deleted(&self) -> bool {
+    pub fn is_deleted(&self, id: &ID) -> bool {
         todo!()
     }
 
     /// Was this node added?
-    pub fn is_added(&self) -> bool {
+    pub fn is_added(&self, id: &ID) -> bool {
         todo!()
     }
 }
