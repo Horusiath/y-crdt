@@ -317,8 +317,9 @@ impl Number {
     pub fn as_f64(self) -> Option<f64> {
         match self {
             Number::Int(value) => {
-                if (Self::I64_MIN_SAFE_INTEGER..=Self::I64_MAX_SAFE_INTEGER).contains(&value) {
-                    Some(value as f64)
+                let n = value as f64;
+                if n as i64 == value {
+                    Some(n)
                 } else {
                     None
                 }
