@@ -139,16 +139,8 @@ impl<'txn> Event<'txn> {
         &self.keys_changed
     }
 
-    pub fn delta(&self, options: /* todo */ ()) -> impl Iterator<Item = Delta<Out>> {
+    pub fn delta(&self, deep: bool) -> Delta<Out> {
         todo!();
-        #[allow(unreachable_code)]
-        std::iter::empty()
-    }
-
-    pub fn deep_delta(&self) -> impl Iterator<Item = Delta<Out>> {
-        todo!();
-        #[allow(unreachable_code)]
-        std::iter::empty()
     }
 
     /// Was this node deleted?

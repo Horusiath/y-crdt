@@ -43,7 +43,7 @@ impl NodePtr {
             return None;
         }
         let e = self.make_event(txn, subs)?;
-        self.observers.trigger(|fun| fun(txn, &e));
+        self.observers.trigger(|fun| fun(&e));
         Some(e)
     }
 
@@ -52,7 +52,7 @@ impl NodePtr {
         txn: &'txn Transaction<&'txn Doc>,
         e: &Events<'txn>,
     ) {
-        self.deep_observers.trigger(|fun| fun(txn, e));
+        self.deep_observers.trigger(|fun| fun(e));
     }
 }
 
@@ -135,7 +135,7 @@ impl Into<Out> for NodePtr {
     /// Converts current branch data into a [Out]. Since branches represent only complex types,
     /// the result is always [Out::Node] pointing at a logical identifier of this branch.
     fn into(self) -> Out {
-        Out::Node(self.id())
+        Out::node(self.id())
     }
 }
 
@@ -215,14 +215,14 @@ pub struct Node {
 }
 
 #[cfg(feature = "sync")]
-type ObserveFn = Box<dyn FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static>;
+type ObserveFn = Box<dyn FnMut(&Event) + Send + Sync + 'static>;
 #[cfg(feature = "sync")]
-type DeepObserveFn = Box<dyn FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static>;
+type DeepObserveFn = Box<dyn FnMut(&Events) + Send + Sync + 'static>;
 
 #[cfg(not(feature = "sync"))]
-type ObserveFn = Box<dyn FnMut(&Transaction<&Doc>, &Event) + 'static>;
+type ObserveFn = Box<dyn FnMut(&Event) + 'static>;
 #[cfg(not(feature = "sync"))]
-type DeepObserveFn = Box<dyn FnMut(&Transaction<&Doc>, &Events) + 'static>;
+type DeepObserveFn = Box<dyn FnMut(&Events) + 'static>;
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -514,7 +514,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static,
+        F: FnMut(&Event) + Send + Sync + 'static,
     {
         self.observers.subscribe(Box::new(f))
     }
@@ -522,7 +522,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Event) + 'static,
+        F: FnMut(&Event) + 'static,
     {
         self.observers.subscribe(Box::new(f))
     }
@@ -530,7 +530,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static,
+        F: FnMut(&Event) + Send + Sync + 'static,
     {
         self.observers.subscribe_with(key, Box::new(f))
     }
@@ -538,7 +538,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Transaction<&Doc>, &Event) + 'static,
+        F: FnMut(&Event) + 'static,
     {
         self.observers.subscribe_with(key, Box::new(f))
     }
@@ -550,7 +550,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe_deep<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
+        F: FnMut(&Events) + Send + Sync + 'static,
     {
         self.deep_observers.subscribe(Box::new(f))
     }
@@ -558,7 +558,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe_deep<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Events) + 'static,
+        F: FnMut(&Events) + 'static,
     {
         self.deep_observers.subscribe(Box::new(f))
     }
@@ -566,7 +566,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe_deep_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
+        F: FnMut(&Events) + Send + Sync + 'static,
     {
         self.deep_observers.subscribe_with(key, Box::new(f))
     }
@@ -574,7 +574,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe_deep_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Transaction<&Doc>, &Events) + 'static,
+        F: FnMut(&Events) + 'static,
     {
         self.deep_observers.subscribe_with(key, Box::new(f))
     }
@@ -973,7 +973,7 @@ pub trait Observable: AsRef<Node> {
     /// Returns a [Subscription] which, when dropped, will unsubscribe current callback.
     fn observe<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static,
+        F: FnMut(&Event) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe(f)
@@ -982,7 +982,7 @@ pub trait Observable: AsRef<Node> {
     fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Transaction<&Doc>, &Event) + Send + Sync + 'static,
+        F: FnMut(&Event) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_with(key.into(), f)
@@ -998,7 +998,7 @@ pub trait Observable: AsRef<Node> {
 pub trait Observable: AsRef<Node> {
     fn observe<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Event) + 'static,
+        F: FnMut(&Event) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe(f)
@@ -1007,7 +1007,7 @@ pub trait Observable: AsRef<Node> {
     fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Transaction<&Doc>, &Event) + 'static,
+        F: FnMut(&Event) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_with(key.into(), f)
@@ -1025,7 +1025,7 @@ pub trait Observable: AsRef<Node> {
 pub trait DeepObservable: AsRef<Node> {
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
+        F: FnMut(&Events) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep(f)
@@ -1034,7 +1034,7 @@ pub trait DeepObservable: AsRef<Node> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
+        F: FnMut(&Events) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep_with(key.into(), f)
@@ -1050,7 +1050,7 @@ pub trait DeepObservable: AsRef<Node> {
 pub trait DeepObservable: AsRef<Node> {
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Transaction<&Doc>, &Events) + Send + Sync + 'static,
+        F: FnMut(&Events) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep(f)
@@ -1059,7 +1059,7 @@ pub trait DeepObservable: AsRef<Node> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Transaction<&Doc>, &Events) + 'static,
+        F: FnMut(&Events) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep_with(key.into(), f)

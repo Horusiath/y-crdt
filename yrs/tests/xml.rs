@@ -1,9 +1,10 @@
 use arc_swap::ArcSwapOption;
+use std::collections::HashMap;
 use std::sync::Arc;
 use yrs::node::Observable;
 use yrs::test_utils::exchange_updates;
 use yrs::updates::decoder::Decode;
-use yrs::{Delta, Doc, In, Out, StateVector, Update};
+use yrs::{Acquire, AcquireMut, Any, Cell, Delta, Doc, In, Out, StateVector, Update};
 
 #[test]
 fn insert_attribute() {
@@ -16,10 +17,13 @@ fn insert_attribute() {
     else {
         panic!("expected a nested node")
     };
-    t1.node_mut(xml1.clone())
+    t1.node_mut(xml1.id.clone())
         .unwrap()
         .insert_attr("height", 10.to_string());
-    assert_eq!(t1.node(xml1).unwrap().attr("height"), Some(Out::from("10")));
+    assert_eq!(
+        t1.node(xml1.id).unwrap().attr("height"),
+        Some(Out::from("10"))
+    );
 
     let mut d2 = Doc::with_client_id(1);
     let mut t2 = d2.transact_mut();
@@ -33,7 +37,10 @@ fn insert_attribute() {
     let u = t1.encode_state_as_update_v1(&StateVector::default());
     let u = Update::decode_v1(u.as_slice()).unwrap();
     t2.apply_update(u).unwrap();
-    assert_eq!(t2.node(xml2).unwrap().attr("height"), Some(Out::from("10")));
+    assert_eq!(
+        t2.node(xml2.id).unwrap().attr("height"),
+        Some(Out::from("10"))
+    );
 }
 
 #[test]
@@ -48,7 +55,7 @@ fn event_observers() {
         let Out::Node(xml) = out else {
             panic!("expected a nested node")
         };
-        xml
+        xml.id
     };
 
     let mut d2 = Doc::with_client_id(2);
@@ -62,19 +69,18 @@ fn event_observers() {
         let Some(Out::Node(xml2)) = txn.node("xml").unwrap().get(0) else {
             panic!("expected a nested node")
         };
-        xml2
+        xml2.id
     };
 
-    let attributes = Arc::new(ArcSwapOption::default());
-    let nodes = Arc::new(ArcSwapOption::default());
-    let attributes_c = attributes.clone();
-    let nodes_c = nodes.clone();
+    let delta = Cell::new(Delta::out());
+    let delta1 = delta.clone();
+    let delta2 = delta.clone();
+    let delta = || delta.acquire().clone();
     let _sub = {
         let txn = d1.transact();
-        txn.node(xml.clone()).unwrap().observe(move |_txn, e| {
-            attributes_c.store(Some(Arc::new(e.keys_changed())));
-            nodes_c.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
-        })
+        txn.node(xml.clone())
+            .unwrap()
+            .observe(move |e| *delta1.acquire_mut() = e.delta(true))
     };
 
     // insert attribute
@@ -84,20 +90,11 @@ fn event_observers() {
         node.insert_attr("key1", "value1");
         node.insert_attr("key2", "value2");
     }
-    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
-    assert!(nodes.swap(None).unwrap().is_empty());
     assert_eq!(
-        attributes.swap(None),
-        Some(Arc::new(HashMap::from([
-            (
-                "key1".into(),
-                EntryChange::Inserted(Any::String("value1".into()).into())
-            ),
-            (
-                "key2".into(),
-                EntryChange::Inserted(Any::String("value2".into()).into())
-            )
-        ])))
+        delta(),
+        Delta::out()
+            .insert_attr("key1", "value1")
+            .insert_attr("key2", "value2")
     );
 
     // change and remove attribute
@@ -107,70 +104,55 @@ fn event_observers() {
         node.insert_attr("key1", "value11");
         node.remove_attr("key2");
     }
-    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
-    assert!(nodes.swap(None).unwrap().is_empty());
     assert_eq!(
-        attributes.swap(None),
-        Some(Arc::new(HashMap::from([
-            (
-                "key1".into(),
-                EntryChange::Updated(
-                    Any::String("value1".into()).into(),
-                    Any::String("value11".into()).into()
-                )
-            ),
-            (
-                "key2".into(),
-                EntryChange::Removed(Any::String("value2".into()).into())
-            )
-        ])))
+        delta(),
+        Delta::out()
+            .insert_attr("key1", "value11")
+            .remove_attr("key2")
     );
 
     // add xml elements
-    {
+    let (n1, n2) = {
         let mut txn = d1.transact_mut();
         let mut node = txn.node_mut(xml.clone()).unwrap();
-        node.insert(0, In::Node(Delta::new().insert_text("")));
-        node.insert(1, In::Node(Delta::with_name("div")));
-    }
-    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
+        let Out::Node(n1) = node.insert(0, In::Node(Delta::new().insert_text(""))) else {
+            unreachable!()
+        };
+        let Out::Node(n2) = node.insert(1, In::Node(Delta::with_name("div"))) else {
+            unreachable!()
+        };
+        (n1.id, n2.id)
+    };
     assert_eq!(
-        nodes.swap(None),
-        Some(Arc::new(vec![Change::Added(vec![
-            Out::YXmlText(nested_txt.clone()),
-            Out::YXmlElement(nested_xml.clone())
-        ])]))
+        delta(),
+        Delta::out()
+            .insert(Out::node(n1.clone()))
+            .insert(Out::node_with_delta(n2.clone(), Delta::with_name("div")))
     );
-    assert_eq!(attributes.swap(None), Some(HashMap::new().into()));
 
     // remove and add
-    {
+    let n3 = {
         let mut txn = d1.transact_mut();
         let mut node = txn.node_mut(xml.clone()).unwrap();
         node.remove(1, 1);
-        node.insert(1, In::Node(Delta::with_name("p")));
-    }
-    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
+        let Out::Node(n) = node.insert(1, In::Node(Delta::with_name("p"))) else {
+            unreachable!()
+        };
+        n.id
+    };
     assert_eq!(
-        nodes.swap(None),
-        Some(Arc::new(vec![
-            Change::Retain(1),
-            Change::Added(vec![Out::YXmlElement(nested_xml2.clone())]),
-            Change::Removed(1),
-        ]))
+        delta(),
+        Delta::out()
+            .retain(1)
+            .remove(1)
+            .insert(Out::node_with_delta(n3.clone(), Delta::with_name("p")))
     );
-    assert_eq!(attributes.swap(None), Some(HashMap::new().into()));
 
     // copy updates over
-    let attributes = Arc::new(ArcSwapOption::default());
-    let nodes = Arc::new(ArcSwapOption::default());
-    let attributes_c = attributes.clone();
-    let nodes_c = nodes.clone();
     let _sub = {
         let txn = d2.transact();
-        txn.node(xml2).unwrap().observe(move |_txn, e| {
-            attributes_c.store(Some(Arc::new(e.keys_changed())));
-            nodes_c.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
+        txn.node(xml2).unwrap().observe(move |e| {
+            *delta2.acquire_mut() = e.delta(true);
         })
     };
 
@@ -182,20 +164,12 @@ fn event_observers() {
         t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
     }
-    // TODO(unified-api): Event::keys/EntryChange and the `Change` enum not available yet
     assert_eq!(
-        nodes.swap(None),
-        Some(Arc::new(vec![Change::Added(vec![
-            Out::YXmlText(nested_txt),
-            Out::YXmlElement(nested_xml2)
-        ])]))
-    );
-    assert_eq!(
-        attributes.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "key1".into(),
-            EntryChange::Inserted(Any::String("value11".into()).into())
-        )])))
+        delta(),
+        Delta::out()
+            .insert_attr("key1", "value11")
+            .insert(Out::node(n1))
+            .insert(Out::node_with_delta(n3, Delta::with_name("p")))
     );
 }
 
@@ -213,11 +187,6 @@ fn serialization_compatibility() {
 
         let expected = Y.encodeStateAsUpdate(d1)
     ``` */
-    // TODO(unified-api): In::Node cannot create TypeRef::XmlText, so the doc is decoded from the
-    // Yjs binary instead of being built by these calls
-    let r1 = d1.get_or_insert_xml_fragment("root");
-    let _first = r1.push_back(&mut t1, XmlTextPrelim::new("hello"));
-    r1.push_back(&mut t1, XmlElementPrelim::empty("p"));
     let expected = &[
         1, 3, 1, 0, 7, 1, 4, 114, 111, 111, 116, 6, 4, 0, 1, 0, 5, 104, 101, 108, 108, 111, 135, 1,
         0, 3, 1, 112, 0,
@@ -311,20 +280,20 @@ fn issue_607() {
     doc.transact_mut().apply_update(u1).unwrap();
     {
         let txn = doc.transact();
-        let Out::Node(id) = txn.node("doc").unwrap().get(0).unwrap() else {
+        let Out::Node(n) = txn.node("doc").unwrap().get(0).unwrap() else {
             panic!("expected xml element node");
         };
-        let actual = txn.node(id).unwrap().to_string();
+        let actual = txn.node(n.id).unwrap().to_string();
         assert_eq!(actual, "<p><a></a></p>");
     }
 
     doc.transact_mut().apply_update(u2).unwrap();
     {
         let txn = doc.transact();
-        let Out::Node(id) = txn.node("doc").unwrap().get(0).unwrap() else {
+        let Out::Node(n) = txn.node("doc").unwrap().get(0).unwrap() else {
             panic!("expected xml element node");
         };
-        let actual = txn.node(id).unwrap().to_string();
+        let actual = txn.node(n.id).unwrap().to_string();
         assert_eq!(actual, "<p><b></b></p>");
     }
 }

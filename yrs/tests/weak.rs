@@ -10,7 +10,7 @@ use yrs::{Delta, Doc, NodeID, NodeRef, Out, Transaction};
 /// Renders `value`, resolving nested nodes through `txn`.
 fn stringify<D: Deref<Target = Doc>>(txn: &Transaction<D>, value: &Out) -> String {
     match value {
-        Out::Node(id) => txn.node(id.clone()).unwrap().to_string(),
+        Out::Node(n) => txn.node(n.id).unwrap().to_string(),
         other => other.to_string(),
     }
 }
@@ -368,7 +368,7 @@ fn observe_map_update() {
         let txn = d1.transact();
         txn.node(link1.clone())
             .unwrap()
-            .observe(move |_, e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -389,7 +389,7 @@ fn observe_map_update() {
         let txn = d2.transact();
         txn.node(link2.clone())
             .unwrap()
-            .observe(move |_, e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
     };
 
     d1.transact_mut()
@@ -421,7 +421,7 @@ fn observe_map_delete() {
         let txn = d1.transact();
         txn.node(link1.clone())
             .unwrap()
-            .observe(move |_, e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -442,7 +442,7 @@ fn observe_map_delete() {
         let txn = d2.transact();
         txn.node(link2.clone())
             .unwrap()
-            .observe(move |_, e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
     };
 
     d1.transact_mut().node_mut("map").unwrap().remove_attr("a");
@@ -473,7 +473,7 @@ fn observe_array() {
         let txn = d1.transact();
         txn.node(link1.clone())
             .unwrap()
-            .observe(move |_, e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -494,7 +494,7 @@ fn observe_array() {
         let txn = d2.transact();
         txn.node(link2.clone())
             .unwrap()
-            .observe(move |_, e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
     };
 
     d1.transact_mut().node_mut("array").unwrap().remove(2, 1);
@@ -551,7 +551,7 @@ fn deep_observe_transitive() {
     let _sub1 = {
         let events = events.clone();
         let txn = doc.transact();
-        txn.node(link2).unwrap().observe_deep(move |_, evts| {
+        txn.node(link2).unwrap().observe_deep(move |evts| {
             let mut er = events.lock().unwrap();
             for e in evts.iter() {
                 er.push(e.target().id());
@@ -613,7 +613,7 @@ fn deep_observe_transitive2() {
     let _sub1 = {
         let events = events.clone();
         let txn = doc.transact();
-        txn.node(link3).unwrap().observe_deep(move |_, evts| {
+        txn.node(link3).unwrap().observe_deep(move |evts| {
             let mut er = events.lock().unwrap();
             for e in evts.iter() {
                 er.push(e.target().id());

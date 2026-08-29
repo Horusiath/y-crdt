@@ -1124,14 +1124,13 @@ mod test {
 
             let bold = Attrs::from([("bold".into(), true.into())]);
             txt1.format(1, 3, bold.clone());
-            let diff = txt1.to_delta(&DeltaOptions::default());
+            let diff = txt1.delta(&DeltaOptions::default());
             assert_eq!(
                 diff,
-                vec![
-                    Delta::out().insert_text("b"),
-                    Delta::out().insert_text_with("cxy", bold),
-                    Delta::out().insert_text("z"),
-                ]
+                Delta::out()
+                    .insert_text("b")
+                    .insert_text_with("cxy", bold)
+                    .insert_text("z"),
             );
         }
         mgr.undo_blocking();
@@ -1334,7 +1333,7 @@ mod test {
 
         mgr.reset();
 
-        node(&d1, map.clone(), |mut map| {
+        node(&d1, map.id.clone(), |mut map| {
             map.insert_attr("a", 1);
         });
         node(&d1, "test", |mut array| {

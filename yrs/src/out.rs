@@ -1,8 +1,19 @@
 use crate::block::ItemPtr;
-use crate::{Any, In, NodeID, Uuid};
+use crate::{Any, Delta, Event, In, NodeID, Uuid};
 use std::convert::TryFrom;
 use std::fmt::Formatter;
 use std::sync::Arc;
+
+/// Node output can take shape of one of the two variants. Usually that depends, on if flat or deep
+/// delta was used to generate node shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutNode {
+    /// Unique node identifier.
+    pub id: NodeID,
+    /// Delta representation of state changes applied on a given node.
+    /// This is optional field, which presence is driven through [Event::delta] `deep` parameter.
+    pub delta: Option<Box<Delta<Out>>>,
+}
 
 /// Value that can be returned by Yrs data types. This includes [Any] which is an extension
 /// representation of JSON, but also nested complex collaborative structures specific to Yrs.
@@ -10,7 +21,7 @@ use std::sync::Arc;
 pub enum Out {
     /// Any value that it treated as a single element in its entirety.
     Any(Any),
-    Node(NodeID),
+    Node(OutNode),
     /// Subdocument identifier.
     Doc(Uuid),
 }
@@ -34,9 +45,23 @@ impl Out {
 
     pub fn node_id(self) -> Option<NodeID> {
         match self {
-            Out::Node(id) => Some(id),
+            Out::Node(node) => Some(node.id),
             _ => None,
         }
+    }
+
+    pub fn node(node_id: impl Into<NodeID>) -> Self {
+        Out::Node(OutNode {
+            id: node_id.into(),
+            delta: None,
+        })
+    }
+
+    pub fn node_with_delta(node_id: impl Into<NodeID>, delta: impl Into<Delta<Out>>) -> Self {
+        Out::Node(OutNode {
+            id: node_id.into(),
+            delta: Some(Box::new(delta.into())),
+        })
     }
 }
 
@@ -45,7 +70,7 @@ impl TryFrom<Out> for NodeID {
 
     fn try_from(value: Out) -> Result<Self, Self::Error> {
         match value {
-            Out::Node(id) => Ok(id),
+            Out::Node(node) => Ok(node.id),
             out => Err(out),
         }
     }
@@ -103,13 +128,3 @@ impl_try_from!(String);
 impl_try_from!(Arc<str>);
 impl_try_from!(Vec<u8>);
 impl_try_from!(Arc<[u8]>);
-
-impl std::fmt::Display for Out {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Out::Any(value) => std::fmt::Display::fmt(value, f),
-            Out::Node(node) => write!(f, "Node({})", node),
-            Out::Doc(guid) => write!(f, "Doc({})", guid),
-        }
-    }
-}

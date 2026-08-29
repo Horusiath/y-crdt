@@ -184,6 +184,42 @@ impl<T> Delta<T> {
         }
         self
     }
+
+    /// Appends a single content value insert operation.
+    pub fn insert(mut self, content: impl Into<T>) -> Self {
+        if let Some(Op::Insert { items, format }) = self.children.last_mut() {
+            if format.is_none() {
+                items.push(content.into());
+            }
+        } else {
+            self.children.push(Op::Insert {
+                items: vec![content.into()],
+                format: None,
+            });
+        }
+        self
+    }
+
+    /// Appends a single content value insert operation with formatting attributes.
+    pub fn insert_with(mut self, content: impl Into<T>, format: Attrs) -> Self {
+        self.children.push(Op::Insert {
+            items: vec![content.into()],
+            format: Some(Box::new(format)),
+        });
+        self
+    }
+
+    /// Sets an attribute to the given value.
+    pub fn insert_attr(mut self, key: impl Into<Arc<str>>, value: impl Into<T>) -> Self {
+        self.attrs.insert(
+            key.into(),
+            AttrOp::Update {
+                value: value.into(),
+                prev: None,
+            },
+        );
+        self
+    }
 }
 
 impl Delta<In> {
@@ -203,42 +239,6 @@ impl Delta<In> {
             link: Some(link),
             ..Delta::default()
         }
-    }
-
-    /// Appends a single content value insert operation.
-    pub fn insert(mut self, content: impl Into<In>) -> Self {
-        if let Some(Op::Insert { items, format }) = self.children.last_mut() {
-            if format.is_none() {
-                items.push(content.into());
-            }
-        } else {
-            self.children.push(Op::Insert {
-                items: vec![content.into()],
-                format: None,
-            });
-        }
-        self
-    }
-
-    /// Appends a single content value insert operation with formatting attributes.
-    pub fn insert_with(mut self, content: impl Into<In>, format: Attrs) -> Self {
-        self.children.push(Op::Insert {
-            items: vec![content.into()],
-            format: Some(Box::new(format)),
-        });
-        self
-    }
-
-    /// Sets an attribute to the given value.
-    pub fn insert_attr(mut self, key: impl Into<Arc<str>>, value: impl Into<In>) -> Self {
-        self.attrs.insert(
-            key.into(),
-            AttrOp::Update {
-                value: value.into(),
-                prev: None,
-            },
-        );
-        self
     }
 }
 

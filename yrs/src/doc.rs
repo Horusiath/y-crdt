@@ -964,6 +964,7 @@ pub enum OffsetKind {
 mod test {
     use crate::block::{Block, BlockRange, ClientID, ItemContent};
     use crate::error::Error;
+    use crate::out::OutNode;
     use crate::test_utils::{Blocks, exchange_updates};
     use crate::transaction::TransactionMut;
     use crate::update::Update;
@@ -2372,7 +2373,7 @@ mod test {
             delta = delta.insert_text(chunk);
         }
         if let Out::Node(txt) = map.insert_attr("text", In::Node(delta)) {
-            txn.node_mut(txt).unwrap()
+            txn.node_mut(txt.id).unwrap()
         } else {
             unreachable!()
         }

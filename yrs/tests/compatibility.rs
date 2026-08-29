@@ -356,7 +356,7 @@ fn utf32_lib0_v2_decoding() {
     let Out::Node(div) = xml.get(0).unwrap() else {
         panic!("expected a nested node")
     };
-    let div = txn.node(div).unwrap();
+    let div = txn.node(div.id).unwrap();
 
     let expected_attrs = HashMap::from([
         ("b_id", "JXbASa-a92j".to_string()),
@@ -371,7 +371,7 @@ fn utf32_lib0_v2_decoding() {
     let Out::Node(txt) = div.get(0).unwrap() else {
         panic!("expected a nested node")
     };
-    assert_eq!(txn.node(txt).unwrap().to_string(), "在の韩国🇰🇷🇨🇳🇯🇵");
+    assert_eq!(txn.node(txt.id).unwrap().to_string(), "在の韩国🇰🇷🇨🇳🇯🇵");
 }
 
 /// Verify if given `payload` can be deserialized into series

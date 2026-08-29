@@ -317,8 +317,8 @@ fn iter_array_containing_types() {
     let a = txn.node("arr").unwrap();
     for (i, value) in a.iter().enumerate() {
         match value {
-            Out::Node(id) => {
-                let actual = txn.node(id).unwrap().to_json();
+            Out::Node(n) => {
+                let actual = txn.node(n.id).unwrap().to_json();
                 assert_eq!(actual, any!({"value": (i as f64) }))
             }
             _ => panic!("Value of array at index {} was no YMap", i),
@@ -333,7 +333,7 @@ fn insert_and_remove_events() {
     let happened_clone = happened.clone();
     let _sub = {
         let mut txn = d.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |_, _| {
+        txn.node_mut("array").unwrap().observe(move |_| {
             happened_clone.store(true, Ordering::Relaxed);
         })
     };
@@ -369,79 +369,44 @@ fn insert_and_remove_events() {
 #[test]
 fn insert_and_remove_event_changes() {
     let mut d1 = Doc::with_client_id(1);
-    let delta = Arc::new(ArcSwapOption::default());
+    let delta = Cell::new(Delta::out());
 
-    let delta_c = delta.clone();
+    let delta1 = delta.clone();
+    let delta2 = delta.clone();
     let _sub = {
         let mut txn = d1.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |_txn, e| {
-            delta_c.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
-        })
+        txn.node_mut("array")
+            .unwrap()
+            .observe(move |e| *delta1.acquire_mut() = e.delta(false))
     };
 
+    let delta = || delta.acquire().clone();
     {
         let mut txn = d1.transact_mut();
         let mut array = txn.node_mut("array").unwrap();
         array.push_back(4);
         array.push_back("dtrn");
     }
-    // TODO(unified-api): Event::inserts/removes and the `Change` enum not available yet
-    assert_eq!(
-        added.swap(None),
-        Some(HashSet::from([ID::new(ClientID::new(1), 0), ID::new(ClientID::new(1), 1)]).into())
-    );
-    assert_eq!(removed.swap(None), Some(HashSet::new().into()));
-    assert_eq!(
-        delta.swap(None),
-        Some(
-            vec![Change::Added(vec![
-                Any::Number(4.0).into(),
-                Any::String("dtrn".into()).into()
-            ])]
-            .into()
-        )
-    );
+    assert_eq!(delta(), Delta::out().insert(4).insert("dtrn"));
 
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("array").unwrap().remove(0, 1);
     }
-    // TODO(unified-api): Event::inserts/removes and the `Change` enum not available yet
-    assert_eq!(added.swap(None), Some(HashSet::new().into()));
-    assert_eq!(
-        removed.swap(None),
-        Some(HashSet::from([ID::new(ClientID::new(1), 0)]).into())
-    );
-    assert_eq!(delta.swap(None), Some(vec![Change::Removed(1)].into()));
+    assert_eq!(delta(), Delta::out().remove(1).insert("dtrn"));
 
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("array").unwrap().insert(1, 0.5);
     }
-    // TODO(unified-api): Event::inserts/removes and the `Change` enum not available yet
-    assert_eq!(
-        added.swap(None),
-        Some(HashSet::from([ID::new(ClientID::new(1), 2)]).into())
-    );
-    assert_eq!(removed.swap(None), Some(HashSet::new().into()));
-    assert_eq!(
-        delta.swap(None),
-        Some(
-            vec![
-                Change::Retain(1),
-                Change::Added(vec![Any::Number(0.5).into()])
-            ]
-            .into()
-        )
-    );
+    assert_eq!(delta(), Delta::out().retain(1).insert(0.5));
 
     let mut d2 = Doc::with_client_id(2);
-    let delta_c = delta.clone();
     let _sub = {
         let mut txn = d2.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |_txn, e| {
-            delta_c.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
-        })
+        txn.node_mut("array")
+            .unwrap()
+            .observe(move |e| *delta2.acquire_mut() = e.delta(false))
     };
 
     {
@@ -453,22 +418,7 @@ fn insert_and_remove_event_changes() {
         t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
     }
-    // TODO(unified-api): Event::inserts/removes and the `Change` enum not available yet
-    assert_eq!(
-        added.swap(None),
-        Some(HashSet::from([ID::new(ClientID::new(1), 1)]).into())
-    );
-    assert_eq!(removed.swap(None), Some(HashSet::new().into()));
-    assert_eq!(
-        delta.swap(None),
-        Some(
-            vec![Change::Added(vec![
-                Any::String("dtrn".into()).into(),
-                Any::Number(0.5).into(),
-            ])]
-            .into()
-        )
-    );
+    assert_eq!(delta(), Delta::out().insert("dtrn").insert(0.5));
 }
 
 #[test]
@@ -480,7 +430,7 @@ fn target_on_local_and_remote() {
     let c1c = c1.clone();
     let _s1 = {
         let mut txn = d1.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |_, e| {
+        txn.node_mut("array").unwrap().observe(move |e| {
             c1c.store(Some(Arc::new(e.target().id())));
         })
     };
@@ -488,7 +438,7 @@ fn target_on_local_and_remote() {
     let c2c = c2.clone();
     let _s2 = {
         let mut txn = d2.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |_, e| {
+        txn.node_mut("array").unwrap().observe(move |e| {
             c2c.store(Some(Arc::new(e.target().id())));
         })
     };
@@ -507,7 +457,10 @@ use fastrand::Rng;
 use std::sync::atomic::{AtomicI64, Ordering};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Delta, Doc, In, NodeID, Out, StateVector, Update, any};
+use yrs::{
+    Acquire, AcquireMut, Any, Cell, ClientID, Delta, Doc, ID, In, NodeID, Out, StateVector, Update,
+    any,
+};
 
 static UNIQUE_NUMBER: AtomicI64 = AtomicI64::new(0);
 
@@ -550,7 +503,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
             panic!("expected a nested node")
         };
         let expected: Arc<[Any]> = (1..=4).map(|i| Any::Number(i as f64)).collect();
-        assert_eq!(txn.node(array2).unwrap().to_json(), Any::Array(expected));
+        assert_eq!(txn.node(array2.id).unwrap().to_json(), Any::Array(expected));
     }
 
     fn insert_type_map(doc: &mut Doc, rng: &mut Rng) {
@@ -560,7 +513,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let Out::Node(map) = yarray.insert(pos, In::Node(Delta::new())) else {
             panic!("expected a nested node")
         };
-        let mut map = txn.node_mut(map).unwrap();
+        let mut map = txn.node_mut(map.id).unwrap();
         map.insert_attr("someprop", 42);
         map.insert_attr("someprop", 43);
         map.insert_attr("someprop", 44);
@@ -575,7 +528,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
             let del_len = rng.between(1, 2.min(len - pos));
             if rng.bool() {
                 if let Some(Out::Node(array2)) = yarray.get(pos) {
-                    let mut array2 = txn.node_mut(array2).unwrap();
+                    let mut array2 = txn.node_mut(array2.id).unwrap();
                     if array2.len() > 0 {
                         let pos = rng.between(0, array2.len() - 1);
                         let del_len = rng.between(0, 2.min(array2.len() - pos));
@@ -638,7 +591,7 @@ fn observe_deep_event_order() {
 
     let mut txn = doc.transact_mut();
     let mut array = txn.node_mut("array").unwrap();
-    let _sub = array.observe_deep(move |_txn, e| {
+    let _sub = array.observe_deep(move |e| {
         let path: Vec<Path> = e.iter().map(|e| e.path()).collect();
         paths_copy.lock().unwrap().push(path);
     });
@@ -651,7 +604,7 @@ fn observe_deep_event_order() {
         let Some(Out::Node(map)) = txn.node("array").unwrap().get(0) else {
             panic!("expected a nested node")
         };
-        txn.node_mut(map).unwrap().insert_attr("a", "a");
+        txn.node_mut(map.id).unwrap().insert_attr("a", "a");
         txn.node_mut("array").unwrap().insert(0, 0);
     }
 
@@ -668,6 +621,7 @@ fn observe_deep_event_order() {
 fn multi_threading() {
     use std::sync::{Arc, RwLock};
     use std::thread::{sleep, spawn};
+    use std::time::Duration;
 
     let doc = Arc::new(RwLock::new(Doc::with_client_id(1)));
 

@@ -1072,6 +1072,7 @@ mod test {
     use crate::block::{Block, BlockRange, ClientID, Item, ItemContent};
     use crate::encoding::read::Cursor;
     use crate::node::TypePtr;
+    use crate::out::OutNode;
     use crate::update::{BlockSet, Update};
     use crate::updates::decoder::{Decode, DecoderV1};
     use crate::updates::encoder::Encode;
@@ -1250,7 +1251,7 @@ mod test {
             let prosemirror = txn.node("prosemirror").unwrap();
             let linknote = prosemirror.get(0);
             let actual = linknote.and_then(|xml| match xml {
-                Out::Node(elem) => txn.node(elem).unwrap().name().cloned(),
+                Out::Node(elem) => txn.node(elem.id).unwrap().name().cloned(),
                 _ => None,
             });
             assert_eq!(actual, Some("linknote".into()));

@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex};
 use yrs::node::{DeepObservable, Observable, Path, PathSegment};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Delta, Doc, In, NodeRef, Out, StateVector, Transaction, Update, any};
+use yrs::{
+    Acquire, AcquireMut, Any, Cell, Delta, Doc, In, NodeRef, Out, StateVector, Transaction, Update,
+    any,
+};
 
 #[test]
 fn map_basic() {
@@ -312,13 +315,15 @@ fn map_get_set_remove_with_3_way_conflicts() {
 #[test]
 fn insert_and_remove_events() {
     let mut d1 = Doc::with_client_id(1);
-    let entries = Arc::new(ArcSwapOption::default());
-    let entries_c = entries.clone();
+    let delta = Cell::new(Delta::out());
+    let delta1 = delta.clone();
+    let delta2 = delta.clone();
+    let delta = || delta.acquire().clone();
     let _sub = {
         let mut txn = d1.transact_mut();
-        txn.node_mut("map").unwrap().observe(move |_txn, e| {
-            entries_c.store(Some(Arc::new(e.keys_changed())));
-        })
+        txn.node_mut("map")
+            .unwrap()
+            .observe(move |e| *delta1.acquire_mut() = e.delta(false))
     };
 
     // insert new entry
@@ -326,28 +331,14 @@ fn insert_and_remove_events() {
         let mut txn = d1.transact_mut();
         txn.node_mut("map").unwrap().insert_attr("a", 1);
     }
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(
-        entries.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "a".into(),
-            EntryChange::Inserted(Any::Number(1.0).into())
-        )])))
-    );
+    assert_eq!(delta(), Delta::out().insert_attr("a", 1));
 
     // update existing entry once
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("map").unwrap().insert_attr("a", 2);
     }
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(
-        entries.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "a".into(),
-            EntryChange::Updated(Any::Number(1.0).into(), Any::Number(2.0).into())
-        )])))
-    );
+    assert_eq!(delta(), Delta::out().insert_attr("a", 2));
 
     // update existing entry twice
     {
@@ -356,28 +347,14 @@ fn insert_and_remove_events() {
         m1.insert_attr("a", 3);
         m1.insert_attr("a", 4);
     }
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(
-        entries.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "a".into(),
-            EntryChange::Updated(Any::Number(2.0).into(), Any::Number(4.0).into())
-        )])))
-    );
+    assert_eq!(delta(), Delta::out().insert_attr("a", 4));
 
     // remove existing entry
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("map").unwrap().remove_attr("a");
     }
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(
-        entries.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "a".into(),
-            EntryChange::Removed(Any::Number(4.0).into())
-        )])))
-    );
+    assert_eq!(delta(), Delta::out().remove_attr("a"));
 
     // add another entry and update it
     {
@@ -386,14 +363,7 @@ fn insert_and_remove_events() {
         m1.insert_attr("b", 1);
         m1.insert_attr("b", 2);
     }
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(
-        entries.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "b".into(),
-            EntryChange::Inserted(Any::Number(2.0).into())
-        )])))
-    );
+    assert_eq!(delta(), Delta::out().insert_attr("b", 2));
 
     // add and remove an entry
     {
@@ -402,17 +372,15 @@ fn insert_and_remove_events() {
         m1.insert_attr("c", 1);
         m1.remove_attr("c");
     }
-    assert_eq!(entries.swap(None), Some(HashMap::new().into()));
+    assert_eq!(delta(), Delta::out()); // insert->remove == no-op
 
     // copy updates over
     let mut d2 = Doc::with_client_id(2);
-    let entries = Arc::new(ArcSwapOption::default());
-    let entries_c = entries.clone();
     let _sub = {
         let mut txn = d2.transact_mut();
-        txn.node_mut("map").unwrap().observe(move |_txn, e| {
-            entries_c.store(Some(Arc::new(e.keys_changed())));
-        })
+        txn.node_mut("map")
+            .unwrap()
+            .observe(move |e| *delta2.acquire_mut() = e.delta(false))
     };
 
     {
@@ -424,14 +392,7 @@ fn insert_and_remove_events() {
         t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
     }
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(
-        entries.swap(None),
-        Some(Arc::new(HashMap::from([(
-            "b".into(),
-            EntryChange::Inserted(Any::Number(2.0).into())
-        )])))
-    );
+    assert_eq!(delta(), Delta::out().insert_attr("b", 2));
 }
 
 fn map_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 3] {
@@ -485,7 +446,7 @@ fn observe_deep() {
     let calls_copy = calls.clone();
     let _sub = {
         let mut txn = doc.transact_mut();
-        txn.node_mut("map").unwrap().observe_deep(move |_txn, e| {
+        txn.node_mut("map").unwrap().observe_deep(move |e| {
             let path: Vec<Path> = e.iter().map(|e| e.path()).collect();
             paths_copy.lock().unwrap().push(path);
             calls_copy.fetch_add(1, Ordering::Relaxed);
@@ -501,7 +462,7 @@ fn observe_deep() {
         let Out::Node(nested) = out else {
             panic!("expected a nested node")
         };
-        nested
+        nested.id
     };
     let nested2 = {
         let mut txn = doc.transact_mut();
@@ -512,7 +473,7 @@ fn observe_deep() {
         let Out::Node(nested2) = out else {
             panic!("expected a nested node")
         };
-        nested2
+        nested2.id
     };
     {
         let mut txn = doc.transact_mut();
@@ -528,7 +489,7 @@ fn observe_deep() {
         let Out::Node(nested_text) = out else {
             panic!("expected a nested node")
         };
-        nested_text
+        nested_text.id
     };
     {
         let mut txn = doc.transact_mut();
@@ -737,7 +698,7 @@ fn test_delete_not_applied_map() {
         let Out::Node(sub) = txn.node("root").unwrap().attr("sub").unwrap() else {
             panic!("expected a nested node")
         };
-        txn.node_mut(sub).unwrap().insert_attr("x", 1i64); // { sub: { x: 1 } }
+        txn.node_mut(sub.id).unwrap().insert_attr("x", 1i64); // { sub: { x: 1 } }
     }
 
     doc_a

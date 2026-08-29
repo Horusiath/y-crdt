@@ -1,5 +1,6 @@
 use crate::any::AnyArrayIter;
 use crate::json_path::JsonPathToken;
+use crate::out::OutNode;
 use crate::{Any, Doc, JsonPath, JsonPathEval, NodeID, Out, Transaction};
 use std::ops::Deref;
 
@@ -60,8 +61,8 @@ fn slice_iter<'a, D: Deref<Target = Doc>>(
                 iter.skip(from).take(to - from).step_by(by).map(Out::Any),
             ))
         }
-        Some(Out::Node(id)) => {
-            let iter = txn.node(id)?.iter();
+        Some(Out::Node(node)) => {
+            let iter = txn.node(node.id)?.iter();
             Some(Box::new(iter.skip(from).take(to - from).step_by(by)))
         }
         _ => None,
@@ -83,8 +84,8 @@ fn any_iter<'a, D: Deref<Target = Doc>>(
             let iter = any.try_into_iter();
             iter.map(|iter| dyn_iter(iter.map(|(_, v)| Out::Any(v))))
         }
-        Some(Out::Node(id)) => {
-            let node = txn.node(id)?;
+        Some(Out::Node(node)) => {
+            let node = txn.node(node.id)?;
             // a node acts both as an indexed sequence and as a map: if its list component is
             // empty, fall back onto its attributes
             if node.len() != 0 {
@@ -109,13 +110,13 @@ fn member_union_iter<'a, D: Deref<Target = Doc>>(
                 .flat_map(move |key| map.get(*key).cloned().map(Out::Any));
             Some(Box::new(iter))
         }
-        Some(Out::Node(id)) => {
-            let node = txn.node(id)?;
+        Some(Out::Node(node)) => {
+            let node = txn.node(node.id)?;
             let iter = members.into_iter().flat_map(move |key| node.attr(*key));
             Some(Box::new(iter))
         }
         None => {
-            let iter = members.into_iter().map(|key| Out::Node(NodeID::root(*key)));
+            let iter = members.into_iter().map(|key| Out::node(*key));
             Some(Box::new(iter))
         }
         _ => None,
@@ -139,8 +140,8 @@ fn index_union_iter<'a, D: Deref<Target = Doc>>(
             });
             Some(Box::new(iter))
         }
-        Some(Out::Node(id)) => {
-            let node = txn.node(id)?;
+        Some(Out::Node(node)) => {
+            let node = txn.node(node.id)?;
             let len = node.len();
             let iter = indices.into_iter().flat_map(move |i| {
                 let i = if *i < 0 {
@@ -303,9 +304,9 @@ fn get_member<D: Deref<Target = Doc>>(
     key: &str,
 ) -> Option<Out> {
     match out {
-        None => Some(Out::Node(NodeID::root(key))),
+        None => Some(Out::node(key)),
         Some(Out::Any(Any::Map(map))) => map.get(key).map(|any| Out::Any(any.clone())),
-        Some(Out::Node(id)) => txn.node(id.clone())?.attr(key),
+        Some(Out::Node(node)) => txn.node(node.id.clone())?.attr(key),
         _ => None,
     }
 }
@@ -324,8 +325,8 @@ fn get_index<D: Deref<Target = Doc>>(
             } as usize;
             array.get(idx).cloned().map(Out::Any)
         }
-        Some(Out::Node(id)) => {
-            let node = txn.node(id.clone())?;
+        Some(Out::Node(node)) => {
+            let node = txn.node(node.id.clone())?;
             let idx = if idx < 0 {
                 node.len() as i32 + idx
             } else {
@@ -451,7 +452,7 @@ mod test {
         let tx = doc.transact();
         let values: Vec<_> = tx.json_path(&path).collect();
         let expected = tx.node("users").unwrap().id();
-        assert_eq!(values, vec![Out::Node(expected)]);
+        assert_eq!(values, vec![Out::node(expected)]);
     }
 
     #[test]

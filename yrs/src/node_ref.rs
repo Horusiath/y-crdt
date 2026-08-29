@@ -176,7 +176,7 @@ where
     }
 
     /// Returns a delta representation of this type's contents.
-    pub fn to_delta(&self, options: &DeltaOptions) -> Vec<Delta> {
+    pub fn delta(&self, options: &DeltaOptions) -> Delta {
         todo!()
     }
 }
@@ -464,7 +464,7 @@ impl Cursor {
                 Some(Out::Doc(options.guid.clone()))
             }
             ItemContent::Embed(value) if self.offset == 0 => Some(Out::Any(value.clone())),
-            ItemContent::Node(node) if self.offset == 0 => Some(Out::Node(node.id())),
+            ItemContent::Node(node) if self.offset == 0 => Some(Out::node(node.id())),
             _ => None,
         }
     }
