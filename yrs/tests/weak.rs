@@ -1,17 +1,18 @@
-use std::collections::{Bound, HashMap};
+use std::collections::Bound;
 use std::ops::{Deref, RangeBounds};
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwapOption;
 use yrs::node::{Attrs, DeepObservable, Observable};
 use yrs::test_utils::exchange_updates;
-use yrs::{Delta, Doc, NodeID, NodeRef, Out, Transaction};
+use yrs::{AcquireMut, AttrOp, Cell, Delta, Doc, NodeID, NodeRef, Out, Transaction};
 
 /// Renders `value`, resolving nested nodes through `txn`.
 fn stringify<D: Deref<Target = Doc>>(txn: &Transaction<D>, value: &Out) -> String {
     match value {
-        Out::Node(n) => txn.node(n.id).unwrap().to_string(),
-        other => other.to_string(),
+        Out::Node(n) => txn.node(n.id.clone()).unwrap().to_string(),
+        Out::Any(any) => any.to_string(),
+        Out::Doc(guid) => guid.to_string(),
     }
 }
 
@@ -362,13 +363,13 @@ fn observe_map_update() {
         m1.insert_attr("b", Delta::link(link1)).node_id().unwrap()
     };
 
-    let target1 = Arc::new(ArcSwapOption::default());
+    let target1 = Cell::new(None);
     let _sub1 = {
         let target = target1.clone();
         let txn = d1.transact();
         txn.node(link1.clone())
             .unwrap()
-            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| *target.acquire_mut() = Some(e.target().id()))
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -383,13 +384,13 @@ fn observe_map_update() {
         .unwrap();
     assert_eq!(deref(&d2, &link2), Some("value".into()));
 
-    let target2 = Arc::new(ArcSwapOption::default());
+    let target2 = Cell::new(None);
     let _sub2 = {
         let target = target2.clone();
         let txn = d2.transact();
         txn.node(link2.clone())
             .unwrap()
-            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
+            .observe(move |e| *target.acquire_mut() = Some(e.target().id()))
     };
 
     d1.transact_mut()
@@ -651,7 +652,7 @@ fn deep_observe_map() {
         txn.node_mut("map").unwrap().observe_deep(move |e| {
             let mut rs = events.lock().unwrap();
             for e in e.iter() {
-                rs.push((e.target().id(), e.keys_changed()));
+                rs.push((e.target().id(), e.delta(false)));
             }
         })
     };
@@ -681,16 +682,9 @@ fn deep_observe_map() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            Out::YMap(nested.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Inserted("value".into())
-            )]))
-        )]
+        vec![(nested.clone(), Delta::out().insert_attr("key", "value"))]
     );
 
     // delete entry in linked map
@@ -702,16 +696,9 @@ fn deep_observe_map() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            Out::YMap(nested.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Removed("value".into())
-            )]))
-        )]
+        vec![(nested.clone(), Delta::out().remove_attr("key"),)]
     );
 
     // delete linked map
@@ -720,8 +707,7 @@ fn deep_observe_map() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(actual, vec![(Out::YWeakLink(link.into_inner()), None)]);
+    assert_eq!(actual, vec![(link.clone(), Delta::out())]);
 }
 
 #[test]
@@ -756,10 +742,10 @@ fn deep_observe_array() {
     let _sub = {
         let events = events.clone();
         let mut txn = doc.transact_mut();
-        txn.node_mut("array").unwrap().observe_deep(move |_txn, e| {
+        txn.node_mut("array").unwrap().observe_deep(move |e| {
             let mut events = events.lock().unwrap();
             for e in e.iter() {
-                events.push((e.target().id(), e.keys_changed()));
+                events.push((e.target().id(), e.delta(false)));
             }
         })
     };
@@ -771,16 +757,9 @@ fn deep_observe_array() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            Out::YMap(nested.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Inserted("value".into())
-            )]))
-        )]
+        vec![(nested.clone(), Delta::out().insert_attr("key", "value"))]
     );
 
     // update existing entry
@@ -792,16 +771,9 @@ fn deep_observe_array() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            Out::YMap(nested.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Updated("value".into(), "value2".into())
-            )]))
-        )]
+        vec![(nested.clone(), Delta::out().insert_attr("key", "value2"),)]
     );
 
     // delete entry in linked map
@@ -813,16 +785,9 @@ fn deep_observe_array() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            Out::YMap(nested.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Removed("value2".into())
-            )]))
-        )]
+        vec![(nested.clone(), Delta::out().remove_attr("key"))]
     );
 
     // delete linked map
@@ -834,8 +799,7 @@ fn deep_observe_array() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
-    assert_eq!(actual, vec![(Out::YWeakLink(link.into_inner()), None)]);
+    assert_eq!(actual, vec![(link.clone(), Delta::out())]);
 }
 
 #[test]
@@ -864,11 +828,11 @@ fn deep_observe_new_element_within_quoted_range() {
     let _s1 = {
         let events = e1.clone();
         let txn = d1.transact();
-        txn.node(l1).unwrap().observe_deep(move |_txn, e| {
+        txn.node(l1).unwrap().observe_deep(move |e| {
             let mut events = events.lock().unwrap();
             events.clear();
             for e in e.iter() {
-                events.push((e.target().id(), e.keys_changed()));
+                events.push((e.target().id(), e.delta(false)));
             }
         })
     };
@@ -885,11 +849,11 @@ fn deep_observe_new_element_within_quoted_range() {
     let _s2 = {
         let events = e2.clone();
         let txn = d2.transact();
-        txn.node(l2).unwrap().observe_deep(move |_txn, e| {
+        txn.node(l2).unwrap().observe_deep(move |e| {
             let mut events = events.lock().unwrap();
             events.clear();
             for e in e.iter() {
-                events.push((e.target().id(), e.keys_changed()));
+                events.push((e.target().id(), e.delta(false)));
             }
         })
     };
@@ -906,16 +870,9 @@ fn deep_observe_new_element_within_quoted_range() {
         .node_mut(m20.clone())
         .unwrap()
         .insert_attr("key", "value");
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         &*e1.lock().unwrap(),
-        &vec![(
-            Out::YMap(m20.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Inserted("value".into())
-            )]))
-        )]
+        &vec![(m20.clone(), Delta::out().insert_attr("key", "value"))]
     );
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -928,16 +885,9 @@ fn deep_observe_new_element_within_quoted_range() {
         .unwrap()
         .node_id()
         .unwrap();
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         &*e2.lock().unwrap(),
-        &vec![(
-            Out::YMap(m21.clone()),
-            Some(HashMap::from([(
-                Arc::from("key"),
-                EntryChange::Inserted("value".into())
-            )]))
-        )]
+        &vec![(m21.clone(), Delta::out().insert_attr("key", "value"))]
     );
 }
 
@@ -987,10 +937,10 @@ fn deep_observe_recursive() {
     let _sub = {
         let events = events.clone();
         let mut txn = doc.transact_mut();
-        txn.node_mut(m0).unwrap().observe_deep(move |_txn, e| {
+        txn.node_mut(m0).unwrap().observe_deep(move |e| {
             let mut rs = events.lock().unwrap();
             for e in e.iter() {
-                rs.push((e.target().id(), e.keys_changed()));
+                rs.push((e.target().id(), e.delta(false)));
             }
         })
     };
@@ -1003,16 +953,9 @@ fn deep_observe_recursive() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            m1.clone(),
-            HashMap::from([(
-                Arc::from("test-key1"),
-                EntryChange::Inserted("value1".into())
-            )])
-        )]
+        vec![(m1.clone(), Delta::out().insert_attr("test-key1", "value"))]
     );
 
     doc.transact_mut()
@@ -1023,16 +966,9 @@ fn deep_observe_recursive() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            m2.clone(),
-            HashMap::from([(
-                Arc::from("test-key2"),
-                EntryChange::Inserted("value2".into())
-            )])
-        )]
+        vec![(m2.clone(), Delta::out().insert_attr("test-key2", "value2"))]
     );
 
     doc.transact_mut()
@@ -1043,16 +979,9 @@ fn deep_observe_recursive() {
         let mut guard = events.lock().unwrap();
         std::mem::take(&mut *guard)
     };
-    // TODO(unified-api): Event::keys/EntryChange not available yet
     assert_eq!(
         actual,
-        vec![(
-            m1.clone(),
-            HashMap::from([(
-                Arc::from("test-key1"),
-                EntryChange::Removed("value1".into())
-            )])
-        )]
+        vec![(m1.clone(), Delta::out().remove_attr("test-key1"))]
     );
 }
 

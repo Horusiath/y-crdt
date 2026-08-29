@@ -364,8 +364,13 @@ fn utf32_lib0_v2_decoding() {
         ("tagName", "div".to_string()),
         ("lineHeight", "".to_string()),
     ]);
-    let actual_attrs: HashMap<&str, String> =
-        div.attrs().map(|(k, v)| (k, v.to_string())).collect();
+    let actual_attrs: HashMap<&str, String> = div
+        .attrs()
+        .filter_map(|(k, v)| match v {
+            Out::Any(v) => Some((k, v.to_string())),
+            _ => None,
+        })
+        .collect();
     assert_eq!(actual_attrs, expected_attrs);
 
     let Out::Node(txt) = div.get(0).unwrap() else {
