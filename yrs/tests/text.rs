@@ -1,15 +1,13 @@
-use arc_swap::ArcSwapOption;
 use fastrand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use yrs::node::{Attrs, Observable};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Acquire, AcquireMut, Any, Cell, ClientID, Delta, DeltaOptions, Doc, In, OffsetKind, Options,
-    Out, Snapshot, StateVector, Update, any,
+    Acquire, AcquireMut, Any, Cell, ClientID, Delta, DeltaOptions, Doc, IdSet, In, OffsetKind, Op,
+    Options, Out, Snapshot, StateVector, Update, any,
 };
 
 #[test]
@@ -450,7 +448,6 @@ fn insert_and_remove_event_changes() {
 
     // replicate data to another peer
     let mut d2 = Doc::with_client_id(2);
-    let delta_c = delta.clone();
     let _sub = {
         let mut txn = d2.transact_mut();
         txn.node_mut("text")
@@ -683,66 +680,53 @@ fn basic_format() {
 fn embed_with_attributes() {
     let mut d1 = Doc::with_client_id(1);
 
-    let delta1 = Arc::new(ArcSwapOption::default());
+    let delta1 = Cell::new(Delta::out());
     let delta_clone = delta1.clone();
     let _sub1 = {
         let mut txn = d1.transact_mut();
-        txn.node_mut("text").unwrap().observe(move |e| {
-            delta_clone.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
-        })
+        txn.node_mut("text")
+            .unwrap()
+            .observe(move |e| *delta_clone.acquire_mut() = e.delta(true))
     };
 
     let a1: Attrs = HashMap::from([("bold".into(), true.into())]);
+    let a2: Attrs = HashMap::from([("width".into(), Any::Number(100.0))]);
     let embed = any!({
         "image": "imageSrc.png"
     });
+    let expected = Delta::out()
+        .insert_text_with("a", a1.clone())
+        .insert_with(embed.clone(), a2.clone())
+        .insert_text_with("b", a1.clone());
 
     let (update_v1, update_v2) = {
         let mut txn = d1.transact_mut();
-        let a2: Attrs = HashMap::from([("width".into(), Any::Number(100.0))]);
         let mut txt1 = txn.node_mut("text").unwrap();
         txt1.insert_text_with(0, "ab", a1.clone());
-        txt1.apply_delta([Delta::new()
-            .retain(1)
-            .insert_with(embed.clone(), a2.clone())]);
-
-        // TODO(unified-api): Text::diff/Diff and the `Delta` event enum are not available yet
-        let a1 = Some(Box::new(a1.clone()));
-        let a2 = Some(Box::new(a2.clone()));
-        let expected = Some(Arc::new(vec![
-            Delta::Inserted("a".into(), a1.clone()),
-            Delta::Inserted(embed.clone().into(), a2.clone()),
-            Delta::Inserted("b".into(), a1.clone()),
-        ]));
-        assert_eq!(delta1.swap(None), expected);
-        let expected = vec![
-            Diff::new("a".into(), a1.clone()),
-            Diff::new(embed.clone().into(), a2),
-            Diff::new("b".into(), a1.clone()),
-        ];
-        assert_eq!(txt1.diff(&mut txn, YChange::identity), expected);
+        txt1.apply_delta([Delta::new().retain(1).insert_with(embed.clone(), a2)]);
+        assert_eq!(txt1.delta(&DeltaOptions::default()), expected);
 
         let update_v1 = txn.encode_state_as_update_v1(&StateVector::default());
         let update_v2 = txn.encode_state_as_update_v2(&StateVector::default());
         (update_v1, update_v2)
     };
+    assert_eq!(&*delta1.acquire(), &expected);
 
     let mut d2 = Doc::new();
     {
         let mut txn = d2.transact_mut();
-        let update = Update::decode_v1(&update_v1).unwrap();
-        txn.apply_update(update).unwrap();
-        // TODO(unified-api): Text::diff/Diff are not available yet
-        assert_eq!(txt2.diff(txn, YChange::identity), expected);
+        txn.apply_update(Update::decode_v1(&update_v1).unwrap())
+            .unwrap();
+        let actual = txn.node("text").unwrap().delta(&DeltaOptions::default());
+        assert_eq!(actual, expected);
     }
 
     let mut d3 = Doc::new();
     {
         let mut txn = d3.transact_mut();
-        let update = Update::decode_v2(&update_v2).unwrap();
-        txn.apply_update(update).unwrap();
-        // TODO(unified-api): Text::diff/Diff are not available yet
-        let actual = txt3.diff(txn, YChange::identity);
+        txn.apply_update(Update::decode_v2(&update_v2).unwrap())
+            .unwrap();
+        let actual = txn.node("text").unwrap().delta(&DeltaOptions::default());
         assert_eq!(actual, expected);
     }
 }
@@ -750,7 +734,7 @@ fn embed_with_attributes() {
 #[test]
 fn issue_101() {
     let mut d1 = Doc::with_client_id(1);
-    let delta = Arc::new(ArcSwapOption::default());
+    let delta = Cell::new(Delta::out());
     let delta_copy = delta.clone();
 
     let attrs: Attrs = HashMap::from([("bold".into(), true.into())]);
@@ -762,21 +746,18 @@ fn issue_101() {
 
     let _sub = {
         let txn = d1.transact();
-        txn.node("text").unwrap().observe(move |e| {
-            delta_copy.store(Some(Arc::new(e.delta(()).collect::<Vec<_>>())));
-        })
+        txn.node("text")
+            .unwrap()
+            .observe(move |e| *delta_copy.acquire_mut() = e.delta(false))
     };
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("text").unwrap().format(1, 2, attrs.clone());
     }
-    // TODO(unified-api): the `Delta` event enum is not available yet
-    let expected = Arc::new(vec![
-        Delta::Retain(1, None),
-        Delta::Retain(2, Some(Box::new(attrs))),
-    ]);
-    let actual = delta.load_full();
-    assert_eq!(actual, Some(expected));
+    assert_eq!(
+        &*delta.acquire(),
+        &Delta::out().retain(1).retain_with(2, attrs)
+    );
 }
 
 #[test]
@@ -797,13 +778,11 @@ fn yrs_delete() {
     {
         let mut txn = doc.transact_mut();
         txn.node_mut("content").unwrap().insert_text(0, text1);
-        txn.commit();
     }
 
     {
         let mut txn = doc.transact_mut();
         txn.node_mut("content").unwrap().insert_text(100, text2);
-        txn.commit();
     }
 
     {
@@ -811,19 +790,20 @@ fn yrs_delete() {
         let c2 = text2.chars().count();
         let count = c1 as u32 + c2 as u32;
 
-        // TODO(unified-api): the `Delta` event enum is not available yet
-        let _observer =
-            text.observe(move |txn, edit| assert_eq!(edit.delta(txn)[0], Delta::Deleted(count)));
+        let delta = Cell::new(Delta::out());
+        let delta_copy = delta.clone();
         let _observer = {
             let txn = doc.transact();
-            txn.node("content").unwrap().observe(move |e| {
-                e.delta(()).for_each(drop);
-            })
+            txn.node("content")
+                .unwrap()
+                .observe(move |e| *delta_copy.acquire_mut() = e.delta(false))
         };
 
-        let mut txn = doc.transact_mut();
-        txn.node_mut("content").unwrap().remove(0, count);
-        txn.commit();
+        {
+            let mut txn = doc.transact_mut();
+            txn.node_mut("content").unwrap().remove(0, count);
+        }
+        assert_eq!(&*delta.acquire(), &Delta::out().remove(count));
     }
 
     assert_eq!(doc.transact().node("content").unwrap().to_string(), "");
@@ -839,13 +819,10 @@ fn text_diff_adjacent() {
     let attrs2 = Attrs::from([("a".into(), "a".into()), ("b".into(), "b".into())]);
     txt.insert_text_with(3, "def", attrs2.clone());
 
-    // TODO(unified-api): Text::diff/Diff are not available yet
-    let diff = txt.diff(&mut txn, YChange::identity);
-    let expected = vec![
-        Diff::new("abc".into(), Some(Box::new(attrs1))),
-        Diff::new("def".into(), Some(Box::new(attrs2))),
-    ];
-    assert_eq!(diff, expected);
+    let expected = Delta::out()
+        .insert_text_with("abc", attrs1)
+        .insert_text_with("def", attrs2);
+    assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
 #[test]
@@ -978,13 +955,11 @@ fn insert_string_with_no_attribute() {
     txt.insert_text_with(0, "ac", attrs.clone());
     txt.insert_text_with(1, "b", Attrs::new());
 
-    // TODO(unified-api): Text::diff/Diff are not available yet
-    let expect = vec![
-        Diff::new("a".into(), Some(Box::new(attrs.clone()))),
-        Diff::new("b".into(), None),
-        Diff::new("c".into(), Some(Box::new(attrs.clone()))),
-    ];
-    assert!(txt.diff(&mut txn, YChange::identity).eq(&expect))
+    let expected = Delta::out()
+        .insert_text_with("a", attrs.clone())
+        .insert_text("b")
+        .insert_text_with("c", attrs);
+    assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
 #[test]
@@ -1015,38 +990,23 @@ fn insert_empty_string_with_attributes() {
 #[test]
 fn snapshots() {
     let mut doc = Doc::with_client_id(1);
-    doc.transact_mut()
-        .node_mut("text")
-        .unwrap()
-        .insert_text(0, "hello");
-    let _prev = doc.transact_mut().snapshot();
-    doc.transact_mut()
-        .node_mut("text")
-        .unwrap()
-        .insert_text(5, " world");
-    let _next = doc.transact_mut().snapshot();
+    let mut txn = doc.transact_mut();
+    txn.node_mut("text").unwrap().insert_text(0, "hello");
+    let prev = txn.snapshot();
+    txn.node_mut("text").unwrap().insert_text(5, " world");
+    let next = txn.snapshot();
+    drop(txn);
 
-    // TODO(unified-api): Text::diff_range/YChange are not available yet
-    let diff = text.diff_range(
-        &mut doc.transact_mut(),
-        Some(&next),
-        Some(&prev),
-        YChange::identity,
-    );
-    assert_eq!(
-        diff,
-        vec![
-            Diff::new("hello".into(), None),
-            Diff::with_change(
-                " world".into(),
-                None,
-                Some(YChange::new(
-                    ChangeKind::Added,
-                    ID::new(ClientID::new(1), 5)
-                ))
-            )
-        ]
-    )
+    let txn = doc.transact();
+    let text = txn.node("text").unwrap();
+    let diff = text.delta(&DeltaOptions {
+        retain_inserts: true,
+        retain_deletes: false,
+        deep: false,
+        items_to_render: Some(IdSet::from(next.state_map).diff(&IdSet::from(prev.state_map))),
+        deleted_items: Some(next.delete_set.diff(&prev.delete_set)),
+    });
+    assert_eq!(diff, Delta::out().retain(5).insert_text(" world"))
 }
 
 #[test]
@@ -1062,21 +1022,16 @@ fn diff_with_embedded_items() {
     text.format(6, 5, bold.clone()); // "<i>hello <b>world</b></i>"
     let image = Any::Buffer(vec![0, 0, 0, 0].into());
     text.insert(5, image.clone()); // insert binary after "hello"
-    text.insert(5, In::Node(Delta::new())); // insert array ref after "hello"
+    let array = text.insert(5, In::Node(Delta::new())); // insert array ref after "hello"
 
-    // TODO(unified-api): Text::diff/Diff are not available yet
     let italic_and_bold = Attrs::from([("b".into(), true.into()), ("i".into(), true.into())]);
-    let chunks = text.diff(&txn, YChange::identity);
-    assert_eq!(
-        chunks,
-        vec![
-            Diff::new("hello".into(), Some(Box::new(italic.clone()))),
-            Diff::new(Out::YArray(array), Some(Box::new(italic.clone()))),
-            Diff::new(image.into(), Some(Box::new(italic.clone()))),
-            Diff::new(" ".into(), Some(Box::new(italic))),
-            Diff::new("world".into(), Some(Box::new(italic_and_bold))),
-        ]
-    );
+    let expected = Delta::out()
+        .insert_text_with("hello", italic.clone())
+        .insert_with(array, italic.clone())
+        .insert_with(image, italic.clone())
+        .insert_text_with(" ", italic)
+        .insert_text_with("world", italic_and_bold);
+    assert_eq!(text.delta(&DeltaOptions::default()), expected);
 }
 
 #[test]
@@ -1084,6 +1039,7 @@ fn diff_with_embedded_items() {
 fn multi_threading() {
     use std::sync::{Arc, RwLock};
     use std::thread::{sleep, spawn};
+    use std::time::Duration;
 
     let doc = Arc::new(RwLock::new(Doc::with_client_id(1)));
 
@@ -1133,18 +1089,13 @@ fn multiline_format() {
         .retain(1) // newline character
         .retain_with(10, bold.clone())]);
 
-    // TODO(unified-api): Text::diff/Diff are not available yet
-    let delta = txt.diff(&txn, YChange::identity);
-    assert_eq!(
-        delta,
-        vec![
-            Diff::new("Test".into(), bold.clone()),
-            Diff::new("\n".into(), None),
-            Diff::new("Multi-line".into(), bold.clone()),
-            Diff::new("\n".into(), None),
-            Diff::new("Formatting".into(), bold),
-        ]
-    );
+    let expected = Delta::out()
+        .insert_text_with("Test", bold.clone())
+        .insert_text("\n")
+        .insert_text_with("Multi-line", bold.clone())
+        .insert_text("\n")
+        .insert_text_with("Formatting", bold);
+    assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
 #[test]
@@ -1161,28 +1112,20 @@ fn delta_with_embeds() {
         In::Any(any) => Out::Any(any),
         _ => unreachable!(),
     });
-    assert_eq!(txt.delta(&DeltaOptions::default()), vec![expected]);
+    assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
 #[test]
 fn delta_with_shared_ref() {
     let mut d1 = Doc::with_client_id(1);
 
-    let triggered = Arc::new(AtomicBool::new(false));
+    let delta = Cell::new(Delta::out());
+    let delta_copy = delta.clone();
     let _sub = {
-        let triggered = triggered.clone();
         let mut txn = d1.transact_mut();
-        txn.node_mut("text").unwrap().observe(move |e| {
-            // TODO(unified-api): the `Delta` event enum and Out::cast are not available yet
-            let delta = e.delta(txn).to_vec();
-            let d: MapRef = match &delta[0] {
-                Delta::Inserted(insert, _) => insert.clone().cast().unwrap(),
-                _ => unreachable!("unexpected delta"),
-            };
-            assert_eq!(d.get(txn, "key").unwrap(), Out::Any("val".into()));
-            e.delta(()).for_each(drop);
-            triggered.store(true, Ordering::Relaxed);
-        })
+        txn.node_mut("text")
+            .unwrap()
+            .observe(move |e| *delta_copy.acquire_mut() = e.delta(true))
     };
 
     let update = {
@@ -1190,30 +1133,36 @@ fn delta_with_shared_ref() {
         txn1.node_mut("text")
             .unwrap()
             .apply_delta([Delta::new().insert(In::Node(Delta::new().insert_attr("key", "val")))]);
-        let update = txn1.encode_update_v1();
-        update
+        txn1.encode_update_v1()
     };
-    // TODO(unified-api): Text::diff and Out::cast are not available yet
-    let delta = txt1.diff(&txn1, YChange::identity);
-    let d: MapRef = delta[0].insert.clone().cast().unwrap();
-    assert_eq!(d.get(&txn1, "key").unwrap(), Out::Any("val".into()));
 
-    assert!(triggered.load(Ordering::Relaxed), "fired event");
+    // the embedded node is reachable and carries its attributes
+    let embedded_attr = |doc: &Doc| {
+        let txn = doc.transact();
+        let id = txn.node("text").unwrap().get(0).unwrap().node_id().unwrap();
+        txn.node(id).unwrap().attr("key")
+    };
+    assert_eq!(embedded_attr(&d1), Some(Out::Any("val".into())));
+
+    let id = d1
+        .transact()
+        .node("text")
+        .unwrap()
+        .get(0)
+        .unwrap()
+        .node_id()
+        .unwrap();
+    let expected = Delta::out().insert(Out::node_with_delta(
+        id,
+        Delta::out().insert_attr("key", "val"),
+    ));
+    assert_eq!(&*delta.acquire(), &expected, "fired event");
 
     let mut d2 = Doc::with_client_id(2);
-    {
-        let mut txn2 = d2.transact_mut();
-        txn2.apply_update(Update::decode_v1(&update).unwrap())
-            .unwrap();
-    }
-    // TODO(unified-api): Text::diff and Out::cast are not available yet
-    let delta = txt2.diff(&d2.transact(), YChange::identity);
-    assert_eq!(delta.len(), 1);
-    let d: MapRef = delta[0].insert.clone().cast().unwrap();
-    assert_eq!(
-        d.get(&d2.transact(), "key").unwrap(),
-        Out::Any("val".into())
-    );
+    d2.transact_mut()
+        .apply_update(Update::decode_v1(&update).unwrap())
+        .unwrap();
+    assert_eq!(embedded_attr(&d2), Some(Out::Any("val".into())));
 }
 
 #[test]
@@ -1227,58 +1176,48 @@ fn delta_snapshots() {
     txn.node_mut("text")
         .unwrap()
         .apply_delta([Delta::new().insert_text("abcd")]);
-    let _snapshot1 = txn.snapshot(); // 'abcd'
+    let snapshot1 = txn.snapshot(); // 'abcd'
     txn.node_mut("text")
         .unwrap()
         .apply_delta([Delta::new().retain(1).insert_text("x").remove(1)]);
-    let _snapshot2 = txn.snapshot(); // 'axcd'
+    let snapshot2 = txn.snapshot(); // 'axcd'
     txn.node_mut("text").unwrap().apply_delta([Delta::new()
         .retain(2) // ax^cd
         .remove(1) // ax^d
         .insert_text("x") // axx^d
         .remove(1)]); // axx^
+    drop(txn);
 
-    // TODO(unified-api): Text::diff_range/YChange/ChangeKind are not available yet
-    let state1 = txt.diff_range(&mut txn, Some(&snapshot1), None, YChange::identity);
-    assert_eq!(state1, vec![Diff::new("abcd".into(), None)]);
-    let state2 = txt.diff_range(&mut txn, Some(&snapshot2), None, YChange::identity);
-    assert_eq!(state2, vec![Diff::new("axcd".into(), None)]);
-    let state2_diff = txt.diff_range(
-        &mut txn,
-        Some(&snapshot2),
-        Some(&snapshot1),
-        YChange::identity,
-    );
+    let delta_opts = |to: &Snapshot, from: Option<&Snapshot>| {
+        let mut ins = IdSet::from(to.state_map.clone());
+        let mut del = to.delete_set.clone();
+        if let Some(from) = from {
+            ins = ins.diff(&IdSet::from(from.state_map.clone()));
+            del = del.diff(&from.delete_set);
+        }
+        DeltaOptions {
+            retain_inserts: false,
+            retain_deletes: false,
+            deep: true,
+            items_to_render: Some(ins),
+            deleted_items: Some(del),
+        }
+    };
+
+    let txn = doc.transact();
+    let txt = txn.node("text").unwrap();
+    let state1 = txt.delta(&delta_opts(&snapshot1, None));
+    assert_eq!(state1, Delta::out().insert_text("abcd"));
+    let state2 = txt.delta(&delta_opts(&snapshot2, None));
+    assert_eq!(state2, Delta::out().insert_text("axcd"));
+    let state2_diff = txt.delta(&delta_opts(&snapshot1, Some(&snapshot2)));
     assert_eq!(
         state2_diff,
-        vec![
-            Diff {
-                insert: "a".into(),
-                attributes: None,
-                ychange: None
-            },
-            Diff {
-                insert: "x".into(),
-                attributes: None,
-                ychange: Some(YChange {
-                    kind: ChangeKind::Added,
-                    id: ID::new(ClientID::new(1), 4)
-                })
-            },
-            Diff {
-                insert: "b".into(),
-                attributes: None,
-                ychange: Some(YChange {
-                    kind: ChangeKind::Removed,
-                    id: ID::new(ClientID::new(1), 1)
-                })
-            },
-            Diff {
-                insert: "cd".into(),
-                attributes: None,
-                ychange: None
-            }
-        ]
+        Delta::out()
+            .insert_text("a")
+            .insert_text("x") // added
+            .insert_text("b") // removed
+            .insert_text("cd"),
     );
 }
 
@@ -1293,14 +1232,20 @@ fn snapshot_delete_after() {
     txn.node_mut("text")
         .unwrap()
         .apply_delta([Delta::new().insert_text("abcd")]);
-    let _snapshot1 = txn.snapshot();
-    txn.node_mut("text")
-        .unwrap()
-        .apply_delta([Delta::new().retain(4).insert_text("e")]);
+    let snapshot1 = txn.snapshot();
+    let mut text = txn.node_mut("text").unwrap();
+    text.apply_delta([Delta::new().retain(4).insert_text("e")]);
 
-    // TODO(unified-api): Text::diff_range/YChange are not available yet
-    let state1 = txt.diff_range(&mut txn, Some(&snapshot1), None, YChange::identity);
-    assert_eq!(state1, vec![Diff::new("abcd".into(), None)]);
+    // TODO(unified-api): snapshot-scoped rendering (`Text::diff_range`) has no `DeltaOptions`
+    // equivalent yet - `items_to_render`/`deleted_items` take an `IdSet`, not a `Snapshot`.
+    let state1 = text.delta(&DeltaOptions {
+        retain_inserts: false,
+        retain_deletes: false,
+        deep: false,
+        items_to_render: Some(IdSet::from(snapshot1.state_map)),
+        deleted_items: Some(snapshot1.delete_set),
+    });
+    assert_eq!(state1, Delta::out().insert_text("abcd"));
 }
 
 #[test]
@@ -1362,18 +1307,26 @@ fn partially_synced(total: usize, synced: usize) -> (Doc, Snapshot) {
 /// Renders history on a peer that has not caught up to the snapshot, so the clock
 /// held by the snapshot is out of range for the local block list.
 fn assert_partial_history(total: usize, synced: usize) {
-    // TODO(unified-api): Text::diff_range/YChange are not available yet
     let (mut local, snapshot) = partially_synced(total, synced);
 
     let mut txn = local.transact_mut();
     let txt = txn.node_mut("text").unwrap();
 
-    let diff = txt.diff_range(&mut txn, Some(&snapshot), None, YChange::identity);
+    // TODO(unified-api): snapshot-scoped rendering (`Text::diff_range`) has no `DeltaOptions`
+    // equivalent yet - `items_to_render`/`deleted_items` take an `IdSet`, not a `Snapshot`.
+    let diff = txt.delta(&DeltaOptions {
+        retain_inserts: false,
+        retain_deletes: false,
+        deep: false,
+        items_to_render: Some(snapshot.state_map.into()),
+        deleted_items: Some(snapshot.delete_set),
+    });
     let text: String = diff
+        .children
         .iter()
-        .map(|d| match &d.insert {
-            Out::Any(Any::String(s)) => s.to_string(),
-            other => panic!("unexpected chunk {:?}", other),
+        .map(|op| match op {
+            Op::InsertText { text, format } => text.clone(),
+            _ => unreachable!(),
         })
         .collect();
     assert_eq!(text, "a".repeat(synced));

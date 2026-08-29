@@ -648,7 +648,7 @@ fn deep_observe_map() {
     let _sub = {
         let events = events.clone();
         let mut txn = doc.transact_mut();
-        txn.node_mut("map").unwrap().observe_deep(move |_txn, e| {
+        txn.node_mut("map").unwrap().observe_deep(move |e| {
             let mut rs = events.lock().unwrap();
             for e in e.iter() {
                 rs.push((e.target().id(), e.keys_changed()));

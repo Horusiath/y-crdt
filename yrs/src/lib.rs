@@ -661,7 +661,7 @@ pub use crate::alt::{
 pub use crate::any::Any;
 pub use crate::block::ClientID;
 pub use crate::block::ID;
-pub use crate::delta::Delta;
+pub use crate::delta::{AttrOp, Delta, Op};
 pub use crate::doc::Doc;
 pub use crate::doc::OffsetKind;
 pub use crate::doc::Options;

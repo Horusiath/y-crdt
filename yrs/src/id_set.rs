@@ -6,7 +6,7 @@ use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::updates::decoder::{Decode, Decoder};
 use crate::updates::encoder::{Encode, Encoder};
-use crate::{Doc, Transaction};
+use crate::{Doc, StateVector, Transaction};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
@@ -218,6 +218,16 @@ impl<'a> DoubleEndedIterator for RangesIter<'a> {
 }
 
 impl<'a> ExactSizeIterator for RangesIter<'a> {}
+
+impl From<StateVector> for IdSet {
+    fn from(value: StateVector) -> Self {
+        let mut set = IdSet::new();
+        for (&client, &clock) in value.iter() {
+            set.insert(ID::new(client, 0), clock);
+        }
+        set
+    }
+}
 
 impl IdSet {
     pub fn new() -> Self {
