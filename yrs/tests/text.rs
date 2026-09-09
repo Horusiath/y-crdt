@@ -1003,6 +1003,7 @@ fn snapshots() {
         retain_inserts: true,
         retain_deletes: false,
         deep: false,
+        link_depth: 0,
         items_to_render: Some(IdSet::from(next.state_map).diff(&IdSet::from(prev.state_map))),
         deleted_items: Some(next.delete_set.diff(&prev.delete_set)),
     });
@@ -1199,6 +1200,7 @@ fn delta_snapshots() {
             retain_inserts: false,
             retain_deletes: false,
             deep: true,
+            link_depth: 0,
             items_to_render: Some(ins),
             deleted_items: Some(del),
         }
@@ -1242,6 +1244,7 @@ fn snapshot_delete_after() {
         retain_inserts: false,
         retain_deletes: false,
         deep: false,
+        link_depth: 0,
         items_to_render: Some(IdSet::from(snapshot1.state_map)),
         deleted_items: Some(snapshot1.delete_set),
     });
@@ -1318,6 +1321,7 @@ fn assert_partial_history(total: usize, synced: usize) {
         retain_inserts: false,
         retain_deletes: false,
         deep: false,
+        link_depth: 0,
         items_to_render: Some(snapshot.state_map.into()),
         deleted_items: Some(snapshot.delete_set),
     });

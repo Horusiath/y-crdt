@@ -1,12 +1,16 @@
-use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr};
+use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr, split_str};
 use crate::delta::{AttrOp, Op};
-use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr};
+use crate::id_set::DeleteSet;
+use crate::iter::TxnIterator;
+use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr, TypeRef};
+use crate::slice::BlockSlice;
 use crate::transaction::TransactionMut;
 use crate::utils::OptionExt;
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
-use std::collections::{Bound, HashMap};
+use smallvec::SmallVec;
+use std::collections::{Bound, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
-use std::ops::{Deref, DerefMut, RangeBounds};
+use std::ops::{Deref, DerefMut, Range, RangeBounds};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -177,7 +181,56 @@ where
 
     /// Returns a delta representation of this type's contents.
     pub fn delta(&self, options: &DeltaOptions) -> Delta {
-        todo!()
+        // Content that was both inserted AND deleted by the formatter change is invisible, so what
+        // gets formatter is `(I - D) U (D - I)`: the symmetric difference of both sets.
+        let items = match (&options.items_to_render, &options.deleted_items) {
+            (None, None) => None,
+            (Some(inserted), None) => Some(inserted.clone()),
+            (None, Some(deleted)) => Some(deleted.clone()),
+            (Some(inserted), Some(deleted)) => {
+                let mut items = inserted.diff(deleted);
+                items.merge_with(deleted.diff(inserted));
+                Some(items)
+            }
+        };
+        let modified = match (options.deep, &items) {
+            (true, Some(items)) => Some(self.compute_modified(items)),
+            _ => None,
+        };
+        let render = NodeFormatter {
+            encoding: self.txn.doc.options.offset_kind,
+            items,
+            deleted: options.deleted_items.as_ref(),
+            modified,
+            retain_inserts: options.retain_inserts,
+            deep: options.deep,
+            link_depth: options.link_depth,
+        };
+        render.node(self.ptr)
+    }
+
+    /// Port of Yjs `computeModifiedFromItems`: maps every node touched by `items` onto a set of
+    /// keys changed within it (a `None` key marks a change made to node's children).
+    fn compute_modified(&self, items: &IdSet) -> Modified {
+        let mut modified = Modified::new();
+        let mut blocks = items.blocks();
+        while let Some(block) = blocks.next(&*self.txn) {
+            let BlockSlice::Item(slice) = block else {
+                continue;
+            };
+            let mut current = Some(slice.ptr);
+            while let Some(item) = current {
+                let Some(parent) = item.parent.as_node() else {
+                    break;
+                };
+                let keys = modified.entry(*parent).or_default();
+                if !keys.insert(item.parent_sub.clone()) {
+                    break; // has already been marked as modified
+                }
+                current = parent.item;
+            }
+        }
+        modified
     }
 }
 
@@ -187,7 +240,19 @@ where
     D: Deref<Target = Doc>,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        let mut curr = self.ptr.start;
+        while let Some(ptr) = curr {
+            if !ptr.is_deleted() {
+                match &ptr.content {
+                    ItemContent::String(str) => {
+                        write!(f, "{}", str)?;
+                    }
+                    _ => { /* do nothing */ }
+                }
+            }
+            curr = ptr.right;
+        }
+        Ok(())
     }
 }
 
@@ -889,12 +954,16 @@ fn clean_format_gap(
 
 #[derive(Debug, Clone)]
 pub struct DeltaOptions {
-    /// If `true`, retain rendered inserts with attributions.
+    /// If `true`, retain formatter inserts with attributions.
     pub retain_inserts: bool,
-    /// If `true`, retain rendered+attributed deletes only.
+    /// If `true`, retain formatter+attributed deletes only. Yrs has no attribution renderer yet,
+    /// therefore deletes are never attributed and this option has no effect (see: [NodeRef::delta]).
     pub retain_deletes: bool,
     /// Render child types as delta.
     pub deep: bool,
+    /// When weak links are used, how deep should we follow them.
+    /// This is also to prevent infinite recursion from happening.
+    pub link_depth: u32,
     pub items_to_render: Option<IdSet>,
     /// Used for computing `prev` in attributes.
     pub deleted_items: Option<IdSet>,
@@ -902,6 +971,418 @@ pub struct DeltaOptions {
 
 impl Default for DeltaOptions {
     fn default() -> Self {
-        todo!()
+        DeltaOptions {
+            retain_inserts: false,
+            retain_deletes: false,
+            link_depth: 0,
+            deep: false,
+            items_to_render: None,
+            deleted_items: None,
+        }
     }
+}
+
+/// Nodes that should be formatter as modified children, mapped onto the keys changed within them.
+/// A `None` key marks a change made to node's children.
+type Modified = HashMap<NodePtr, HashSet<Option<Arc<str>>>>;
+
+/// Renders a [Node] as a [Delta] - a port of Yjs `YType.toDelta`.
+struct NodeFormatter<'a> {
+    encoding: OffsetKind,
+    /// Yjs `itemsToRender`: ids of the change being formatter. `None` renders the full state.
+    items: Option<IdSet>,
+    /// Ids deleted by the change being formatter. Used to resolve previous values of attributes.
+    deleted: Option<&'a IdSet>,
+    modified: Option<Modified>,
+    /// If `true`, formatter inserts are retained instead of being formatter as inserts.
+    retain_inserts: bool,
+    /// Render child nodes as delta.
+    deep: bool,
+    /// When weak links are used, this property decides how deep can we follow through them.
+    /// This happens because it's possible that weak links will form cycles, causing formatter
+    /// to run into infinite loop.
+    link_depth: u32,
+}
+
+impl<'a> NodeFormatter<'a> {
+    fn node(&self, node: NodePtr) -> Delta {
+        let attrs_to_render = self.modified.as_ref().and_then(|m| m.get(&node));
+        let render_children =
+            self.modified.is_none() || attrs_to_render.map_or(true, |keys| keys.contains(&None));
+        let mut delta = match &node.type_ref {
+            TypeRef::XmlElement(name) => Delta::with_name(name.clone()),
+            #[cfg(feature = "weak")]
+            TypeRef::WeakLink(source) => Delta {
+                link: Some(source.clone()),
+                ..Delta::default()
+            },
+            _ => Delta::default(),
+        };
+        self.attrs(&mut delta, node, attrs_to_render);
+        if render_children {
+            self.children(&mut delta, node);
+        }
+        delta
+    }
+
+    /// Port of Yjs `typeMapGetDelta`. When `keys` are given, only these attributes are formatter.
+    fn attrs(&self, d: &mut Delta, node: NodePtr, keys: Option<&HashSet<Option<Arc<str>>>>) {
+        match keys {
+            None => {
+                for (key, item) in node.map.iter() {
+                    self.attr(d, key, *item);
+                }
+            }
+            Some(keys) => {
+                for key in keys.iter().flatten() {
+                    if let Some(item) = node.map.get(key) {
+                        self.attr(d, key, *item);
+                    }
+                }
+            }
+        }
+    }
+
+    fn attr(&self, d: &mut Delta, key: &Arc<str>, item: ItemPtr) {
+        let child = as_node(&item.content);
+        let op = if item.is_deleted() {
+            // Hard-deleted attribute within a change render: emit the remove op so that consumers
+            // can apply the removal. In a full-state render the attribute is simply omitted.
+            match &self.items {
+                Some(items) if items.contains(&item.last_id()) => AttrOp::Remove {
+                    prev: item.content.get_last(),
+                },
+                _ => return,
+            }
+        } else if let Some(child) = child.filter(|child| self.is_modified(*child)) {
+            AttrOp::Modify {
+                delta: Box::new(self.node(child)),
+            }
+        } else {
+            let value = match child {
+                Some(child) => self.node_value(child),
+                None => match item.content.get_last() {
+                    Some(value) => value,
+                    None => return,
+                },
+            };
+            AttrOp::Update {
+                value,
+                prev: self.prev_attr(item),
+            }
+        };
+        d.attrs.insert(key.clone(), op);
+    }
+
+    /// Previous value of an updated attribute: a value overridden by a given map entry, as long as
+    /// it was deleted by the change being formatter.
+    fn prev_attr(&self, item: ItemPtr) -> Option<Out> {
+        let deleted = self.deleted?;
+        let left = item.left?;
+        if deleted.contains(&left.last_id()) {
+            left.content.get_last()
+        } else {
+            None
+        }
+    }
+
+    /// Renders a child node as a value. Deep renders carry the child's own delta.
+    fn node_value(&self, node: NodePtr) -> Out {
+        if !self.deep {
+            return Out::node(node.id());
+        }
+        let delta = self.node(node);
+        if delta == Delta::default() {
+            Out::node(node.id()) // there's nothing to render within a child node
+        } else {
+            Out::node_with_delta(node.id(), delta)
+        }
+    }
+
+    fn is_modified(&self, node: NodePtr) -> bool {
+        match &self.modified {
+            Some(modified) => modified.contains_key(&node),
+            None => false,
+        }
+    }
+
+    /// Renders the ordered children of a node - a port of the sequence part of `YType.toDelta`.
+    fn children(&self, d: &mut Delta, node: NodePtr) {
+        let mut current_formats = Attrs::new(); // saves all current formats for insert
+        let mut changed_formats = Attrs::new(); // saves changed formats for retain
+        let mut previous_formats = Attrs::new(); // the value before changes
+        let mut curr = node.start;
+        while let Some(item) = curr {
+            curr = item.right;
+            let content = &item.content;
+            if let ItemContent::Format(key, value) = content {
+                // format markers always flow through the shared state machine
+                self.format(
+                    item,
+                    key,
+                    value,
+                    &mut current_formats,
+                    &mut changed_formats,
+                    &mut previous_formats,
+                );
+            } else if item.is_deleted() {
+                // plain deleted content is invisible; in a change render, the ranges deleted by
+                // this change emit `delete` ops - position-only, the content itself is not needed
+                if let Some(items) = &self.items {
+                    for (range, exists) in slice(items, &item.id, item.len()) {
+                        if exists {
+                            // string-ish content deletes by length, other content deletes one
+                            // element per piece
+                            push_delete(d, piece_len(content, &range));
+                        }
+                    }
+                }
+            } else if let Some(items) = &self.items {
+                // change render on alive plain content: inserted ranges become inserts, everything
+                // else retains (position-only). `retain_inserts` retains previously inserted
+                // content.
+                let modified = as_node(content).filter(|child| self.is_modified(*child));
+                for (range, exists) in slice(items, &item.id, item.len()) {
+                    if !exists {
+                        if let Some(child) = modified {
+                            push_modify(d, self.node(child));
+                        } else {
+                            // mirror the piece-wise op sizes of the delete branch
+                            push_retain(d, piece_len(content, &range), &changed_formats);
+                        }
+                    } else if self.retain_inserts {
+                        if let Some(child) = modified {
+                            push_modify(d, self.node(child));
+                        } else {
+                            push_retain(d, range.end - range.start, &changed_formats);
+                        }
+                    } else {
+                        let offset = range.start - item.id.clock;
+                        let len = range.end - range.start;
+                        self.push_content(d, content, offset, len, &current_formats);
+                    }
+                }
+            } else if self.retain_inserts {
+                // attribution-overlay render: existing content is retained
+                push_retain(d, content.len(self.encoding), &changed_formats);
+            } else {
+                // full render: a plain insert of the whole item
+                self.push_content(d, content, 0, item.len(), &current_formats);
+            }
+        }
+    }
+
+    /// Emits insert ops for a `len` elements long slice of `content`, starting at `offset`.
+    fn push_content(
+        &self,
+        d: &mut Delta,
+        content: &ItemContent,
+        offset: u32,
+        len: u32,
+        format: &Attrs,
+    ) {
+        match content {
+            ItemContent::Node(node) => push_insert(d, self.node_value(NodePtr::from(node)), format),
+            ItemContent::String(str) => {
+                // clock offsets are always UTF-16 based
+                let (_, str) = split_str(str, offset as usize, OffsetKind::Utf16);
+                let (str, _) = split_str(str, len as usize, OffsetKind::Utf16);
+                push_insert_text(d, str, format);
+            }
+            _ => {
+                let mut buf = vec![Out::default(); len as usize];
+                let read = content.read(offset as usize, &mut buf);
+                for value in buf.into_iter().take(read) {
+                    push_insert(d, value, format);
+                }
+            }
+        }
+    }
+
+    /// Format state machine: everything that comes after a format marker is formatted by it.
+    fn format(
+        &self,
+        item: ItemPtr,
+        key: &Arc<str>,
+        value: &Any,
+        current: &mut Attrs,
+        changed: &mut Attrs,
+        previous: &mut Attrs,
+    ) {
+        let deleted = item.is_deleted();
+        let render = match &self.items {
+            None => !deleted,                        // full render
+            Some(items) => items.contains(&item.id), // change render
+        };
+        if render {
+            if deleted {
+                // `previous` tracks the value governing the current walk position in the consuming
+                // state: markers deleted by this change (their value governed it until now) and
+                // alive markers re-formatter by heal renders (`retain_inserts`) contribute to it.
+                if self.items.is_some() && !self.retain_inserts {
+                    previous.insert(key.clone(), value.clone());
+                }
+            } else {
+                if self.retain_inserts {
+                    previous.insert(key.clone(), value.clone());
+                }
+                update_format(current, key, value);
+            }
+            // the retain diff for the following spans is exactly the consuming state (`previous`)
+            // -> new state (`current`), recomputed per key at every formatter marker
+            if current.get(key).unwrap_or(&Any::Null) == previous.get(key).unwrap_or(&Any::Null) {
+                changed.remove(key);
+            } else {
+                let value = current.get(key).cloned().unwrap_or(Any::Null);
+                changed.insert(key.clone(), value);
+            }
+        } else if !deleted {
+            // an alive marker retained by this change: it doesn't change the formatting of the
+            // content that follows it, it only describes it
+            update_format(current, key, value);
+            changed.remove(key);
+            previous.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// A node embedded within an item's content, if any.
+fn as_node(content: &ItemContent) -> Option<NodePtr> {
+    if let ItemContent::Node(node) = content {
+        Some(NodePtr::from(node))
+    } else {
+        None
+    }
+}
+
+/// Op size of a formatter piece: string-ish content is measured by its length, while any other
+/// content counts as a single element.
+fn piece_len(content: &ItemContent, range: &Range<u32>) -> u32 {
+    match content {
+        ItemContent::String(_) | ItemContent::Deleted(_) => range.end - range.start,
+        _ => 1,
+    }
+}
+
+/// Splits an id range of `[clock..clock+len)` onto slices, marking which of them exist in a given
+/// `set` - a port of Yjs `IdSet.slice`.
+fn slice(set: &IdSet, id: &ID, len: u32) -> SmallVec<[(Range<u32>, bool); 1]> {
+    let mut res = SmallVec::new();
+    let end = id.clock + len;
+    if let Some(ranges) = set.get(&id.client)
+        && let Some(index) = ranges.find_start(id.clock)
+    {
+        let mut prev_end = id.clock;
+        for (range, _) in &ranges.as_slice()[index..] {
+            if range.start >= end {
+                break;
+            }
+            let start = range.start.max(id.clock);
+            let stop = range.end.min(end);
+            if prev_end < start {
+                res.push((prev_end..start, false));
+            }
+            res.push((start..stop, true));
+            prev_end = stop;
+        }
+        if !res.is_empty() && prev_end < end {
+            res.push((prev_end..end, false));
+        }
+    }
+    if res.is_empty() {
+        res.push((id.clock..end, false));
+    }
+    res
+}
+
+/// Sets a format `value` under a given `key`, where a `null` value removes the format.
+fn update_format(formats: &mut Attrs, key: &Arc<str>, value: &Any) {
+    if let Any::Null = value {
+        formats.remove(key);
+    } else {
+        formats.insert(key.clone(), value.clone());
+    }
+}
+
+/// Formatting attributes attached to an emitted op. Empty attributes are represented as `None`.
+fn format_of(attrs: &Attrs) -> Option<Box<Attrs>> {
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(Box::new(attrs.clone()))
+    }
+}
+
+fn same_format(format: Option<&Attrs>, attrs: &Attrs) -> bool {
+    match format {
+        None => attrs.is_empty(),
+        Some(format) => format == attrs,
+    }
+}
+
+fn push_insert_text(d: &mut Delta, text: &str, attrs: &Attrs) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(Op::InsertText { text: last, format }) = d.children.last_mut() {
+        if same_format(format.as_deref(), attrs) {
+            last.push_str(text);
+            return;
+        }
+    }
+    d.children.push(Op::InsertText {
+        text: text.to_string(),
+        format: format_of(attrs),
+    });
+}
+
+fn push_insert(d: &mut Delta, value: Out, attrs: &Attrs) {
+    if let Some(Op::Insert { items, format }) = d.children.last_mut() {
+        if same_format(format.as_deref(), attrs) {
+            items.push(value);
+            return;
+        }
+    }
+    d.children.push(Op::Insert {
+        items: vec![value],
+        format: format_of(attrs),
+    });
+}
+
+fn push_retain(d: &mut Delta, len: u32, attrs: &Attrs) {
+    if len == 0 {
+        return;
+    }
+    if let Some(Op::Retain { len: last, format }) = d.children.last_mut() {
+        if same_format(format.as_deref(), attrs) {
+            *last += len;
+            return;
+        }
+    }
+    d.children.push(Op::Retain {
+        len,
+        format: format_of(attrs),
+    });
+}
+
+fn push_delete(d: &mut Delta, len: u32) {
+    if len == 0 {
+        return;
+    }
+    if let Some(Op::Remove {
+        len: last,
+        prev: None,
+    }) = d.children.last_mut()
+    {
+        *last += len;
+        return;
+    }
+    d.children.push(Op::Remove { len, prev: None });
+}
+
+fn push_modify(d: &mut Delta, delta: Delta) {
+    d.children.push(Op::Modify {
+        delta: Box::new(delta),
+        format: None,
+    });
 }
