@@ -392,7 +392,7 @@ fn observer() {
             .unwrap()
             .insert_text_with(1, "e", attrs.clone()); // => 'a<bold>e</bold>d'
     }
-    assert_eq!(delta(), Delta::out().retain(1).insert_text_with("e", attrs));
+    assert_eq!(delta(), Delta::out().retain(1).insert_text_fmt("e", &attrs));
 
     // remove formatting
     let attrs = Attrs::from([("bold".into(), Any::Null)]);
@@ -400,7 +400,7 @@ fn observer() {
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().format(1, 1, attrs.clone()); // => 'aed'
     }
-    assert_eq!(delta(), Delta::out().retain(1).retain_with(2, attrs));
+    assert_eq!(delta(), Delta::out().retain(1).retain_fmt(2, &attrs));
 
     // free the observer and make sure that callback is no longer called
     drop(sub);
@@ -529,7 +529,7 @@ fn basic_format() {
         let mut txn = d1.transact_mut();
         let mut txt1 = txn.node_mut("text").unwrap();
         txt1.insert_text_with(0, "abc", a.clone());
-        let expected = Delta::out().insert_text_with("abc", a.clone());
+        let expected = Delta::out().insert_text_fmt("abc", &a);
         assert_eq!(txt1.delta(&DeltaOptions::default()), expected);
         let update = txn.encode_update_v1();
         drop(txn);
@@ -552,7 +552,7 @@ fn basic_format() {
         let mut txt1 = txn.node_mut("text").unwrap();
         txt1.remove(0, 1);
         let actual = txt1.delta(&DeltaOptions::default());
-        assert_eq!(actual, Delta::out().insert_text_with("bc", a.clone()));
+        assert_eq!(actual, Delta::out().insert_text_fmt("bc", &a));
         let update = txn.encode_update_v1();
         drop(txn);
 
@@ -576,7 +576,7 @@ fn basic_format() {
         txt1.remove(1, 1);
         assert_eq!(
             txt1.delta(&DeltaOptions::default()),
-            Delta::out().insert_text_with("b", a.clone())
+            Delta::out().insert_text_fmt("b", &a)
         );
         let update = txn.encode_update_v1();
         drop(txn);
@@ -600,12 +600,12 @@ fn basic_format() {
         let mut txt1 = txn.node_mut("text").unwrap();
         txt1.insert_text_with(0, "z", a.clone());
         let actual = txt1.delta(&DeltaOptions::default());
-        assert_eq!(actual, Delta::out().insert_text_with("zb", a.clone()));
+        assert_eq!(actual, Delta::out().insert_text_fmt("zb", &a));
         let update = txn.encode_update_v1();
         drop(txn);
 
         // TODO(unified-api): Text::diff/Diff and the `Delta` event enum are not available yet
-        let expected = Delta::out().insert_text_with("z", a.clone());
+        let expected = Delta::out().insert_text_fmt("z", &a);
         assert_eq!(&*delta1.acquire(), &expected);
         assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "zb");
@@ -626,9 +626,7 @@ fn basic_format() {
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(
             actual,
-            Delta::out()
-                .insert_text("y")
-                .insert_text_with("ab", a.clone())
+            Delta::out().insert_text("y").insert_text_fmt("ab", &a)
         );
         let update = txn.encode_update_v1();
         drop(txn);
@@ -655,14 +653,12 @@ fn basic_format() {
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(
             actual,
-            Delta::out()
-                .insert_text("yz")
-                .insert_text_with("b", b.clone())
+            Delta::out().insert_text("yz").insert_text_fmt("b", &b)
         );
         let update = txn.encode_update_v1();
         drop(txn);
 
-        let expected = Delta::out().retain(1).retain_with(1, b.clone());
+        let expected = Delta::out().retain(1).retain_fmt(1, &b);
         assert_eq!(&*delta1.acquire(), &expected);
         assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "yzb");
@@ -695,15 +691,15 @@ fn embed_with_attributes() {
         "image": "imageSrc.png"
     });
     let expected = Delta::out()
-        .insert_text_with("a", a1.clone())
-        .insert_with(embed.clone(), a2.clone())
-        .insert_text_with("b", a1.clone());
+        .insert_text_fmt("a", &a1)
+        .insert_fmt(embed.clone(), &a2)
+        .insert_text_fmt("b", &a1);
 
     let (update_v1, update_v2) = {
         let mut txn = d1.transact_mut();
         let mut txt1 = txn.node_mut("text").unwrap();
         txt1.insert_text_with(0, "ab", a1.clone());
-        txt1.apply_delta([Delta::new().retain(1).insert_with(embed.clone(), a2)]);
+        txt1.apply_delta([Delta::new().retain(1).insert_fmt(embed.clone(), &a2)]);
         assert_eq!(txt1.delta(&DeltaOptions::default()), expected);
 
         let update_v1 = txn.encode_state_as_update_v1(&StateVector::default());
@@ -756,7 +752,7 @@ fn issue_101() {
     }
     assert_eq!(
         &*delta.acquire(),
-        &Delta::out().retain(1).retain_with(2, attrs)
+        &Delta::out().retain(1).retain_fmt(2, &attrs)
     );
 }
 
@@ -820,8 +816,8 @@ fn text_diff_adjacent() {
     txt.insert_text_with(3, "def", attrs2.clone());
 
     let expected = Delta::out()
-        .insert_text_with("abc", attrs1)
-        .insert_text_with("def", attrs2);
+        .insert_text_fmt("abc", &attrs1)
+        .insert_text_fmt("def", &attrs2);
     assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
@@ -956,9 +952,9 @@ fn insert_string_with_no_attribute() {
     txt.insert_text_with(1, "b", Attrs::new());
 
     let expected = Delta::out()
-        .insert_text_with("a", attrs.clone())
+        .insert_text_fmt("a", &attrs)
         .insert_text("b")
-        .insert_text_with("c", attrs);
+        .insert_text_fmt("c", &attrs);
     assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
@@ -1003,6 +999,7 @@ fn snapshots() {
         retain_inserts: true,
         retain_deletes: false,
         deep: false,
+        link_depth: 0,
         items_to_render: Some(IdSet::from(next.state_map).diff(&IdSet::from(prev.state_map))),
         deleted_items: Some(next.delete_set.diff(&prev.delete_set)),
     });
@@ -1026,11 +1023,11 @@ fn diff_with_embedded_items() {
 
     let italic_and_bold = Attrs::from([("b".into(), true.into()), ("i".into(), true.into())]);
     let expected = Delta::out()
-        .insert_text_with("hello", italic.clone())
-        .insert_with(array, italic.clone())
-        .insert_with(image, italic.clone())
-        .insert_text_with(" ", italic)
-        .insert_text_with("world", italic_and_bold);
+        .insert_text_fmt("hello", &italic)
+        .insert_fmt(array, &italic)
+        .insert_fmt(image, &italic)
+        .insert_text_fmt(" ", &italic)
+        .insert_text_fmt("world", &italic_and_bold);
     assert_eq!(text.delta(&DeltaOptions::default()), expected);
 }
 
@@ -1083,18 +1080,18 @@ fn multiline_format() {
     let bold = Attrs::from([("bold".into(), true.into())]);
     txt.insert_text(0, "Test\nMulti-line\nFormatting");
     txt.apply_delta([Delta::new()
-        .retain_with(4, bold.clone())
+        .retain_fmt(4, &bold)
         .retain(1) // newline character
-        .retain_with(10, bold.clone())
+        .retain_fmt(10, &bold)
         .retain(1) // newline character
-        .retain_with(10, bold.clone())]);
+        .retain_fmt(10, &bold)]);
 
     let expected = Delta::out()
-        .insert_text_with("Test", bold.clone())
+        .insert_text_fmt("Test", &bold)
         .insert_text("\n")
-        .insert_text_with("Multi-line", bold.clone())
+        .insert_text_fmt("Multi-line", &bold)
         .insert_text("\n")
-        .insert_text_with("Formatting", bold);
+        .insert_text_fmt("Formatting", &bold);
     assert_eq!(txt.delta(&DeltaOptions::default()), expected);
 }
 
@@ -1199,6 +1196,7 @@ fn delta_snapshots() {
             retain_inserts: false,
             retain_deletes: false,
             deep: true,
+            link_depth: 0,
             items_to_render: Some(ins),
             deleted_items: Some(del),
         }
@@ -1242,6 +1240,7 @@ fn snapshot_delete_after() {
         retain_inserts: false,
         retain_deletes: false,
         deep: false,
+        link_depth: 0,
         items_to_render: Some(IdSet::from(snapshot1.state_map)),
         deleted_items: Some(snapshot1.delete_set),
     });
@@ -1256,7 +1255,7 @@ fn empty_delta_chunks() {
     let bold = Attrs::from([(Arc::from("bold"), Any::from(true))]);
     let delta = Delta::new()
         .insert_text("a")
-        .insert_text_with("", bold)
+        .insert_text_fmt("", &bold)
         .insert_text("b");
 
     {
@@ -1318,6 +1317,7 @@ fn assert_partial_history(total: usize, synced: usize) {
         retain_inserts: false,
         retain_deletes: false,
         deep: false,
+        link_depth: 0,
         items_to_render: Some(snapshot.state_map.into()),
         deleted_items: Some(snapshot.delete_set),
     });

@@ -1737,6 +1737,13 @@ pub enum ItemContent {
 }
 
 impl ItemContent {
+    pub fn as_node(&self) -> Option<NodePtr> {
+        if let ItemContent::Node(node) = self {
+            Some(NodePtr::from(node))
+        } else {
+            None
+        }
+    }
     /// Returns a reference number used to determine a content type.
     /// It's used during encoding/decoding of a containing block.
     pub fn get_ref_number(&self) -> u8 {

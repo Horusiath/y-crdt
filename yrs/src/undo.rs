@@ -1129,7 +1129,7 @@ mod test {
                 diff,
                 Delta::out()
                     .insert_text("b")
-                    .insert_text_with("cxy", bold)
+                    .insert_text_fmt("cxy", &bold)
                     .insert_text("z"),
             );
         }
@@ -1979,7 +1979,7 @@ mod test {
         let attrs = Attrs::from([("bold".into(), true.into())]);
         let nested = node(&d1, "test", |mut txt1| {
             let embed = Delta::new().insert_text("initial text");
-            txt1.apply_delta([Delta::new().insert_with(embed, attrs)]);
+            txt1.apply_delta([Delta::new().insert_fmt(embed, &attrs)]);
             txt1.get(0).unwrap().node_id().unwrap()
         });
         let nested_string = || node(&d1, nested.clone(), |nested| nested.to_string());
