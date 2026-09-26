@@ -631,6 +631,7 @@ pub mod any;
 pub mod atomic;
 mod block_iter;
 pub mod cell;
+mod cursor;
 mod delta;
 pub mod encoding;
 pub mod error;
