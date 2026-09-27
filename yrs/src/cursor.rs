@@ -38,6 +38,16 @@ impl Cursor {
         }
     }
 
+    #[inline]
+    pub fn right(&self) -> Option<ItemPtr> {
+        self.right
+    }
+
+    #[inline]
+    pub fn left(&self) -> Option<ItemPtr> {
+        self.left
+    }
+
     /// Creates a cursor placed at a given `index` of a `parent` node, or `None` if the index
     /// exceeds the node's length. An `index` inside of a character is rounded up past it.
     pub fn at(parent: NodePtr, encoding: OffsetKind, index: u32) -> Option<Self> {
@@ -96,7 +106,7 @@ impl Cursor {
     }
 
     /// Moves the cursor over non-visible (deleted and non-countable) items.
-    fn skip_hidden(&mut self) {
+    pub(crate) fn skip_hidden(&mut self) {
         while self.offset == 0
             && let Some(right) = self.right
             && (right.is_deleted() || !right.is_countable())
@@ -524,7 +534,7 @@ fn update_attrs(attrs: &mut Attrs, key: &Arc<str>, value: &Any) {
     }
 }
 
-/// Maps an `offset` inside of an `item` expressed in `encoding` units onto clock units.
+/// Maps an `offset` inside of an `item` expressed in `lib0` units onto clock units.
 fn clock_offset(item: ItemPtr, offset: u32, encoding: OffsetKind) -> u32 {
     match &item.content {
         ItemContent::String(s) => {
@@ -543,7 +553,7 @@ fn ceil_offset(item: ItemPtr, offset: u32, encoding: OffsetKind) -> u32 {
     }
 }
 
-/// Maps an `offset` (in `encoding` units) onto a byte index of `s`, rounding it up to the nearest
+/// Maps an `offset` (in `lib0` units) onto a byte index of `s`, rounding it up to the nearest
 /// character boundary. Returns the byte index and the rounded offset.
 fn char_boundary(s: &str, offset: u32, encoding: OffsetKind) -> (usize, u32) {
     match encoding {
@@ -567,7 +577,7 @@ fn char_boundary(s: &str, offset: u32, encoding: OffsetKind) -> (usize, u32) {
     }
 }
 
-/// Splits an `item` at a given `offset` (in `encoding` units), returning the right half.
+/// Splits an `item` at a given `offset` (in `lib0` units), returning the right half.
 fn split_item(
     txn: &mut TransactionMut,
     item: ItemPtr,
@@ -579,7 +589,7 @@ fn split_item(
 }
 
 /// Reads elements of an `item` starting at `offset` into `buf`. Returns the number of elements
-/// read and the number of `encoding` units the cursor has to move by, counting from `offset`.
+/// read and the number of `lib0` units the cursor has to move by, counting from `offset`.
 fn read_item(item: ItemPtr, offset: u32, buf: &mut [Out], encoding: OffsetKind) -> (usize, u32) {
     match &item.content {
         ItemContent::String(s) => {

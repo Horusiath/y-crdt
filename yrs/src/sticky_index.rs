@@ -1,16 +1,13 @@
 use crate::block::{ItemContent, ItemPtr};
-use crate::block_iter::BlockIter;
-use crate::encoding::read::Error;
-use crate::node::{Node, NodePtr};
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
+use crate::cursor::Cursor;
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
+use crate::node::NodePtr;
 use crate::{ClientID, Doc, ID, NodeID, NodeRef, Transaction};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Formatter;
 use std::ops::Deref;
-use std::sync::Arc;
 
 /// A sticky index is based on the Yjs model and is not affected by document changes.
 /// E.g. If you place a sticky index before a certain character, it will always point to this character.
@@ -220,42 +217,16 @@ impl StickyIndex {
     pub fn at<D: Deref<Target = Doc>>(
         txn: &Transaction<D>,
         branch: NodePtr,
-        mut index: u32,
+        index: u32,
         assoc: Assoc,
     ) -> Option<Self> {
-        if assoc == Assoc::Before {
-            if index == 0 {
-                let context = IndexScope::Absolute(branch.id());
-                return Some(StickyIndex::new(context, assoc));
-            }
-            index -= 1;
-        }
-
-        let mut walker = BlockIter::new(branch);
-        if !walker.try_forward(txn.doc(), index) {
-            return None;
-        }
-        if walker.finished() {
-            if assoc == Assoc::Before {
-                let context = if let Some(ptr) = walker.next_item() {
-                    IndexScope::Relative(ptr.last_id())
-                } else {
-                    IndexScope::Absolute(branch.id())
-                };
-                Some(Self::new(context, assoc))
-            } else {
-                None
-            }
-        } else {
-            let context = if let Some(ptr) = walker.next_item() {
-                let mut id = ptr.id().clone();
-                id.clock += walker.rel();
-                IndexScope::Relative(id)
-            } else {
-                IndexScope::Absolute(branch.id())
-            };
-            Some(Self::new(context, assoc))
-        }
+        let mut cursor = Cursor::at(branch, txn.doc().options.offset_kind, index)?; // index already decremented for Assoc::Before
+        let context = match cursor.next_id() {
+            Some(id) => IndexScope::Relative(id),
+            None if assoc == Assoc::Before => IndexScope::Absolute(branch.id()),
+            None => return None,
+        };
+        Some(Self::new(context, assoc))
     }
 
     pub(crate) fn within_range(&self, ptr: Option<ItemPtr>) -> bool {
@@ -318,7 +289,7 @@ impl Encode for StickyIndex {
 }
 
 impl Decode for StickyIndex {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let context = IndexScope::decode(decoder)?;
         let assoc = Assoc::decode(decoder)?;
         Ok(Self::new(context, assoc))
@@ -467,7 +438,7 @@ impl Encode for IndexScope {
 }
 
 impl Decode for IndexScope {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let tag: u8 = decoder.read_var()?;
         match tag {
             0 => {
@@ -484,7 +455,7 @@ impl Decode for IndexScope {
                 let clock = decoder.read_var()?;
                 Ok(IndexScope::Absolute(NodeID::Nested(ID::new(client, clock))))
             }
-            _ => Err(Error::UnexpectedValue),
+            _ => Err(crate::lib0::Error::UnexpectedValue),
         }
     }
 }
@@ -569,7 +540,7 @@ impl Encode for Assoc {
 }
 
 impl Decode for Assoc {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let tag: i8 = decoder.read_var()?;
         Ok(if tag >= 0 {
             Assoc::After
@@ -619,10 +590,9 @@ impl Offset {
 #[cfg(test)]
 mod test {
     use crate::block::ClientID;
+    use crate::lib0::{Decode, Encode};
     use crate::sticky_index::Assoc;
-    use crate::updates::decoder::Decode;
-    use crate::updates::encoder::Encode;
-    use crate::{Delta, Doc, ID, IndexScope, NodeID, NodeRef, StickyIndex, Transaction};
+    use crate::{Delta, Doc, ID, IndexScope, NodeID, StickyIndex};
     use serde::{Deserialize, Serialize};
 
     fn check_sticky_indexes(doc: &Doc, text: impl Into<NodeID>) {

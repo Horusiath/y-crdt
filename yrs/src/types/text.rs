@@ -18,7 +18,7 @@ use std::ops::{Deref, DerefMut};
 /// allows to squash multiple consecutively inserted characters together as a single chunk of text
 /// even between transaction boundaries in order to preserve more efficient memory model.
 ///
-/// [TextRef] structure internally uses UTF-8 encoding and its length is described in a number of
+/// [TextRef] structure internally uses UTF-8 lib0 and its length is described in a number of
 /// bytes rather than individual characters (a single UTF-8 code point can consist of many bytes).
 ///
 /// Like all Yrs shared data types, [TextRef] is resistant to the problem of interleaving (situation

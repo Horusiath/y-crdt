@@ -1,5 +1,4 @@
-use crate::encoding::read::{Error, Read};
-use crate::encoding::write::Write;
+use crate::lib0::{Error, Read, Write};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -9,7 +8,7 @@ pub const F64_MAX_SAFE_INTEGER: f64 = (i64::pow(2, 53) - 1) as f64;
 pub const F64_MIN_SAFE_INTEGER: f64 = -F64_MAX_SAFE_INTEGER;
 
 /// Any is an enum with a potentially associated value that is used to represent JSON values
-/// and supports efficient encoding of those values.
+/// and supports efficient lib0 of those values.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Any {
     Null,
@@ -118,8 +117,8 @@ impl Any {
     // prefix with writeVarUint). The remaining 7 bits are divided as follows:
     // [0-30]   the beginning of the data range is used for custom purposes
     //          (defined by the function that uses this library)
-    // [31-127] the end of the data range is used for data encoding by
-    //          lib0/encoding.js
+    // [31-127] the end of the data range is used for data lib0 by
+    //          lib0/lib0.js
     pub fn encode<W: Write>(&self, encoder: &mut W) {
         match self {
             Any::Undefined => {
@@ -859,7 +858,7 @@ macro_rules! any_expect_expr_comma {
 #[cfg(test)]
 mod test {
     use crate::any::Any;
-    use crate::encoding::read::Cursor;
+    use crate::lib0::Cursor;
 
     #[test]
     fn decode_map_rejects_length_amplification() {

@@ -1,13 +1,56 @@
-pub mod read;
+use std::collections::TryReserveError;
+use thiserror::Error;
+
+mod decoder;
+mod encoder;
+mod read;
 pub mod serde;
-pub mod varint;
-pub mod write;
+mod varint;
+mod write;
+
+pub use decoder::{Decode, Decoder, DecoderV1, DecoderV2};
+pub use encoder::{Encode, Encoder, EncoderV1, EncoderV2};
+pub use read::{Cursor, Read};
+pub use varint::*;
+pub use write::Write;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("failed to decode variable length integer")]
+    InvalidVarInt,
+
+    #[error("lib0 codecs only supports values in signed int 64 bit range")]
+    IntOutOfBounds,
+
+    #[error("map keys can only be strings")]
+    InvalidKey,
+
+    #[error(
+        "while trying to read more data (expected: {0} bytes), an unexpected end of buffer was reached"
+    )]
+    EndOfBuffer(usize),
+
+    #[error("while reading, an unexpected value was found")]
+    UnexpectedValue,
+
+    #[error("failed to allocate memory: {0}")]
+    NotEnoughMemory(#[from] TryReserveError),
+
+    #[error("JSON parsing error: {0}")]
+    InvalidJSON(#[from] serde_json::Error),
+
+    #[error("couldn't deserialize to target type of {0}")]
+    TypeMismatch(&'static str),
+
+    #[error("{0}")]
+    Custom(String),
+}
 
 #[cfg(test)]
 mod test {
     use crate::Any;
-    use crate::encoding::read::{Cursor, Read};
-    use crate::encoding::write::Write;
+    use crate::lib0::read::{Cursor, Read};
+    use crate::lib0::write::Write;
     use proptest::prelude::*;
     use proptest_derive::Arbitrary;
 

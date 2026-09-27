@@ -418,7 +418,7 @@ impl From<XmlElementPrelim> for In {
 ///
 /// Just like [XmlElementRef], [XmlTextRef] can be marked with extra metadata in form of attributes.
 ///
-/// [XmlTextRef] structure internally uses UTF-8 encoding and its length is described in a number of
+/// [XmlTextRef] structure internally uses UTF-8 lib0 and its length is described in a number of
 /// bytes rather than individual characters (a single UTF-8 code point can consist of many bytes).
 ///
 /// Like all Yrs shared data types, [XmlTextRef] is resistant to the problem of interleaving (situation

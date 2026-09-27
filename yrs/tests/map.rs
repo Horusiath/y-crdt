@@ -3,9 +3,9 @@ use fastrand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use yrs::lib0::Decode;
 use yrs::node::{DeepObservable, Observable, Path, PathSegment};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
-use yrs::updates::decoder::Decode;
 use yrs::{
     Acquire, AcquireMut, Any, Cell, Delta, Doc, In, NodeRef, Out, StateVector, Transaction, Update,
     any,
@@ -412,12 +412,15 @@ fn map_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 3] {
         let mut map = txn.node_mut("map").unwrap();
         if a <= 0.33 {
             let arr = Delta::new().insert(1).insert(2).insert(3).insert(4);
-            map.insert_attr(key, In::Node(arr));
+            map.insert_attr(key, In::Node(Box::new(arr)));
         } else if b <= 0.33 {
-            map.insert_attr(key, In::Node(Delta::new().insert_text("deeptext")));
+            map.insert_attr(
+                key,
+                In::Node(Box::new(Delta::new().insert_text("deeptext"))),
+            );
         } else {
             let nested = Delta::new().insert_attr("deepkey", "deepvalue");
-            map.insert_attr(key, In::Node(nested));
+            map.insert_attr(key, In::Node(Box::new(nested)));
         }
     }
 
@@ -458,7 +461,7 @@ fn observe_deep() {
         let out = txn
             .node_mut("map")
             .unwrap()
-            .insert_attr("map", In::Node(Delta::new()));
+            .insert_attr("map", In::Node(Box::new(Delta::new())));
         let Out::Node(nested) = out else {
             panic!("expected a nested node")
         };
@@ -469,7 +472,7 @@ fn observe_deep() {
         let out = txn
             .node_mut(nested.clone())
             .unwrap()
-            .insert_attr("array", In::Node(Delta::new()));
+            .insert_attr("array", In::Node(Box::new(Delta::new())));
         let Out::Node(nested2) = out else {
             panic!("expected a nested node")
         };
@@ -485,7 +488,7 @@ fn observe_deep() {
         let out = txn
             .node_mut(nested.clone())
             .unwrap()
-            .insert_attr("text", In::Node(Delta::new().insert_text("text")));
+            .insert_attr("text", In::Node(Box::new(Delta::new().insert_text("text"))));
         let Out::Node(nested_text) = out else {
             panic!("expected a nested node")
         };
@@ -679,7 +682,7 @@ fn test_delete_not_applied_map() {
     {
         let mut txn = doc_a.transact_mut();
         let mut root_a = txn.node_mut("root").unwrap();
-        root_a.insert_attr("sub", In::Node(Delta::new())); // { sub: {} }
+        root_a.insert_attr("sub", In::Node(Box::new(Delta::new()))); // { sub: {} }
     }
 
     // Clone to Doc B

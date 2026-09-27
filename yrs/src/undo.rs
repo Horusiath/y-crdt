@@ -1000,10 +1000,10 @@ mod test {
     use crate::block::ClientID;
     use crate::cell::{Acquire, AcquireMut};
 
+    use crate::lib0::Decode;
     use crate::node::{Attrs, NodePtr};
     use crate::test_utils::exchange_updates;
     use crate::undo::{Options, StackItem};
-    use crate::updates::decoder::Decode;
     use crate::{
         Any, Cell, Delta, DeltaOptions, Doc, In, NodeID, NodeRef, Origin, Out, StateVector,
         TransactionMut, UndoManager, Update, any,
@@ -1123,7 +1123,7 @@ mod test {
             assert_eq!(txt1.to_string(), "bcxyz");
 
             let bold = Attrs::from([("bold".into(), true.into())]);
-            txt1.format(1, 3, bold.clone());
+            txt1.format(1, 3, &bold);
             let diff = txt1.delta(&DeltaOptions::default());
             assert_eq!(
                 diff,
@@ -1436,7 +1436,7 @@ mod test {
         // format textchild and revert that change
         mgr.reset();
         node(&d1, text_child, |mut text| {
-            text.format(3, 4, Attrs::from([("bold".into(), any!({}))]))
+            text.format(3, 4, &Attrs::from([("bold".into(), any!({}))]))
         });
         assert_eq!(
             as_string(),
@@ -1906,7 +1906,7 @@ mod test {
             .transact_mut()
             .node_mut("test")
             .unwrap()
-            .format(13, 7, attrs.clone()); // D1: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
+            .format(13, 7, &attrs); // D1: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
 
         mgr.reset();
 
@@ -1917,7 +1917,7 @@ mod test {
             .transact_mut()
             .node_mut("test")
             .unwrap()
-            .format(16, 4, attrs2.clone()); // D1: 'Attack ships <b>on </b>fire off the shoulder of Orion.'
+            .format(16, 4, &attrs2); // D1: 'Attack ships <b>on </b>fire off the shoulder of Orion.'
 
         // TODO(unified-api): rich-text `diff`/`Diff`/`YChange` assertions have no NodeRef
         // equivalent yet (`to_delta` is not implemented). Original expected the delta:
@@ -1979,7 +1979,7 @@ mod test {
         let attrs = Attrs::from([("bold".into(), true.into())]);
         let nested = node(&d1, "test", |mut txt1| {
             let embed = Delta::new().insert_text("initial text");
-            txt1.apply_delta([Delta::new().insert_fmt(embed, &attrs)]);
+            txt1.apply_delta(Delta::new().insert_fmt(embed, &attrs));
             txt1.get(0).unwrap().node_id().unwrap()
         });
         let nested_string = || node(&d1, nested.clone(), |nested| nested.to_string());

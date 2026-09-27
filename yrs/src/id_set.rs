@@ -1,11 +1,9 @@
 use crate::block::{BlockRange, ClientID, ID};
 use crate::block_store::BlockStore;
-use crate::encoding::read::Error;
 use crate::ids::{BlockSliceIter, IdMapInner, IdRanges};
 use crate::iter::TxnIterator;
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::slice::BlockSlice;
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
 use crate::{Doc, StateVector, Transaction};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -24,7 +22,7 @@ impl Encode for Range<u32> {
 }
 
 impl Decode for Range<u32> {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let clock = decoder.read_ds_clock()?;
         let len = decoder.read_ds_len()?;
         Ok(clock..(clock + len))
@@ -86,7 +84,7 @@ impl Encode for IdRanges<()> {
 }
 
 impl Decode for IdRanges<()> {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let len: u32 = decoder.read_var()?;
         // Do NOT pre-allocate `len` entries up front: `len` is attacker-controlled (a few bytes
         // can declare a huge count), so `SmallVec::with_capacity(len)` is an allocation bomb that
@@ -363,7 +361,7 @@ impl Encode for IdSet {
 }
 
 impl Decode for IdSet {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let mut set = Self::new();
         let client_len: u32 = decoder.read_var()?;
         let mut i = 0;
@@ -632,10 +630,9 @@ pub(crate) mod test {
     use crate::id_set::{DeleteSet, IdRange, IdSet};
     use crate::ids::IdRanges;
     use crate::iter::TxnIterator;
+    use crate::lib0::{Decode, DecoderV1, Encode, Encoder, EncoderV1};
     use crate::slice::BlockSlice;
     use crate::test_utils::exchange_updates;
-    use crate::updates::decoder::{Decode, DecoderV1};
-    use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{Doc, ID, Options};
     use std::collections::HashSet;
     use std::fmt::Debug;

@@ -395,8 +395,8 @@ type ScopeIterator<'a> = Box<dyn Iterator<Item = Out> + 'a>;
 
 #[cfg(test)]
 mod test {
-    use crate::updates::decoder::Decode;
-    use crate::{Delta, Doc, In, JsonPath, JsonPathEval, Out, Update, any};
+    use crate::lib0::Decode;
+    use crate::{Delta, Doc, JsonPath, JsonPathEval, Out, Update, any};
 
     fn mixed_sample() -> Doc {
         let mut doc = Doc::new();

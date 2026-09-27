@@ -1,5 +1,6 @@
-use crate::encoding::read::{Error, Read};
-use crate::encoding::write::Write;
+use super::Error;
+use super::read::Read;
+use super::write::Write;
 use std::convert::TryInto;
 
 pub trait VarInt: Sized + Copy {
@@ -285,11 +286,11 @@ pub trait SignedVarInt: Sized + Copy {
     fn read_signed<R: Read>(r: &mut R) -> Result<Signed<Self>, Error>;
 }
 
-/// Struct which recognizes signed integer values. This special case has been build for Yjs encoding
+/// Struct which recognizes signed integer values. This special case has been build for Yjs lib0
 /// compatibility, which recognizes differences between `0` and `-0`, which is used in some
 /// cases (eg. `UIntOptRleDecoder`).
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Signed<T: Sized + Copy> {
+pub(super) struct Signed<T: Sized + Copy> {
     value: T,
     is_negative: bool,
 }

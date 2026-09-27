@@ -3,8 +3,8 @@ use crate::js::{Callback, Js, ValueRef, YRange};
 use crate::transaction::YTransaction;
 use crate::weak::YWeakLink;
 use crate::{ImplicitTransaction, Snapshot};
-use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::wasm_bindgen;
 use yrs::types::text::TextEvent;
 use yrs::types::{Attrs, TYPE_REFS_TEXT};
 use yrs::{DeepObservable, GetString, Observable, Quotable, Text, TextRef, TransactionMut};
@@ -15,7 +15,7 @@ use yrs::{DeepObservable, GetString, Observable, Quotable, Text, TextRef, Transa
 /// allows to squash multiple consecutively inserted characters together as a single chunk of text
 /// even between transaction boundaries in order to preserve more efficient memory model.
 ///
-/// `YText` structure internally uses UTF-8 encoding and its length is described in a number of
+/// `YText` structure internally uses UTF-8 lib0 and its length is described in a number of
 /// bytes rather than individual characters (a single UTF-8 code point can consist of many bytes).
 ///
 /// Like all Yrs shared data types, `YText` is resistant to the problem of interleaving (situation

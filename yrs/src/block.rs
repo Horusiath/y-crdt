@@ -1,14 +1,11 @@
 use crate::block_store::BlockStore;
 use crate::doc::OffsetKind;
-use crate::encoding::read::Error;
 use crate::gc::GCCollector;
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::{Attrs, Node, NodePtr, TypePtr, TypeRef};
-use crate::node_ref::update_current_attributes;
 use crate::slice::{BlockSlice, ItemSlice};
 use crate::transaction::{TransactionMut, ensure_state};
 use crate::undo::UndoStack;
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
 use crate::{Any, Doc, IdSet, Options, Out, Uuid};
 use serde::{Deserialize, Serialize};
@@ -1140,57 +1137,6 @@ impl<'doc> TransactionMut<'doc> {
     }
 }
 
-/// A helper structure that's used to precisely describe a location of an [Item] to be inserted in
-/// relation to its neighbors and parent.
-#[derive(Debug)]
-pub(crate) struct ItemPosition {
-    pub parent: TypePtr,
-    pub left: Option<ItemPtr>,
-    pub right: Option<ItemPtr>,
-    pub index: u32,
-    pub current_attrs: Option<Box<Attrs>>,
-}
-
-impl ItemPosition {
-    pub fn forward(&mut self) -> bool {
-        if let Some(right) = self.right.as_deref() {
-            if !right.is_deleted() {
-                match &right.content {
-                    ItemContent::String(_) | ItemContent::Embed(_) => {
-                        self.index += right.len();
-                    }
-                    ItemContent::Format(key, value) => {
-                        let attrs = self.current_attrs.get_or_init();
-                        update_current_attributes(attrs, key, value.as_ref());
-                    }
-                    _ => {}
-                }
-            }
-
-            let new = right.right.clone();
-            self.left = self.right.take();
-            self.right = new;
-
-            return true;
-        }
-        false
-    }
-
-    /// If current `attributes` don't confirm the same keys as the formatting wrapping
-    /// current insert position, they should be unset.
-    pub fn unset_missing(&self, attributes: &mut Attrs) {
-        if let Some(attrs) = self.current_attrs.as_ref() {
-            // if current `attributes` don't confirm the same keys as the formatting wrapping
-            // current insert position, they should be unset
-            for (k, _) in attrs.iter() {
-                if !attributes.contains_key(k) {
-                    attributes.insert(k.clone(), Any::Null);
-                }
-            }
-        }
-    }
-}
-
 /// Bit flag (9st bit) for item that is linked by Weak Link references
 const ITEM_FLAG_LINKED: u16 = 0b0001_0000_0000;
 
@@ -1527,12 +1473,14 @@ impl Item {
     /// Checks if current item is marked as deleted (tombstoned).
     /// Yrs uses soft item deletion mechanism, which means that deleted values are not physically
     /// erased from memory, but just marked as deleted.
+    #[inline]
     pub fn is_deleted(&self) -> bool {
         self.info.is_deleted()
     }
 
     /// Checks if item content can be considered countable. Countable elements can be split
     /// and joined together.
+    #[inline]
     pub fn is_countable(&self) -> bool {
         self.info.is_countable()
     }
@@ -1543,7 +1491,7 @@ impl Item {
 
     /// Returns a length of a block. For most situation it works like [Item::content_len] with a
     /// difference to a [Text]/[XmlText] contents - in order to achieve compatibility with
-    /// Yjs we need to calculate string length in terms of UTF-16 character encoding.
+    /// Yjs we need to calculate string length in terms of UTF-16 character lib0.
     /// However depending on used [Encoding] scheme we may calculate string length/offsets
     /// differently.
     pub fn len(&self) -> u32 {
@@ -1552,6 +1500,14 @@ impl Item {
 
     pub fn content_len(&self, kind: OffsetKind) -> u32 {
         self.content.len(kind)
+    }
+
+    pub fn visible_len(&self, encoding: OffsetKind) -> u32 {
+        if !self.is_deleted() && self.is_countable() {
+            self.content_len(encoding)
+        } else {
+            0
+        }
     }
 
     /// Returns an ID of the last element that can be considered a part of this item.
@@ -1563,7 +1519,7 @@ impl Item {
         let info = if self.origin.is_some() { HAS_ORIGIN } else { 0 } // is left null
             | if self.right_origin.is_some() { HAS_RIGHT_ORIGIN } else { 0 } // is right null
             | if self.parent_sub.is_some() { HAS_PARENT_SUB } else { 0 }
-            | (self.content.get_ref_number() & 0b1111);
+            | (self.content.kind() as u8 & 0b1111);
         info
     }
 
@@ -1610,7 +1566,7 @@ impl SplittableString {
     }
 
     /// Maps given offset onto block offset. This means, that given an `offset` provided
-    /// in given `encoding` we want the output as a UTF-16 compatible offset (required
+    /// in given `lib0` we want the output as a UTF-16 compatible offset (required
     /// by Yjs for compatibility reasons).
     pub(crate) fn block_offset(&self, offset: u32, kind: OffsetKind) -> u32 {
         match kind {
@@ -1745,18 +1701,18 @@ impl ItemContent {
         }
     }
     /// Returns a reference number used to determine a content type.
-    /// It's used during encoding/decoding of a containing block.
-    pub fn get_ref_number(&self) -> u8 {
+    /// It's used during lib0/decoding of a containing block.
+    pub fn kind(&self) -> ContentKind {
         match self {
-            ItemContent::Any(_) => BLOCK_ITEM_ANY_REF_NUMBER,
-            ItemContent::Binary(_) => BLOCK_ITEM_BINARY_REF_NUMBER,
-            ItemContent::Deleted(_) => BLOCK_ITEM_DELETED_REF_NUMBER,
-            ItemContent::Doc(_, _) => BLOCK_ITEM_DOC_REF_NUMBER,
-            ItemContent::JSON(_) => BLOCK_ITEM_JSON_REF_NUMBER,
-            ItemContent::Embed(_) => BLOCK_ITEM_EMBED_REF_NUMBER,
-            ItemContent::Format(_, _) => BLOCK_ITEM_FORMAT_REF_NUMBER,
-            ItemContent::String(_) => BLOCK_ITEM_STRING_REF_NUMBER,
-            ItemContent::Node(_) => BLOCK_ITEM_TYPE_REF_NUMBER,
+            ItemContent::Any(_) => ContentKind::Any,
+            ItemContent::Binary(_) => ContentKind::Binary,
+            ItemContent::Deleted(_) => ContentKind::Deleted,
+            ItemContent::Doc(_, _) => ContentKind::Doc,
+            ItemContent::JSON(_) => ContentKind::JSON,
+            ItemContent::Embed(_) => ContentKind::Embed,
+            ItemContent::Format(_, _) => ContentKind::Format,
+            ItemContent::String(_) => ContentKind::String,
+            ItemContent::Node(_) => ContentKind::Node,
         }
     }
 
@@ -1992,7 +1948,7 @@ impl ItemContent {
         }
     }
 
-    pub fn decode<D: Decoder>(decoder: &mut D, ref_num: u8) -> Result<Self, Error> {
+    pub fn decode<D: Decoder>(decoder: &mut D, ref_num: u8) -> Result<Self, crate::lib0::Error> {
         match ref_num & 0b1111 {
             BLOCK_ITEM_DELETED_REF_NUMBER => Ok(ItemContent::Deleted(decoder.read_len()?)),
             BLOCK_ITEM_JSON_REF_NUMBER => {
@@ -2034,7 +1990,7 @@ impl ItemContent {
                 options.should_load = options.should_load || options.auto_load;
                 Ok(ItemContent::Doc(None, options))
             }
-            _ => Err(Error::UnexpectedValue),
+            _ => Err(crate::lib0::Error::UnexpectedValue),
         }
     }
 
@@ -2145,6 +2101,37 @@ impl Clone for ItemContent {
             ItemContent::Node(branch) => {
                 ItemContent::Node(Node::new(branch.name.clone(), branch.type_ref.clone()))
             }
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContentKind {
+    Any = BLOCK_ITEM_ANY_REF_NUMBER,
+    Binary = BLOCK_ITEM_BINARY_REF_NUMBER,
+    Deleted = BLOCK_ITEM_DELETED_REF_NUMBER,
+    Doc = BLOCK_ITEM_DOC_REF_NUMBER,
+    JSON = BLOCK_ITEM_JSON_REF_NUMBER,
+    Embed = BLOCK_ITEM_EMBED_REF_NUMBER,
+    Format = BLOCK_ITEM_FORMAT_REF_NUMBER,
+    String = BLOCK_ITEM_STRING_REF_NUMBER,
+    Node = BLOCK_ITEM_TYPE_REF_NUMBER,
+}
+
+impl ContentKind {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            BLOCK_ITEM_ANY_REF_NUMBER => Some(ContentKind::Any),
+            BLOCK_ITEM_BINARY_REF_NUMBER => Some(ContentKind::Binary),
+            BLOCK_ITEM_DELETED_REF_NUMBER => Some(ContentKind::Deleted),
+            BLOCK_ITEM_DOC_REF_NUMBER => Some(ContentKind::Doc),
+            BLOCK_ITEM_JSON_REF_NUMBER => Some(ContentKind::JSON),
+            BLOCK_ITEM_EMBED_REF_NUMBER => Some(ContentKind::Embed),
+            BLOCK_ITEM_FORMAT_REF_NUMBER => Some(ContentKind::Format),
+            BLOCK_ITEM_STRING_REF_NUMBER => Some(ContentKind::String),
+            BLOCK_ITEM_TYPE_REF_NUMBER => Some(ContentKind::Node),
+            _ => None,
         }
     }
 }
@@ -2271,19 +2258,6 @@ impl std::fmt::Display for ItemContent {
             ItemContent::Doc(_, opts) => write!(f, "Doc(guid: {})", opts.guid),
             _ => Ok(()),
         }
-    }
-}
-
-impl std::fmt::Display for ItemPosition {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(index: {}", self.index)?;
-        if let Some(l) = self.left.as_ref() {
-            write!(f, ", left: {}", l)?;
-        }
-        if let Some(r) = self.right.as_ref() {
-            write!(f, ", right: {}", r)?;
-        }
-        write!(f, ")")
     }
 }
 

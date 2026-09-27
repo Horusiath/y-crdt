@@ -7,9 +7,8 @@ use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::Display;
-use thiserror::Error;
 
-pub fn to_any<T: Serialize>(value: &T) -> Result<Any, AnySerializeError> {
+pub fn to_any<T: Serialize>(value: &T) -> Result<Any, crate::lib0::Error> {
     value.serialize(AnySerializer)
 }
 
@@ -55,29 +54,18 @@ impl Serialize for Any {
 
 struct AnySerializer;
 
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum AnySerializeError {
-    #[error("integers above i64::MAX cannot be represented as Any")]
-    UnrepresentableInt,
-    #[error("Any only supports Strings as map keys")]
-    MapKeyNotString,
-    #[error("{0}")]
-    Custom(String),
-}
-
-impl serde::ser::Error for AnySerializeError {
+impl serde::ser::Error for crate::lib0::Error {
     fn custom<T>(msg: T) -> Self
     where
         T: Display,
     {
-        AnySerializeError::Custom(msg.to_string())
+        crate::lib0::Error::Custom(msg.to_string())
     }
 }
 
 impl Serializer for AnySerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
     type SerializeSeq = AnyArraySerializer;
     type SerializeTuple = AnyArraySerializer;
     type SerializeTupleStruct = AnyArraySerializer;
@@ -130,7 +118,7 @@ impl Serializer for AnySerializer {
     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
         self.serialize_i64(
             v.try_into()
-                .map_err(|_e| AnySerializeError::UnrepresentableInt)?,
+                .map_err(|_e| crate::lib0::Error::IntOutOfBounds)?,
         )
     }
 
@@ -303,7 +291,7 @@ struct AnyArraySerializer {
 
 impl SerializeSeq for AnyArraySerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
     where
@@ -320,7 +308,7 @@ impl SerializeSeq for AnyArraySerializer {
 
 impl SerializeTuple for AnyArraySerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
     where
@@ -336,7 +324,7 @@ impl SerializeTuple for AnyArraySerializer {
 
 impl SerializeTupleStruct for AnyArraySerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
     where
@@ -357,7 +345,7 @@ struct AnyMapSerializer {
 
 impl SerializeMap for AnyMapSerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_key<T: ?Sized>(&mut self, key: &T) -> Result<(), Self::Error>
     where
@@ -365,7 +353,7 @@ impl SerializeMap for AnyMapSerializer {
     {
         self.next_key = Some(match key.serialize(AnySerializer)? {
             Any::String(s) => s.to_string(),
-            _ => return Err(AnySerializeError::MapKeyNotString),
+            _ => return Err(crate::lib0::Error::InvalidKey),
         });
         Ok(())
     }
@@ -387,7 +375,7 @@ impl SerializeMap for AnyMapSerializer {
 
 impl SerializeStruct for AnyMapSerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_field<T: ?Sized>(
         &mut self,
@@ -414,7 +402,7 @@ struct AnyTupleVariantSerializer {
 
 impl SerializeTupleVariant for AnyTupleVariantSerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
     where
@@ -439,7 +427,7 @@ struct AnyStructVariantSerializer {
 
 impl SerializeStructVariant for AnyStructVariantSerializer {
     type Ok = Any;
-    type Error = AnySerializeError;
+    type Error = crate::lib0::Error;
 
     fn serialize_field<T: ?Sized>(
         &mut self,
@@ -683,7 +671,7 @@ mod test {
 
         assert!(matches!(
             to_any(&Test(u64::MAX)).unwrap_err(),
-            AnySerializeError::UnrepresentableInt
+            crate::lib0::Error::IntOutOfBounds
         ))
     }
 
@@ -694,7 +682,7 @@ mod test {
 
         assert!(matches!(
             to_any(&Test(HashMap::from([(100, 1)]))).unwrap_err(),
-            AnySerializeError::MapKeyNotString
+            crate::lib0::Error::InvalidKey
         ))
     }
 

@@ -455,8 +455,8 @@ fn target_on_local_and_remote() {
 
 use fastrand::Rng;
 use std::sync::atomic::{AtomicI64, Ordering};
+use yrs::lib0::Decode;
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
-use yrs::updates::decoder::Decode;
 use yrs::{
     Acquire, AcquireMut, Any, Cell, ClientID, Delta, Doc, ID, In, NodeID, Out, StateVector, Update,
     any,
@@ -499,7 +499,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let mut yarray = txn.node_mut("array").unwrap();
         let pos = rng.between(0, yarray.len());
         let nested = Delta::new().insert(1).insert(2).insert(3).insert(4);
-        let Out::Node(array2) = yarray.insert(pos, In::Node(nested)) else {
+        let Out::Node(array2) = yarray.insert(pos, In::Node(nested.into())) else {
             panic!("expected a nested node")
         };
         let expected: Arc<[Any]> = (1..=4).map(|i| Any::Number(i as f64)).collect();
@@ -510,7 +510,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let mut txn = doc.transact_mut();
         let mut yarray = txn.node_mut("array").unwrap();
         let pos = rng.between(0, yarray.len());
-        let Out::Node(map) = yarray.insert(pos, In::Node(Delta::new())) else {
+        let Out::Node(map) = yarray.insert(pos, In::Node(Delta::new().into())) else {
             panic!("expected a nested node")
         };
         let mut map = txn.node_mut(map.id).unwrap();
@@ -596,7 +596,7 @@ fn observe_deep_event_order() {
         paths_copy.lock().unwrap().push(path);
     });
 
-    array.insert(0, In::Node(Delta::new()));
+    array.insert(0, In::Node(Delta::new().into()));
     drop(txn);
 
     {

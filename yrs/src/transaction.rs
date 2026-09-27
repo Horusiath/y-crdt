@@ -1,14 +1,14 @@
-use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr};
+use crate::block::{ID, Item, ItemContent, ItemPtr};
+use crate::cursor::Cursor;
 use crate::doc::DocEvents;
-use crate::error::{Error, UpdateError};
 use crate::event::{Event, SubdocsEvent};
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
+use crate::lib0::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::node::{Node, NodePtr, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
 use crate::update::Update;
-use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::utils::OptionExt;
 use crate::{
     Any, Doc, IdSet, In, NodeID, NodeRef, Out, Snapshot, StateVector, Uuid, merge_updates_v1,
@@ -23,7 +23,6 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
-
 // ReadTxn and WriteTxn traits have been replaced by generic impl blocks on Transaction<D>.
 // Use Transaction<&Doc> for read-only access and Transaction<&mut Doc> for read-write access.
 
@@ -168,7 +167,7 @@ impl<D: Deref<Target = Doc>> Transaction<D> {
         &self,
         snapshot: &Snapshot,
         encoder: &mut E,
-    ) -> Result<(), Error> {
+    ) -> crate::Result<()> {
         self.doc().encode_state_from_snapshot(snapshot, encoder)
     }
 
@@ -412,7 +411,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         self.doc.events.get_or_init()
     }
 
-    /// Encodes changes made within the scope of the current transaction using lib0 v1 encoding.
+    /// Encodes changes made within the scope of the current transaction using lib0 v1 lib0.
     ///
     /// Document updates are idempotent and commutative. Caveats:
     /// * It doesn't matter in which order document updates are applied.
@@ -426,7 +425,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         encoder.to_vec()
     }
 
-    /// Encodes changes made within the scope of the current transaction using lib0 v2 encoding.
+    /// Encodes changes made within the scope of the current transaction using lib0 v2 lib0.
     ///
     /// Document updates are idempotent and commutative. Caveats:
     /// * It doesn't matter in which order document updates are applied.
@@ -647,7 +646,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
     /// Remote update integration requires that all to-be-integrated blocks must have their direct
     /// predecessors already in place. Out of order updates from the same peer will be stashed
     /// internally and their integration will be postponed until missing blocks arrive first.
-    pub fn apply_update(&mut self, mut update: Update) -> Result<(), UpdateError> {
+    pub fn apply_update(&mut self, mut update: Update) -> crate::Result<()> {
         // force that transaction.local is set to non-local
         ensure_state(&mut self.state).local = false;
 
@@ -715,28 +714,14 @@ impl<'doc> Transaction<&'doc mut Doc> {
         Ok(())
     }
 
-    pub(crate) fn create_item(
+    pub(crate) fn create_map_item(
         &mut self,
-        pos: &ItemPosition,
+        parent: NodePtr,
+        key: Arc<str>,
         value: In,
-        parent_sub: Option<Arc<str>>,
     ) -> Option<ItemPtr> {
-        let (left, right, origin, id) = {
-            let left = pos.left;
-            let right = pos.right;
-            let origin = if let Some(item) = pos.left.as_deref() {
-                Some(item.last_id())
-            } else {
-                None
-            };
-            let client_id = self.doc.options.client_id;
-            let id = ID::new(client_id, self.doc.get_local_state());
-
-            (left, right, origin, id)
-        };
-        // preliminary node contents are integrated only after the item wrapping them has been
-        // integrated itself - otherwise nested content would have no parent to attach to
-        let mut remainder = None;
+        let left = parent.map.get(&key).copied();
+        let mut delta = None;
         let mut content = match value {
             In::Any(value) => ItemContent::Any(vec![value]),
             In::Node(node) => {
@@ -745,7 +730,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
                     None => TypeRef::Undefined,
                 };
                 let inner = Node::new(node.name.clone(), type_ref);
-                remainder = Some(node);
+                delta = Some(node);
                 ItemContent::Node(inner)
             }
             In::Doc(doc) => {
@@ -758,21 +743,23 @@ impl<'doc> Transaction<&'doc mut Doc> {
         } else {
             None
         };
+        let id = ID::new(self.doc.client_id(), self.doc.get_local_state());
+        let origin = left.as_ref().map(|i| i.last_id());
         let block = Item::new(
             id,
             left,
             origin,
-            right,
-            right.map(|r| r.id().clone()),
-            pos.parent.clone(),
-            parent_sub,
+            None,
+            None,
+            TypePtr::Node(parent),
+            Some(key),
             content,
         )?;
         let block_ptr = self.integrate_item(block, 0);
 
-        if let Some(remainder) = remainder {
+        if let Some(remainder) = delta {
             let mut node = NodeRef::new(inner_ref.unwrap(), &mut *self);
-            node.apply_delta([remainder]);
+            node.apply_delta(*remainder);
         }
 
         block_ptr

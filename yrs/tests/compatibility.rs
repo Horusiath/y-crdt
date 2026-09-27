@@ -8,11 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use yrs::IdSet;
 use yrs::Update;
 use yrs::block::{Block, ClientID, Item, ItemContent};
-use yrs::encoding::read::Read;
+use yrs::lib0::{Decode, Decoder, DecoderV1, Encode, Read};
 use yrs::node::{Node, TypePtr, TypeRef};
 use yrs::test_utils::Blocks;
-use yrs::updates::decoder::{Decode, Decoder, DecoderV1};
-use yrs::updates::encoder::Encode;
 use yrs::{Any, Delta, Doc, ID, In, Out, StateVector};
 
 #[test]
@@ -394,7 +392,7 @@ fn roundtrip_v1(payload: &[u8], expected: &Vec<Block>) {
     assert_eq!(serialized, payload, "failed to encode V1");
 }
 
-/// Same as [roundtrip_v2] but using lib0 v2 encoding.
+/// Same as [roundtrip_v2] but using lib0 v2 lib0.
 fn roundtrip_v2(payload: &[u8], expected: &Vec<Block>) {
     let u = Update::decode_v2(payload).unwrap();
     let expected: Vec<&Block> = expected.iter().collect();
@@ -415,12 +413,12 @@ fn negative_zero_decoding_v2() {
 
     let sequence = Delta::new()
         .insert_attr("id", "V9Uk9pxUKZIrW6cOkC0Rg".to_string())
-        .insert_attr("cuts", In::Node(Delta::new()))
+        .insert_attr("cuts", In::Node(Box::new(Delta::new())))
         .insert_attr("name", "new sequence".to_string());
-    root.insert_attr("sequence", In::Node(sequence));
+    root.insert_attr("sequence", In::Node(Box::new(sequence)));
     root.insert_attr("__version__", 1);
-    root.insert_attr("face_expressions", In::Node(Delta::new()));
-    root.insert_attr("characters", In::Node(Delta::new()));
+    root.insert_attr("face_expressions", In::Node(Box::new(Delta::new())));
+    root.insert_attr("characters", In::Node(Box::new(Delta::new())));
     let expected = root.to_json();
 
     let buffer = txn.encode_state_as_update_v2(&StateVector::default());

@@ -1,5 +1,5 @@
 use crate::any::Any;
-use crate::encoding::read::Error;
+use crate::lib0::Error;
 use serde::de::value::{MapAccessDeserializer, MapDeserializer, SeqDeserializer};
 use serde::de::{IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};

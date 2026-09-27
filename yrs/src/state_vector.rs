@@ -1,7 +1,5 @@
 use crate::block::ClientID;
-use crate::encoding::read::Error;
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
 use crate::{ID, IdSet};
 use std::cmp::Ordering;
@@ -115,7 +113,7 @@ impl FromIterator<(ClientID, u32)> for StateVector {
 }
 
 impl Decode for StateVector {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let len = decoder.read_var::<u32>()? as usize;
         let mut sv = HashMap::with_hasher(BuildHasherDefault::default());
         sv.try_reserve(len)?;
@@ -200,7 +198,7 @@ impl Encode for Snapshot {
 }
 
 impl Decode for Snapshot {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let ds = IdSet::decode(decoder)?;
         let sm = StateVector::decode(decoder)?;
         Ok(Snapshot::new(sm, ds))
@@ -210,7 +208,7 @@ impl Decode for Snapshot {
 #[cfg(test)]
 mod test {
     use crate::block::ClientID;
-    use crate::updates::decoder::Decode;
+    use crate::lib0::Decode;
     use crate::{Doc, StateVector};
     use std::cmp::Ordering;
     use std::iter::FromIterator;

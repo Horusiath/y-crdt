@@ -27,6 +27,11 @@ pub struct Delta<T = Out> {
 /// A single operation on the ordered children axis of a [Delta].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op<T = Out> {
+    /// Retain (skip over) a number of elements, optionally applying a formatting change.
+    Retain {
+        len: u32,
+        format: Option<Box<Attrs>>,
+    },
     /// Insert a text string with optional formatting.
     InsertText {
         text: String,
@@ -42,11 +47,6 @@ pub enum Op<T = Out> {
     Remove {
         len: u32,
         prev: Option<Box<Delta<T>>>,
-    },
-    /// Retain (skip over) a number of elements, optionally applying a formatting change.
-    Retain {
-        len: u32,
-        format: Option<Box<Attrs>>,
     },
     /// Apply a nested delta to an embedded child node, optionally updating its formatting.
     Modify {
@@ -345,6 +345,26 @@ impl<T> Delta<T> {
         }
     }
 
+    pub fn insert_range(mut self, contents: impl IntoIterator<Item = T>) -> Self {
+        self.insert_range_with(contents);
+        self
+    }
+
+    pub fn insert_range_with(&mut self, contents: impl IntoIterator<Item = T>) {
+        if let Some(Op::Insert {
+            items,
+            format: None,
+        }) = self.children.last_mut()
+        {
+            items.extend(contents);
+        } else {
+            self.children.push(Op::Insert {
+                items: contents.into_iter().collect(),
+                format: None,
+            });
+        }
+    }
+
     pub fn insert_range_fmt(
         mut self,
         contents: impl IntoIterator<Item = T>,
@@ -422,7 +442,7 @@ impl Delta<Out> {
 impl From<Delta<In>> for In {
     #[inline]
     fn from(value: Delta<In>) -> Self {
-        In::Node(value)
+        In::Node(Box::new(value))
     }
 }
 

@@ -1158,8 +1158,8 @@ fn quote_formatted_text() {
         let mut txn = doc.transact_mut();
         let mut txt1 = txn.node_mut("text1").unwrap();
         txt1.insert_text(0, "abcde");
-        txt1.format(0, 1, b.clone()); // '<b>a</b>bcde'
-        txt1.format(1, 3, i.clone()); // '<b>a</b><i>bcd</i>e'
+        txt1.format(0, 1, &b); // '<b>a</b>bcde'
+        txt1.format(1, 3, &i); // '<b>a</b><i>bcd</i>e'
     }
     let (l1, l2, l3) = {
         let mut txn = doc.transact_mut();

@@ -531,14 +531,14 @@
 //!    to encode and propagate incremental changes made by transaction to other peers.
 //! 6. Sub-document change callbacks: [Doc::observe_subdocs].
 //!
-//! # Update encoding v1 vs. v2
+//! # Update lib0 v1 vs. v2
 //!
-//! Yrs ships with so called lib0 encoding, which offers two different variants, both of which are
+//! Yrs ships with so called lib0 codecs, which offers two different variants, both of which are
 //! compatible with [Yjs](https://docs.yjs.dev/) and can be used to bridge between applications
 //! written in different languages using Yrs underneath. They offer a highly compact format,
-//! that aims to produce small binary payload size and high encoding/decoding speed.
+//! that aims to produce small binary payload size and high lib0/decoding speed.
 //!
-//! V1 encoding is the default one and should be preferred most of the time. V2 encoding aims to
+//! V1 lib0 is the default one and should be preferred most of the time. V2 lib0 aims to
 //! perform payload size optimizations whenever multiple updates are being encoded and passed
 //! together (e.g. when you want to serialize an entire document state), however for small updates
 //! (e.g. sending individual user keystrokes) V2 may turn out to be less optimal than its V1
@@ -624,22 +624,19 @@ mod id_map;
 mod id_set;
 mod transaction;
 mod update;
-pub mod updates;
 mod utils;
 
 pub mod any;
 pub mod atomic;
-mod block_iter;
 pub mod cell;
 mod cursor;
 mod delta;
-pub mod encoding;
-pub mod error;
 mod gc;
 mod ids;
 mod input;
 pub mod iter;
 pub mod json_path;
+pub mod lib0;
 pub mod node;
 mod node_ref;
 pub mod observer;
@@ -661,6 +658,7 @@ pub use crate::alt::{
 };
 pub use crate::any::Any;
 pub use crate::block::ClientID;
+use crate::block::ContentKind;
 pub use crate::block::ID;
 pub use crate::delta::{AttrOp, Delta, Op};
 pub use crate::doc::Doc;
@@ -764,4 +762,16 @@ pub fn uuid_v4_from(value: u128) -> Uuid {
     dst[35] = HEX[(src[15] & 0x0f) as usize];
     let str: &str = unsafe { std::str::from_utf8_unchecked(&dst) };
     str.into()
+}
+
+pub type Result<T, E = Box<Error>> = std::result::Result<T, E>;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Lib0(#[from] lib0::Error),
+    #[error("GC needs to be turned off")]
+    Gc,
+    #[error("invalid parent: block {parent} should be of type node, but was {kind:?}")]
+    InvalidParent { parent: ID, kind: ContentKind },
 }

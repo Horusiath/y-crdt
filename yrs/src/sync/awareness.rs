@@ -7,9 +7,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::block::ClientID;
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::sync::{Clock, Timestamp};
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
 use crate::{Doc, Observer, Origin};
 
 const NULL_STR: &str = "null";
@@ -538,7 +537,7 @@ impl Encode for AwarenessUpdate {
 }
 
 impl Decode for AwarenessUpdate {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::encoding::read::Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let len: usize = decoder.read_var()?;
         let mut clients = HashMap::new();
         clients.try_reserve(len)?;
@@ -645,9 +644,9 @@ impl Event {
 mod test {
     use crate::Doc;
     use crate::block::ClientID;
+    use crate::lib0::Decode;
     use crate::sync::awareness::{AwarenessUpdateSummary, Event};
     use crate::sync::{Awareness, AwarenessUpdate};
-    use crate::updates::decoder::Decode;
     use arc_swap::ArcSwapOption;
     use serde_json::{Value, json};
     use std::collections::HashMap;

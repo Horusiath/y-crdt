@@ -1,4 +1,4 @@
-use crate::encoding::varint::{Signed, SignedVarInt, VarInt};
+use super::{Signed, SignedVarInt, VarInt};
 
 impl Write for Vec<u8> {
     fn write_all(&mut self, buf: &[u8]) {
@@ -44,7 +44,7 @@ pub trait Write: Sized {
 
     /// Write a variable length integer or unsigned integer.
     ///
-    /// We don't use zig-zag encoding because we want to keep the option open
+    /// We don't use zig-zag lib0 because we want to keep the option open
     /// to use the same function for BigInt and 53bit integers.
     ///
     /// We use the 7th bit instead for signaling that this is a negative number.
@@ -55,7 +55,7 @@ pub trait Write: Sized {
 
     /// Write a variable length integer or unsigned integer.
     ///
-    /// We don't use zig-zag encoding because we want to keep the option open
+    /// We don't use zig-zag lib0 because we want to keep the option open
     /// to use the same function for BigInt and 53bit integers.
     ///
     /// We use the 7th bit instead for signaling that this is a negative number.

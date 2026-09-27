@@ -7,7 +7,7 @@ use crate::{Any, Delta, Doc, Out};
 #[derive(Debug, PartialEq)]
 pub enum In {
     Any(Any),
-    Node(Delta<In>),
+    Node(Box<Delta<In>>),
     Doc(Doc),
 }
 

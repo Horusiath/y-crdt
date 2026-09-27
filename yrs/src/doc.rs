@@ -1,19 +1,17 @@
+use crate::Observer;
 use crate::block::{Block, ClientID, ItemContent, ItemPtr};
 use crate::block_store::BlockStore;
-use crate::encoding::read::Error;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
 use crate::id_set::DeleteSet;
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::{Node, NodePtr, Path, PathSegment, TypeRef};
 use crate::slice::ItemSlice;
 use crate::transaction::TransactionState;
 use crate::transaction::{Origin, TransactionMut};
 use crate::update::PendingUpdate;
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::OptionExt;
 use crate::{Any, Subscription};
 use crate::{ID, IdSet, NodeID, Snapshot, StateVector, Transaction, Uuid, uuid_v4, uuid_v4_from};
-use crate::{Observer, error};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -231,14 +229,14 @@ impl Doc {
         self.options.should_load
     }
 
-    /// Returns encoding used to count offsets and lengths in text operations.
+    /// Returns lib0 used to count offsets and lengths in text operations.
     pub fn offset_kind(&self) -> OffsetKind {
         self.options.offset_kind
     }
 
     define_doc_observer!(
         /// Subscribe callback function for any changes performed within transaction scope. These
-        /// changes are encoded using lib0 v1 encoding and can be decoded using [Update::decode_v1]
+        /// changes are encoded using lib0 v1 lib0 and can be decoded using [Update::decode_v1]
         /// if necessary or passed to remote peers right away. This callback is triggered on
         /// function commit.
         observe_update_v1, observe_update_v1_with, unobserve_update_v1,
@@ -247,7 +245,7 @@ impl Doc {
 
     define_doc_observer!(
         /// Subscribe callback function for any changes performed within transaction scope. These
-        /// changes are encoded using lib0 v2 encoding and can be decoded using [Update::decode_v2]
+        /// changes are encoded using lib0 v2 lib0 and can be decoded using [Update::decode_v2]
         /// if necessary or passed to remote peers right away. This callback is triggered on
         /// function commit.
         observe_update_v2, observe_update_v2_with, unobserve_update_v2,
@@ -448,9 +446,9 @@ impl Doc {
         &self,
         snapshot: &Snapshot,
         encoder: &mut E,
-    ) -> Result<(), error::Error> {
+    ) -> crate::Result<()> {
         if !self.options.skip_gc {
-            return Err(error::Error::Gc);
+            return Err(crate::Error::Gc.into());
         }
         self.write_blocks_to(&snapshot.state_map, encoder);
         snapshot.delete_set.encode(encoder);
@@ -902,7 +900,7 @@ impl Options {
             OffsetKind::Bytes => 1,
             OffsetKind::Utf16 => 0, // 0 for compatibility with Yjs, which doesn't have this option
         };
-        m.insert("encoding".to_owned(), Any::BigInt(encoding));
+        m.insert("lib0".to_owned(), Any::BigInt(encoding));
         m.insert("autoLoad".to_owned(), self.auto_load.into());
         m.insert("shouldLoad".to_owned(), self.should_load.into());
         Any::from(m)
@@ -927,7 +925,7 @@ impl Encode for Options {
 }
 
 impl Decode for Options {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let mut options = Options::default();
         options.should_load = false; // for decoding shouldLoad is false by default
         let guid = decoder.read_string()?;
@@ -939,8 +937,8 @@ impl Decode for Options {
                     ("gc", Any::Bool(gc)) => options.skip_gc = !*gc,
                     ("autoLoad", Any::Bool(auto_load)) => options.auto_load = *auto_load,
                     ("collectionId", Any::String(cid)) => options.collection_id = Some(cid.clone()),
-                    ("encoding", Any::BigInt(1)) => options.offset_kind = OffsetKind::Bytes,
-                    ("encoding", _) => options.offset_kind = OffsetKind::Utf16,
+                    ("lib0", Any::BigInt(1)) => options.offset_kind = OffsetKind::Bytes,
+                    ("lib0", _) => options.offset_kind = OffsetKind::Utf16,
                     _ => { /* do nothing */ }
                 }
             }
@@ -963,13 +961,11 @@ pub enum OffsetKind {
 #[cfg(test)]
 mod test {
     use crate::block::{Block, BlockRange, ClientID, ItemContent};
-    use crate::error::Error;
+    use crate::lib0::{Decode, Encode, Encoder, EncoderV1};
     use crate::out::OutNode;
     use crate::test_utils::{Blocks, exchange_updates};
     use crate::transaction::TransactionMut;
     use crate::update::Update;
-    use crate::updates::decoder::Decode;
-    use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{
         Any, Delta, Doc, ID, IdSet, In, NodeID, NodeRef, OffsetKind, Options, Out, Snapshot,
         StateVector, Subscription, Transaction, TransactionCleanupEvent, UpdateEvent, Uuid, any,
@@ -2273,7 +2269,7 @@ mod test {
                 0x01, 0x00, 0x00, 0x00, 0xed, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0xfe, 0xb8, 0xc2,
                 0xe9, 0xad, 0x87, 0xd9, 0x12, 0x00, 0x00, 0x01, 0x01, 0xff, 0xed, 0xf6,
             ]),
-            Err(crate::encoding::read::Error::EndOfBuffer(_))
+            Err(crate::lib0::Error::EndOfBuffer(_))
         );
 
         assert_matches!(
@@ -2281,7 +2277,7 @@ mod test {
                 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x02, 0x00, 0x00,
                 0x16, 0x02, 0x00, 0x00, 0x01, 0xfd, 0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00,
             ]),
-            Err(crate::encoding::read::Error::EndOfBuffer(_))
+            Err(crate::lib0::Error::EndOfBuffer(_))
         );
         assert_matches!(
             Update::decode_v2(&vec![
@@ -2289,7 +2285,7 @@ mod test {
                 0x00, 0x00, 0xed, 0x01, 0xbe, 0x82, 0xe3, 0xc3, 0x1c, 0x01, 0x02, 0xe4, 0x95, 0x00,
                 0x00, 0x01, 0x18, 0x00, 0x00, 0x01, 0x18, 0x00, 0x00, 0x01, 0x00, 0x01, 0xed, 0x00,
             ]),
-            Err(crate::encoding::read::Error::InvalidVarInt)
+            Err(crate::lib0::Error::InvalidVarInt)
         );
         assert_matches!(
             Update::decode_v2(&vec![
@@ -2298,7 +2294,7 @@ mod test {
                 0x5d, 0xe8, 0x26, 0x9a, 0x8a, 0x59, 0x00, 0x31, 0xd5, 0x0f, 0x12, 0x01, 0x30, 0x00,
                 0x00, 0x00,
             ]),
-            Err(crate::encoding::read::Error::EndOfBuffer(_))
+            Err(crate::lib0::Error::EndOfBuffer(_))
         );
         assert_matches!(
             Update::decode_v2(&vec![
@@ -2306,7 +2302,7 @@ mod test {
                 0xdc, 0x00, 0xc4, 0x7a, 0x80, 0x00, 0x41, 0xab, 0xea, 0xd6, 0x00, 0x01, 0x00, 0x00,
                 0x01, 0x00, 0x00, 0x84, 0x00, 0x00, 0x10, 0xff, 0xc7, 0xdc, 0xff, 0x00, 0x00, 0x00,
             ]),
-            Err(crate::encoding::read::Error::EndOfBuffer(_))
+            Err(crate::lib0::Error::EndOfBuffer(_))
         );
     }
 
@@ -2372,7 +2368,7 @@ mod test {
         for chunk in data {
             delta = delta.insert_text(chunk);
         }
-        if let Out::Node(txt) = map.insert_attr("text", In::Node(delta)) {
+        if let Out::Node(txt) = map.insert_attr("text", In::Node(Box::new(delta))) {
             txn.node_mut(txt.id).unwrap()
         } else {
             unreachable!()
@@ -2527,14 +2523,13 @@ mod test {
         }
     }
 
-    fn restore_from_snapshot(doc: &Doc, snapshot: &Snapshot) -> Result<Doc, Error> {
+    fn restore_from_snapshot(doc: &Doc, snapshot: &Snapshot) -> crate::Result<Doc> {
         let mut encoder = EncoderV1::new();
         doc.transact()
             .encode_state_from_snapshot(&snapshot, &mut encoder)?;
         let mut doc = Doc::new();
         doc.transact_mut()
-            .apply_update(Update::decode_v1(&encoder.to_vec()).unwrap())
-            .unwrap();
+            .apply_update(Update::decode_v1(&encoder.to_vec()).unwrap())?;
         Ok(doc)
     }
 

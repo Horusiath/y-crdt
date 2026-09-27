@@ -2,8 +2,8 @@ use crate::ID;
 use crate::block::{
     BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER, BlockRange, HAS_ORIGIN, HAS_RIGHT_ORIGIN, ItemPtr,
 };
+use crate::lib0::Encoder;
 use crate::node::TypePtr;
-use crate::updates::encoder::Encoder;
 use std::ops::Deref;
 
 #[derive(Debug, Clone, Eq, PartialEq)]

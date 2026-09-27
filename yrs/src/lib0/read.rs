@@ -1,37 +1,9 @@
-use crate::encoding::varint::{Signed, SignedVarInt, VarInt};
+use super::{Error, Signed, SignedVarInt, VarInt};
 use std::any::type_name;
-use std::collections::TryReserveError;
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("failed to decode variable length integer")]
-    InvalidVarInt,
-
-    #[error(
-        "while trying to read more data (expected: {0} bytes), an unexpected end of buffer was reached"
-    )]
-    EndOfBuffer(usize),
-
-    #[error("while reading, an unexpected value was found")]
-    UnexpectedValue,
-
-    #[error("failed to allocate memory: {0}")]
-    NotEnoughMemory(#[from] TryReserveError),
-
-    #[error("JSON parsing error: {0}")]
-    InvalidJSON(#[from] serde_json::Error),
-
-    #[error("couldn't deserialize to target type of {0}")]
-    TypeMismatch(&'static str),
-
-    #[error("{0}")]
-    Custom(String),
-}
-
-impl Error {
+impl super::Error {
     pub fn type_mismatch<T>() -> Self {
-        Error::TypeMismatch(type_name::<T>())
+        super::Error::TypeMismatch(type_name::<T>())
     }
 }
 

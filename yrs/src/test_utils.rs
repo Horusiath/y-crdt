@@ -6,10 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use fastrand::Rng;
 
 use crate::block::{Block, ClientID};
-use crate::encoding::read::{Cursor, Read};
+use crate::lib0::{Cursor, Decode, Decoder, DecoderV1, Encode, Encoder, EncoderV1, Read};
 use crate::update::BlockSet;
-use crate::updates::decoder::{Decode, Decoder, DecoderV1};
-use crate::updates::encoder::{Encode, Encoder, EncoderV1};
 use crate::{Doc, Options, StateVector, Update};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";

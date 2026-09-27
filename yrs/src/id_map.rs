@@ -1,9 +1,7 @@
 use crate::block::{BlockRange, ClientID};
-use crate::encoding::read::Error;
-use crate::encoding::serde::{from_any, to_any};
 use crate::ids::{IdMapInner, IdRanges, Merge};
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
+use crate::lib0::serde::{from_any, to_any};
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::{ID, IdSet};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -394,7 +392,7 @@ impl<A: Serialize + PartialEq + Eq + Hash + Clone> Encode for IdMap<A> {
 }
 
 impl<A: DeserializeOwned + PartialEq + Eq + Hash + Clone> Decode for IdMap<A> {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let mut id_map = IdMap::new();
         let num_clients: u32 = decoder.read_var()?;
         let mut visited_attributions: Vec<ContentAttribute<A>> = Vec::new();
@@ -526,8 +524,7 @@ impl<A: std::fmt::Display> std::fmt::Display for ContentAttribute<A> {
 mod test {
     use crate::block::{BlockRange, ClientID};
     use crate::id_map::{ContentAttribute, Diff, IdMap};
-    use crate::updates::decoder::Decode;
-    use crate::updates::encoder::Encode;
+    use crate::lib0::{Decode, Encode};
     use crate::{ID, IdSet};
     use serde::Serialize;
     use std::hash::Hash;

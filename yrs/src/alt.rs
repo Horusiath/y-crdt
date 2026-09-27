@@ -2,12 +2,10 @@
 //! over document [Update]s directly on their binary representation.
 
 use crate::StateVector;
-use crate::encoding::read::{Cursor, Error};
+use crate::lib0::{Cursor, Decode, DecoderV2, Encode, Encoder, EncoderV1, EncoderV2, Error};
 use crate::update::Update;
-use crate::updates::decoder::{Decode, DecoderV2};
-use crate::updates::encoder::{Encode, Encoder, EncoderV1, EncoderV2};
 
-/// Merges a sequence of updates (encoded using lib0 v1 encoding) together, producing another
+/// Merges a sequence of updates (encoded using lib0 v1 lib0) together, producing another
 /// update (also lib0 v1 encoded) in the result. Returned binary is a combination of all input
 /// `updates`, compressed.
 ///
@@ -27,7 +25,7 @@ where
     Ok(Update::merge_updates(merge).encode_v1())
 }
 
-/// Merges a sequence of updates (encoded using lib0 v2 encoding) together, producing another
+/// Merges a sequence of updates (encoded using lib0 v2 lib0) together, producing another
 /// update (also lib0 v2 encoded) in the result. Returned binary is a combination of all input
 /// `updates`, compressed.
 ///
@@ -47,7 +45,7 @@ where
     Ok(Update::merge_updates(merge).encode_v2())
 }
 
-/// Decodes a input `update` (encoded using lib0 v1 encoding) and returns an encoded [StateVector]
+/// Decodes a input `update` (encoded using lib0 v1 lib0) and returns an encoded [StateVector]
 /// of that update.
 ///
 /// Returns an error whenever any of the input update couldn't be decoded.
@@ -56,7 +54,7 @@ pub fn encode_state_vector_from_update_v1(update: &[u8]) -> Result<Vec<u8>, Erro
     Ok(update.state_vector().encode_v1())
 }
 
-/// Decodes a input `update` (encoded using lib0 v2 encoding) and returns an encoded [StateVector]
+/// Decodes a input `update` (encoded using lib0 v2 lib0) and returns an encoded [StateVector]
 /// of that update.
 ///
 /// Returns an error whenever any of the input update couldn't be decoded.
@@ -65,7 +63,7 @@ pub fn encode_state_vector_from_update_v2(update: &[u8]) -> Result<Vec<u8>, Erro
     Ok(update.state_vector().encode_v2())
 }
 
-/// Givens an input `update` (encoded using lib0 v1 encoding) of document **A** and an encoded
+/// Givens an input `update` (encoded using lib0 v1 lib0) of document **A** and an encoded
 /// `state_vector` of document **B**, returns a lib0 v1 encoded update, that contains all changes
 /// from **A** which have not been observed by **B** (based on its state vector).
 ///
@@ -80,7 +78,7 @@ pub fn diff_updates_v1(update: &[u8], state_vector: &[u8]) -> Result<Vec<u8>, Er
     Ok(result)
 }
 
-/// Givens an input `update` (encoded using lib0 v2 encoding) of document **A** and an encoded
+/// Givens an input `update` (encoded using lib0 v2 lib0) of document **A** and an encoded
 /// `state_vector` of document **B**, returns a lib0 v2 encoded update, that contains all changes
 /// from **A** which have not been observed by **B** (based on its state vector).
 ///

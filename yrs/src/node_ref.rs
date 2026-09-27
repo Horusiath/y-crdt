@@ -1,12 +1,12 @@
-use crate::block::{ID, Item, ItemContent, ItemPosition, ItemPtr, split_str};
+use crate::block::{ID, ItemContent, ItemPtr, split_str};
+use crate::cursor::Cursor;
 use crate::delta::{AttrOp, Op};
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
-use crate::transaction::TransactionMut;
-use crate::utils::OptionExt;
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
+use serde::de::Visitor;
 use smallvec::SmallVec;
 use std::collections::{Bound, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
@@ -44,15 +44,12 @@ where
     T: Deref<Target = Transaction<D>>,
     D: Deref<Target = Doc>,
 {
-    fn seek(&self, index: u32) -> Cursor {
-        //TODO: search markers / skip list indexing
-        let mut cursor = Cursor::new(self.ptr.start, self.txn.doc.options.offset_kind);
-        cursor.forward(index);
-        cursor
-    }
-
     pub fn txn(&self) -> &Transaction<D> {
         &self.txn
+    }
+
+    fn seek(&self, index: u32) -> Option<Cursor> {
+        Cursor::at(self.ptr, self.txn.doc.offset_kind(), index)
     }
 
     /// The parent type, or `None` for root-level types.
@@ -85,7 +82,7 @@ where
 
     /// Returns the element at the given index.
     pub fn get(&self, index: u32) -> Option<Out> {
-        let mut cursor = self.seek(index);
+        let mut cursor = self.seek(index)?;
         cursor.get()
     }
 
@@ -106,19 +103,20 @@ where
         let mut remaining = end - start;
         let mut res = Vec::with_capacity(remaining as usize);
 
-        let mut cursor = self.seek(start);
-        while remaining != 0
-            && let Some(value) = cursor.next()
-        {
-            remaining -= 1;
-            res.push(value);
-        }
+        if let Some(mut cursor) = self.seek(start) {
+            while remaining != 0
+                && let Some(value) = cursor.next()
+            {
+                remaining -= 1;
+                res.push(value);
+            }
+        };
         res
     }
 
     /// Iterator over children values.
-    pub fn iter(&self) -> Cursor {
-        self.seek(0)
+    pub fn iter(&self) -> impl Iterator<Item = Out> + use<T, D> {
+        self.seek(0).unwrap()
     }
 
     /// Returns the value of the named attribute, or `None` if absent or deleted.
@@ -264,41 +262,15 @@ where
         &mut *self.txn
     }
 
-    /// Returns an insert position at a given index, skipping over deleted blocks (like Yjs does).
-    fn insert_position(&mut self, index: u32) -> ItemPosition {
-        let this = self.ptr;
-        if let Some(mut pos) = find_position(this, &mut *self.txn, index) {
-            while let Some(right) = pos.right.as_ref() {
-                if right.is_deleted() {
-                    pos.forward();
-                } else {
-                    break;
-                }
-            }
-            pos
-        } else {
-            panic!("The type or the position doesn't exist!");
-        }
-    }
-
-    /// Inserts a single value at the given index into the list (sequence) component of this type.
-    ///
-    /// Returns the integrated value or `None` if the inserted content was empty.
-    fn insert_item(&mut self, index: u32, content: In) -> Option<ItemPtr> {
-        let pos = self.insert_position(index);
-        self.txn.create_item(&pos, content, None)
-    }
-
     /// Inserts a single value at the given index.
     ///
     /// # Panics
     ///
     /// Panics if `index` is greater than the current length of this type's children.
     pub fn insert(&mut self, index: u32, value: impl Into<In>) -> Out {
-        let ptr = self
-            .insert_item(index, value.into())
-            .expect("cannot insert empty value");
-        ptr.content.get_last().unwrap()
+        let mut cursor = self.seek(index).unwrap();
+        let item = cursor.insert(&mut self.txn, value.into(), None).unwrap();
+        item.content.get_last().unwrap()
     }
 
     /// Inserts multiple values one after another, starting at the given index.
@@ -307,45 +279,25 @@ where
     ///
     /// Panics if `index` is greater than the current length of this type's children.
     pub fn insert_range(&mut self, index: u32, values: impl IntoIterator<Item = impl Into<In>>) {
-        let mut pos = self.insert_position(index);
-        for value in values {
-            if let Some(item) = self.txn.create_item(&pos, value.into(), None) {
-                pos.right = Some(item);
-                pos.forward(); // move insert position past the newly created item
-            }
-        }
+        let delta = Delta::new()
+            .retain(index)
+            .insert_range(values.into_iter().map(Into::into));
+        self.apply_delta(delta)
     }
 
     /// Inserts a string of text at the given index.
     pub fn insert_text(&mut self, index: u32, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        self.insert_item(index, In::Any(Any::String(text.into())));
+        self.apply_delta(Delta::new().retain(index).insert_text(text));
     }
 
     /// Inserts a string of text at the given index with formatting attributes.
-    pub fn insert_text_with(&mut self, index: u32, text: &str, attrs: Attrs) {
-        if text.is_empty() {
-            return;
-        }
-        let this = self.ptr;
-        if let Some(mut pos) = find_position(this, &mut *self.txn, index) {
-            let value = In::Any(Any::String(text.into()));
-            insert(this, &mut *self.txn, &mut pos, value, attrs);
-        } else {
-            panic!("The type or the position doesn't exist!");
-        }
+    pub fn insert_text_fmt(&mut self, index: u32, text: &str, attrs: &Attrs) {
+        self.apply_delta(Delta::new().retain(index).insert_text_fmt(text, &attrs))
     }
 
     /// Applies formatting attributes to a range starting at `index` for `len` elements.
-    pub fn format(&mut self, index: u32, len: u32, attrs: Attrs) {
-        let this = self.ptr;
-        if let Some(mut pos) = find_position(this, &mut *self.txn, index) {
-            insert_format(this, &mut *self.txn, &mut pos, len, attrs);
-        } else {
-            panic!("Index {} is outside of the range.", index);
-        }
+    pub fn format(&mut self, index: u32, len: u32, attrs: &Attrs) {
+        self.apply_delta(Delta::new().retain(index).retain_fmt(len, attrs))
     }
 
     /// Appends a string of text to the end of this type's children.
@@ -355,29 +307,21 @@ where
     }
 
     /// Prepends content to the beginning of this type's children.
+    #[inline]
     pub fn push_front(&mut self, content: impl Into<In>) -> Out {
-        let ptr = self
-            .insert_item(0, content.into())
-            .expect("cannot insert empty value");
-        ptr.content.get_last().unwrap()
+        self.insert(0, content)
     }
 
     /// Appends content to the end of this type's children.
+    #[inline]
     pub fn push_back(&mut self, content: impl Into<In>) -> Out {
-        let index = self.ptr.content_len;
-        let ptr = self
-            .insert_item(index, content.into())
-            .expect("cannot insert empty value");
-        ptr.content.get_last().unwrap()
+        self.insert(self.ptr.content_len, content)
     }
 
     /// Removes `len` elements starting at `index`.
     pub fn remove(&mut self, index: u32, len: u32) {
-        let this = self.ptr;
-        if let Some(mut pos) = find_position(this, &mut *self.txn, index) {
-            remove(&mut *self.txn, &mut pos, len)
-        } else {
-            panic!("The type or the position doesn't exist!");
+        if let Some(mut cursor) = Cursor::at(self.ptr, self.txn.doc.offset_kind(), index) {
+            cursor.remove(&mut self.txn, len);
         }
     }
 
@@ -403,30 +347,11 @@ where
 
     /// Inserts or updates an attribute value.
     pub fn insert_attr(&mut self, name: impl Into<Arc<str>>, value: impl Into<In>) -> Out {
-        let mut name = name.into();
-        let pos = {
-            let inner = self.as_ref();
-            let left = match inner.map.get_key_value(&name) {
-                None => None,
-                Some((existing, left)) => {
-                    name = existing.clone(); // reuse existing string instead of keeping new one allocated
-                    Some(*left)
-                }
-            };
-            ItemPosition {
-                parent: NodePtr::from(inner).into(),
-                left,
-                right: None,
-                index: 0,
-                current_attrs: None,
-            }
-        };
-
-        let ptr = self
+        let item = self
             .txn
-            .create_item(&pos, value.into(), Some(name))
+            .create_map_item(self.ptr, name.into(), value.into())
             .unwrap();
-        ptr.content.get_last().unwrap()
+        item.content.get_last().unwrap()
     }
 
     /// Removes an attribute by name.
@@ -443,512 +368,78 @@ where
     }
 
     /// Applies a sequence of delta operations to this type.
-    pub fn apply_delta(&mut self, deltas: impl IntoIterator<Item = Delta<In>>) {
+    pub fn apply_delta(&mut self, delta: Delta<In>) {
         if self.ptr.item.map(|item| item.is_deleted()).unwrap_or(false) {
             return; // current node is already deleted
         }
 
-        for delta in deltas {
-            if !delta.children.is_empty() {
-                let mut cursor = Cursor::new(self.ptr.start, self.txn.doc.options.offset_kind);
-                for op in delta.children {
-                    match op {
-                        Op::InsertText { text, format } => {}
-                        Op::Insert { items, format } => {}
-                        Op::Remove { len, prev } => {}
-                        Op::Retain { len, format } => {}
-                        Op::Modify { delta, format } => {}
+        if !delta.children.is_empty() {
+            self.apply_ops(delta.children);
+        }
+
+        if !delta.attrs.is_empty() {
+            self.apply_attr_ops(delta.attrs)
+        }
+    }
+
+    fn apply_ops(&mut self, ops: Vec<Op<In>>) {
+        let mut cursor = Cursor::new(self.ptr, self.txn.doc.offset_kind());
+        for op in ops {
+            match op {
+                Op::Retain { len, format: None } => {
+                    let n = cursor.forward(len);
+                    assert_eq!(n, len)
+                }
+                Op::Retain {
+                    len,
+                    format: Some(attrs),
+                } => {
+                    let n = cursor.format(&mut self.txn, len, &attrs);
+                    assert_eq!(n, len)
+                }
+                Op::InsertText { text, format } => {
+                    cursor.insert_text(&mut self.txn, &text, format.as_deref());
+                }
+                Op::Insert { items, format } => {
+                    cursor.insert_range(&mut self.txn, items, format.as_deref());
+                }
+                Op::Remove { len, .. } => {
+                    let n = cursor.remove(&mut self.txn, len);
+                    assert_eq!(n, len)
+                }
+                Op::Modify { delta, format } => {
+                    cursor.skip_hidden();
+                    let item = cursor.right().unwrap();
+                    //assert_matches!(item.content, ItemContent::Node { .. });
+                    if item.is_deleted() { todo!() } else { todo!() }
+                }
+            }
+        }
+    }
+
+    fn apply_attr_ops(&mut self, attrs: HashMap<Arc<str>, AttrOp<In>>) {
+        for (key, op) in attrs {
+            match op {
+                AttrOp::Update { value, .. } => {
+                    self.txn.create_map_item(self.ptr, key, value).unwrap();
+                }
+                AttrOp::Remove { .. } => {
+                    self.ptr.remove(&mut self.txn, &key);
+                }
+                AttrOp::Modify { delta } => match self.ptr.map.get(&key).copied() {
+                    Some(item) => {
+                        let node = item.as_node().unwrap();
+                        NodeRef::new(node, self.txn.deref_mut()).apply_delta(*delta)
                     }
-                }
-            }
-
-            for (key, op) in delta.attrs {
-                match op {
-                    AttrOp::Update { value, prev } => {}
-                    AttrOp::Remove { prev } => {}
-                    AttrOp::Modify { delta } => {}
-                }
-            }
-        }
-    }
-}
-
-pub struct Cursor {
-    curr: Option<ItemPtr>,
-    index: u32,
-    offset: u32,
-    encoding: OffsetKind,
-}
-
-impl Cursor {
-    fn new(start: Option<ItemPtr>, encoding: OffsetKind) -> Self {
-        Cursor {
-            curr: start,
-            index: 0,
-            offset: 0,
-            encoding,
-        }
-    }
-
-    fn forward(&mut self, by: u32) -> u32 {
-        let mut remaining = by + self.offset;
-        self.offset = 0;
-        while remaining != 0
-            && let Some(item) = self.curr
-        {
-            if !item.is_deleted() && item.is_countable() {
-                let len = item.content_len(self.encoding);
-                if remaining < len {
-                    self.offset = remaining;
-                    return by;
-                }
-                remaining -= len;
-                self.index += len;
-                self.curr = item.right;
-            }
-        }
-        by - remaining
-    }
-
-    fn get(&self) -> Option<Out> {
-        let item = self.curr?;
-        match &item.content {
-            ItemContent::Any(values) => values.get(self.offset as usize).cloned().map(Out::Any),
-            ItemContent::String(slice) => {
-                let c = slice.chars().nth(self.offset as usize)?;
-                Some(Out::Any(Any::String(c.to_string().into())))
-            }
-            ItemContent::JSON(values) => values
-                .get(self.offset as usize)
-                .map(|json| Out::Any(Any::from(json.as_str()))),
-            ItemContent::Binary(bin) if self.offset == 0 => {
-                Some(Out::Any(Any::Buffer(bin.as_slice().into())))
-            }
-            ItemContent::Doc(_, options) if self.offset == 0 => {
-                Some(Out::Doc(options.guid.clone()))
-            }
-            ItemContent::Embed(value) if self.offset == 0 => Some(Out::Any(value.clone())),
-            ItemContent::Node(node) if self.offset == 0 => Some(Out::node(node.id())),
-            _ => None,
-        }
-    }
-}
-
-impl Iterator for Cursor {
-    type Item = Out;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let value = self.get()?;
-        // try to move forward by 1
-        self.index += 1;
-        while let Some(item) = self.curr {
-            if !item.is_deleted() && item.is_countable() {
-                let len = item.content_len(self.encoding);
-                if self.offset < len - 1 {
-                    // we're still inside current
-                    self.offset += 1;
-                    break;
-                }
-            }
-            self.offset = 0;
-            self.curr = item.right;
-        }
-        Some(value)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        if let Some(curr) = self.curr {
-            let node = curr.parent.as_node().unwrap();
-            let len = (node.content_len - self.index) as usize;
-            (len, Some(len))
-        } else {
-            (0, Some(0))
-        }
-    }
-}
-
-/// Locates an [ItemPosition] within the sequence component of a `this` node at a given content
-/// `index`, splitting blocks if necessary so that the position falls exactly on a block boundary.
-///
-/// Ported from the former `TextRef`/`ArrayRef` internals as part of the [NodeRef] unification.
-fn find_position(this: NodePtr, txn: &mut TransactionMut, index: u32) -> Option<ItemPosition> {
-    let mut pos = ItemPosition {
-        parent: this.into(),
-        left: None,
-        right: this.start,
-        index: 0,
-        current_attrs: None,
-    };
-
-    let mut format_ptrs = HashMap::new();
-    let store = &mut *txn.doc;
-    let encoding = store.options.offset_kind;
-    let mut remaining = index;
-    while let Some(right) = pos.right {
-        if remaining == 0 {
-            break;
-        }
-
-        if !right.is_deleted() {
-            match &right.content {
-                ItemContent::Format(key, value) => {
-                    if let Any::Null = value.as_ref() {
-                        format_ptrs.remove(key);
-                    } else {
-                        format_ptrs.insert(key.clone(), pos.right.clone());
-                    }
-                }
-                _ => {
-                    let mut block_len = right.len();
-                    let content_len = right.content_len(encoding);
-                    if remaining < content_len {
-                        // split right item
-                        let offset = if let ItemContent::String(str) = &right.content {
-                            str.block_offset(remaining, encoding)
-                        } else {
-                            remaining
-                        };
-                        store
-                            .blocks
-                            .split_block(right, offset, OffsetKind::Utf16)
+                    None => {
+                        self.txn
+                            .create_map_item(self.ptr, key, In::Node(delta))
                             .unwrap();
-                        block_len -= offset;
-                        remaining = 0;
-                    } else {
-                        remaining -= content_len;
                     }
-                    pos.index += block_len;
-                }
-            }
-        }
-        pos.left = pos.right.take();
-        pos.right = if let Some(item) = pos.left.as_deref() {
-            item.right
-        } else {
-            None
-        };
-    }
-
-    for (_, block_ptr) in format_ptrs {
-        if let Some(item) = block_ptr {
-            if let ItemContent::Format(key, value) = &item.content {
-                let attrs = pos.current_attrs.get_or_init();
-                update_current_attributes(attrs, key, value.as_ref());
+                },
             }
         }
     }
-
-    Some(pos)
-}
-
-/// Inserts a `value` at a given `pos` wrapping it with formatting blocks described by `attributes`.
-fn insert(
-    branch: NodePtr,
-    txn: &mut TransactionMut,
-    pos: &mut ItemPosition,
-    value: In,
-    mut attributes: Attrs,
-) -> Option<ItemPtr> {
-    pos.unset_missing(&mut attributes);
-    minimize_attr_changes(pos, &attributes);
-    let negated_attrs = insert_attributes(branch, txn, pos, attributes);
-
-    let item = if let Some(item) = txn.create_item(&pos, value, None) {
-        pos.right = Some(item);
-        pos.forward();
-        Some(item)
-    } else {
-        None
-    };
-
-    insert_negated_attributes(branch, txn, pos, negated_attrs);
-    item
-}
-
-pub(crate) fn update_current_attributes(attrs: &mut Attrs, key: &str, value: &Any) {
-    if let Any::Null = value {
-        attrs.remove(key);
-    } else {
-        attrs.insert(key.into(), value.clone());
-    }
-}
-
-fn remove(txn: &mut TransactionMut, pos: &mut ItemPosition, len: u32) {
-    let encoding = txn.doc().options.offset_kind;
-    let mut remaining = len;
-    let start = pos.right.clone();
-    let start_attrs = pos.current_attrs.clone();
-    while let Some(item) = pos.right.as_deref() {
-        if remaining == 0 {
-            break;
-        }
-
-        if !item.is_deleted() {
-            match &item.content {
-                ItemContent::Embed(_) | ItemContent::String(_) | ItemContent::Node(_) => {
-                    let content_len = item.content_len(encoding);
-                    let ptr = pos.right.unwrap();
-                    if remaining < content_len {
-                        // split block
-                        let offset = if let ItemContent::String(s) = &item.content {
-                            s.block_offset(remaining, encoding)
-                        } else {
-                            len
-                        };
-                        remaining = 0;
-                        txn.doc.blocks.split_block(ptr, offset, OffsetKind::Utf16);
-                    } else {
-                        remaining -= content_len;
-                    };
-                    txn.delete(ptr);
-                }
-                _ => {}
-            }
-        }
-
-        pos.forward();
-    }
-
-    if remaining > 0 {
-        panic!(
-            "Couldn't remove {} elements from an array. Only {} of them were successfully removed.",
-            len,
-            len - remaining
-        );
-    }
-
-    if let (Some(start), Some(start_attrs), Some(end_attrs)) =
-        (start, start_attrs, pos.current_attrs.as_mut())
-    {
-        clean_format_gap(
-            txn,
-            Some(start),
-            pos.right,
-            start_attrs.as_ref(),
-            end_attrs.as_mut(),
-        );
-    }
-}
-
-fn is_valid_target(item: ItemPtr) -> bool {
-    if item.is_deleted() {
-        true
-    } else if let ItemContent::Format(_, _) = &item.content {
-        true
-    } else {
-        false
-    }
-}
-
-fn insert_format(
-    this: NodePtr,
-    txn: &mut TransactionMut,
-    pos: &mut ItemPosition,
-    mut len: u32,
-    attrs: Attrs,
-) {
-    minimize_attr_changes(pos, &attrs);
-    let mut negated_attrs = insert_attributes(this, txn, pos, attrs.clone()); //TODO: remove `attrs.clone()`
-    let encoding = txn.doc().options.offset_kind;
-    // iterate until first non-format or null is found
-    // delete all formats with attributes[format.key] != null
-    // also check the attributes after the first non-format as we do not want to insert redundant
-    // negated attributes there
-    while let Some(right) = pos.right {
-        if !(len > 0 || (!negated_attrs.is_empty() && is_valid_target(right))) {
-            break;
-        }
-
-        if !right.is_deleted() {
-            match &right.content {
-                ItemContent::Format(key, value) => {
-                    if let Some(v) = attrs.get(key) {
-                        if v == value.as_ref() {
-                            negated_attrs.remove(key);
-                        } else {
-                            negated_attrs.insert(key.clone(), *value.clone());
-                        }
-                        txn.delete(right);
-                    }
-                }
-                ItemContent::String(s) => {
-                    let content_len = right.content_len(encoding);
-                    if len < content_len {
-                        // split block
-                        let offset = s.block_offset(len, encoding);
-                        let new_right =
-                            txn.doc.blocks.split_block(right, offset, OffsetKind::Utf16);
-                        pos.left = Some(right);
-                        pos.right = new_right;
-                        break;
-                    }
-                    len -= content_len;
-                }
-                _ => {
-                    let content_len = right.len();
-                    if len < content_len {
-                        let new_right = txn.doc.blocks.split_block(right, len, OffsetKind::Utf16);
-                        pos.left = Some(right);
-                        pos.right = new_right;
-                        break;
-                    }
-                    len -= content_len;
-                }
-            }
-        }
-
-        if !pos.forward() {
-            break;
-        }
-    }
-
-    insert_negated_attributes(this, txn, pos, negated_attrs);
-}
-
-fn minimize_attr_changes(pos: &mut ItemPosition, attrs: &Attrs) {
-    // go right while attrs[right.key] === right.value (or right is deleted)
-    while let Some(i) = pos.right.as_deref() {
-        if !i.is_deleted() {
-            if let ItemContent::Format(k, v) = &i.content {
-                if let Some(v2) = attrs.get(k) {
-                    if (v.as_ref()).eq(v2) {
-                        pos.forward();
-                        continue;
-                    }
-                }
-            }
-
-            break;
-        } else {
-            pos.forward();
-        }
-    }
-}
-
-fn insert_attributes(
-    this: NodePtr,
-    txn: &mut TransactionMut,
-    pos: &mut ItemPosition,
-    attrs: Attrs,
-) -> Attrs {
-    let mut negated_attrs = HashMap::with_capacity(attrs.len());
-    let mut store = &mut *txn.doc;
-    for (k, v) in attrs {
-        let current_value = pos
-            .current_attrs
-            .as_ref()
-            .and_then(|a| a.get(&k))
-            .unwrap_or(&Any::Null);
-        if &v != current_value {
-            // save negated attribute (set null if currentVal undefined)
-            negated_attrs.insert(k.clone(), current_value.clone());
-
-            let client_id = store.options.client_id;
-            let parent = TypePtr::Node(this);
-            let item = Item::new(
-                ID::new(client_id, store.blocks.get_clock(&client_id)),
-                pos.left.clone(),
-                pos.left.map(|ptr| ptr.last_id()),
-                pos.right.clone(),
-                pos.right.map(|ptr| ptr.id().clone()),
-                parent,
-                None,
-                ItemContent::Format(k, v.into()),
-            )
-            .unwrap();
-            let item_ptr = txn.integrate_item(item, 0);
-            pos.right = item_ptr;
-            pos.forward();
-            store = &mut *txn.doc;
-        }
-    }
-    negated_attrs
-}
-
-fn insert_negated_attributes(
-    this: NodePtr,
-    txn: &mut TransactionMut,
-    pos: &mut ItemPosition,
-    mut attrs: Attrs,
-) {
-    while let Some(item) = pos.right.as_deref() {
-        if !item.is_deleted() {
-            if let ItemContent::Format(key, value) = &item.content {
-                if let Some(curr_val) = attrs.get(key) {
-                    if curr_val == value.as_ref() {
-                        attrs.remove(key);
-                        pos.forward();
-                        continue;
-                    }
-                }
-            }
-
-            break;
-        } else {
-            pos.forward();
-        }
-    }
-
-    let mut store = &mut *txn.doc;
-    for (k, v) in attrs {
-        let client_id = store.options.client_id;
-        let parent = TypePtr::Node(this);
-        let item = Item::new(
-            ID::new(client_id, store.blocks.get_clock(&client_id)),
-            pos.left.clone(),
-            pos.left.map(|ptr| ptr.last_id()),
-            pos.right.clone(),
-            pos.right.map(|ptr| ptr.id().clone()),
-            parent,
-            None,
-            ItemContent::Format(k, v.into()),
-        )
-        .unwrap();
-        let item_ptr = txn.integrate_item(item, 0);
-        pos.right = item_ptr;
-        pos.forward();
-        store = &mut *txn.doc;
-    }
-}
-
-fn clean_format_gap(
-    txn: &mut TransactionMut,
-    mut start: Option<ItemPtr>,
-    mut end: Option<ItemPtr>,
-    start_attrs: &Attrs,
-    end_attrs: &mut Attrs,
-) -> u32 {
-    while let Some(item) = end.as_deref() {
-        match &item.content {
-            ItemContent::String(_) | ItemContent::Embed(_) => break,
-            ItemContent::Format(key, value) if !item.is_deleted() => {
-                update_current_attributes(end_attrs, key.as_ref(), value);
-            }
-            _ => {}
-        }
-        end = item.right.clone();
-    }
-
-    let mut cleanups = 0;
-    while start != end {
-        if let Some(item) = start.as_deref() {
-            let right = item.right.clone();
-            if !item.is_deleted() {
-                if let ItemContent::Format(key, value) = &item.content {
-                    let e = end_attrs.get(key).unwrap_or(&Any::Null);
-                    let s = start_attrs.get(key).unwrap_or(&Any::Null);
-                    if e != value.as_ref() || s == value.as_ref() {
-                        txn.delete(start.unwrap());
-                        cleanups += 1;
-                    }
-                }
-            }
-            start = right;
-        } else {
-            break;
-        }
-    }
-    cleanups
 }
 
 #[derive(Debug, Clone)]

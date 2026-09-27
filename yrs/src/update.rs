@@ -3,13 +3,10 @@ use crate::block::{
     BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER, Block, BlockRange, ClientID, HAS_ORIGIN,
     HAS_PARENT_SUB, HAS_RIGHT_ORIGIN, Item, ItemContent,
 };
-use crate::encoding::read::Error;
-use crate::error::UpdateError;
 use crate::id_set::IdSet;
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::{NodePtr, TypePtr, TypeRef};
 use crate::transaction::TransactionMut;
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
 use crate::utils::client_hasher::ClientHasher;
 use crate::{ID, StateVector};
 use smallvec::SmallVec;
@@ -325,7 +322,7 @@ impl Update {
     pub(crate) fn integrate(
         mut self,
         txn: &mut TransactionMut,
-    ) -> Result<(Option<PendingUpdate>, Option<Update>), UpdateError> {
+    ) -> crate::Result<(Option<PendingUpdate>, Option<Update>)> {
         let remaining_blocks = if self.blocks.is_empty() {
             None
         } else {
@@ -376,10 +373,7 @@ impl Update {
         Ok((remaining_blocks, remaining_ds))
     }
 
-    fn missing_dependency(
-        block: &mut Block,
-        store: &mut Doc,
-    ) -> Result<Option<ClientID>, UpdateError> {
+    fn missing_dependency(block: &mut Block, store: &mut Doc) -> crate::Result<Option<ClientID>> {
         if let Block::Item(item) = block {
             if let Some(origin_left) = &item.origin {
                 if store.blocks.is_missing(origin_left) {
@@ -483,10 +477,10 @@ impl Update {
                             }
                             ItemContent::Deleted(_) => TypePtr::Unknown,
                             other => {
-                                return Err(UpdateError::InvalidParent(
-                                    id.clone(),
-                                    other.get_ref_number(),
-                                ));
+                                return Err(Box::new(crate::Error::InvalidParent {
+                                    parent: id.clone(),
+                                    kind: other.kind(),
+                                }));
                             }
                         }
                     } else {
@@ -539,7 +533,10 @@ impl Update {
         }
     }
 
-    fn decode_block<D: Decoder>(id: ID, decoder: &mut D) -> Result<Option<Block>, Error> {
+    fn decode_block<D: Decoder>(
+        id: ID,
+        decoder: &mut D,
+    ) -> Result<Option<Block>, crate::lib0::Error> {
         let info = decoder.read_info()?;
         match info {
             BLOCK_SKIP_REF_NUMBER => {
@@ -821,7 +818,7 @@ impl Encode for Update {
 }
 
 impl Decode for Update {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         // read blocks
         let clients_len: u32 = decoder.read_var()?;
         let mut clients = HashMap::with_hasher(BuildHasherDefault::default());
@@ -1070,12 +1067,10 @@ mod test {
     use std::sync::{Arc, Mutex};
 
     use crate::block::{Block, BlockRange, ClientID, Item, ItemContent};
-    use crate::encoding::read::Cursor;
+
+    use crate::lib0::{Cursor, Decode, DecoderV1, Encode};
     use crate::node::TypePtr;
-    use crate::out::OutNode;
     use crate::update::{BlockSet, Update};
-    use crate::updates::decoder::{Decode, DecoderV1};
-    use crate::updates::encoder::Encode;
     use crate::{Any, Delta, Doc, ID, IdSet, Options, Out, StateVector, merge_updates_v1};
 
     #[test]
@@ -1286,23 +1281,23 @@ mod test {
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("r".to_string())]);
+            .apply_delta(Delta::new().insert("r".to_string()));
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("o".to_string())]);
+            .apply_delta(Delta::new().insert("o".to_string()));
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("n".to_string())]);
+            .apply_delta(Delta::new().insert("n".to_string()));
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("e".to_string())]);
+            .apply_delta(Delta::new().insert("e".to_string()));
         d0.transact_mut()
             .node_mut("textBlock")
             .unwrap()
-            .apply_delta([Delta::new().insert("n".to_string())]);
+            .apply_delta(Delta::new().insert("n".to_string()));
         drop(sub);
         drop(d0);
 

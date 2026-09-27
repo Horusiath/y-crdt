@@ -1,29 +1,29 @@
+use super::{Cursor, Error, Read};
 use crate::block::ClientID;
-use crate::encoding::read::{Cursor, Error, Read};
-use crate::*;
+use crate::{Any, ID};
 use std::sync::Arc;
 
 /// A trait that can be implemented by any other type in order to support lib0 decoding capability.
 pub trait Decode: Sized {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error>;
 
-    /// Helper function for decoding 1st version of lib0 encoding.
+    /// Helper function for decoding 1st version of lib0.
     fn decode_v1(data: &[u8]) -> Result<Self, Error> {
         let mut decoder = DecoderV1::from(data);
         Self::decode(&mut decoder)
     }
 
-    /// Helper function for decoding 2nd version of lib0 encoding.
+    /// Helper function for decoding 2nd version of lib0.
     fn decode_v2(data: &[u8]) -> Result<Self, Error> {
         let mut decoder = DecoderV2::new(Cursor::new(data))?;
         Self::decode(&mut decoder)
     }
 }
 
-/// Trait used by lib0 decoders. Natively lib0 encoding supports two versions:
+/// Trait used by lib0 decoders. Natively lib0 supports two versions:
 ///
-/// 1. 1st version (implemented in Yrs) uses simple optimization techniques like var int encoding.
-/// 2. 2nd version optimizes bigger batches of blocks by using run-length encoding.
+/// 1. 1st version (implemented in Yrs) uses simple optimization techniques like var int lib0.
+/// 2. 2nd version optimizes bigger batches of blocks by using run-length lib0.
 ///
 /// Both of these define a common set of operations defined in this trait.  
 pub trait Decoder: Read {

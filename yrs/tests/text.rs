@@ -1,10 +1,9 @@
 use fastrand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
+use yrs::lib0::{Decode, Encode};
 use yrs::node::{Attrs, Observable};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
-use yrs::updates::decoder::Decode;
-use yrs::updates::encoder::Encode;
 use yrs::{
     Acquire, AcquireMut, Any, Cell, ClientID, Delta, DeltaOptions, Doc, IdSet, In, OffsetKind, Op,
     Options, Out, Snapshot, StateVector, Update, any,
@@ -390,7 +389,7 @@ fn observer() {
         let mut txn = doc.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .insert_text_with(1, "e", attrs.clone()); // => 'a<bold>e</bold>d'
+            .insert_text_fmt(1, "e", &attrs); // => 'a<bold>e</bold>d'
     }
     assert_eq!(delta(), Delta::out().retain(1).insert_text_fmt("e", &attrs));
 
@@ -398,7 +397,7 @@ fn observer() {
     let attrs = Attrs::from([("bold".into(), Any::Null)]);
     {
         let mut txn = doc.transact_mut();
-        txn.node_mut("text").unwrap().format(1, 1, attrs.clone()); // => 'aed'
+        txn.node_mut("text").unwrap().format(1, 1, &attrs); // => 'aed'
     }
     assert_eq!(delta(), Delta::out().retain(1).retain_fmt(2, &attrs));
 
@@ -528,7 +527,7 @@ fn basic_format() {
     {
         let mut txn = d1.transact_mut();
         let mut txt1 = txn.node_mut("text").unwrap();
-        txt1.insert_text_with(0, "abc", a.clone());
+        txt1.insert_text_fmt(0, "abc", &a);
         let expected = Delta::out().insert_text_fmt("abc", &a);
         assert_eq!(txt1.delta(&DeltaOptions::default()), expected);
         let update = txn.encode_update_v1();
@@ -598,7 +597,7 @@ fn basic_format() {
     {
         let mut txn = d1.transact_mut();
         let mut txt1 = txn.node_mut("text").unwrap();
-        txt1.insert_text_with(0, "z", a.clone());
+        txt1.insert_text_fmt(0, "z", &a);
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(actual, Delta::out().insert_text_fmt("zb", &a));
         let update = txn.encode_update_v1();
@@ -649,7 +648,7 @@ fn basic_format() {
         let mut txn = d1.transact_mut();
         let b: Attrs = HashMap::from([("bold".into(), Any::Null)]);
         let mut txt1 = txn.node_mut("text").unwrap();
-        txt1.format(0, 2, b.clone());
+        txt1.format(0, 2, &b);
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(
             actual,
@@ -698,8 +697,8 @@ fn embed_with_attributes() {
     let (update_v1, update_v2) = {
         let mut txn = d1.transact_mut();
         let mut txt1 = txn.node_mut("text").unwrap();
-        txt1.insert_text_with(0, "ab", a1.clone());
-        txt1.apply_delta([Delta::new().retain(1).insert_fmt(embed.clone(), &a2)]);
+        txt1.insert_text_fmt(0, "ab", &a1);
+        txt1.apply_delta(Delta::new().retain(1).insert_fmt(embed.clone(), &a2));
         assert_eq!(txt1.delta(&DeltaOptions::default()), expected);
 
         let update_v1 = txn.encode_state_as_update_v1(&StateVector::default());
@@ -748,7 +747,7 @@ fn issue_101() {
     };
     {
         let mut txn = d1.transact_mut();
-        txn.node_mut("text").unwrap().format(1, 2, attrs.clone());
+        txn.node_mut("text").unwrap().format(1, 2, &attrs);
     }
     assert_eq!(
         &*delta.acquire(),
@@ -811,9 +810,9 @@ fn text_diff_adjacent() {
     let mut txn = doc.transact_mut();
     let mut txt = txn.node_mut("text").unwrap();
     let attrs1 = Attrs::from([("a".into(), "a".into())]);
-    txt.insert_text_with(0, "abc", attrs1.clone());
+    txt.insert_text_fmt(0, "abc", &attrs1);
     let attrs2 = Attrs::from([("a".into(), "a".into()), ("b".into(), "b".into())]);
-    txt.insert_text_with(3, "def", attrs2.clone());
+    txt.insert_text_fmt(3, "def", &attrs2);
 
     let expected = Delta::out()
         .insert_text_fmt("abc", &attrs1)
@@ -900,7 +899,7 @@ fn delete_3_byte_character_from_middle_2() {
 
     txt.insert_text(0, "👯🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨");
 
-    txt.format("👯".len() as u32, "🙇‍♀️🙇‍♀️".len() as u32, HashMap::new());
+    txt.format("👯".len() as u32, "🙇‍♀️🙇‍♀️".len() as u32, &Attrs::new());
     txt.remove("👯🙇‍♀️🙇‍♀️".len() as u32, "⏰".len() as u32); // will delete ⏰ and 👩‍❤️‍💋‍👨
 
     assert_eq!(txt.to_string(), "👯🙇‍♀️🙇‍♀️👩‍❤️‍💋‍👨");
@@ -914,7 +913,7 @@ fn delete_3_byte_character_from_middle_after_insert_and_format() {
 
     txt.insert_text(0, "🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨");
     txt.insert_text(0, "👯");
-    txt.format("👯".len() as u32, "🙇‍♀️🙇‍♀️".len() as u32, HashMap::new());
+    txt.format("👯".len() as u32, "🙇‍♀️🙇‍♀️".len() as u32, &Attrs::new());
 
     // will delete ⏰ and 👩‍❤️‍💋‍👨
     txt.remove("👯🙇‍♀️🙇‍♀️".len() as u32, "⏰".len() as u32); // will delete ⏰ and 👩‍❤️‍💋‍👨
@@ -930,12 +929,12 @@ fn delete_multi_byte_character_from_middle_after_insert_and_format() {
 
     txt.insert_text(0, "❤️❤️🙇‍♀️🙇‍♀️⏰👩‍❤️‍💋‍👨👩‍❤️‍💋‍👨");
     txt.insert_text(0, "👯");
-    txt.format("👯".len() as u32, "❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32, HashMap::new());
+    txt.format("👯".len() as u32, "❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32, &Attrs::new());
     txt.insert_text("👯❤️❤️🙇‍♀️🙇‍♀️⏰".len() as u32, "⏰");
     txt.format(
         "👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰".len() as u32,
         "👩‍❤️‍💋‍👨".len() as u32,
-        HashMap::new(),
+        &Attrs::new(),
     );
     txt.remove("👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰👩‍❤️‍💋‍👩".len() as u32, "👩‍❤️‍💋‍👨".len() as u32);
     assert_eq!(txt.to_string().as_str(), "👯❤️❤️🙇‍♀️🙇‍♀️⏰⏰👩‍❤️‍💋‍👨");
@@ -948,8 +947,8 @@ fn insert_string_with_no_attribute() {
     let mut txt = txn.node_mut("test").unwrap();
 
     let attrs = Attrs::from([("a".into(), "a".into())]);
-    txt.insert_text_with(0, "ac", attrs.clone());
-    txt.insert_text_with(1, "b", Attrs::new());
+    txt.insert_text_fmt(0, "ac", &attrs);
+    txt.insert_text_fmt(1, "b", &Attrs::new());
 
     let expected = Delta::out()
         .insert_text_fmt("a", &attrs)
@@ -968,7 +967,7 @@ fn insert_empty_string_with_attributes() {
         let mut txt = txn.node_mut("test").unwrap();
         txt.insert_text(0, "abc");
         txt.insert_text(1, ""); // nothing changes
-        txt.insert_text_with(1, "", attrs); // nothing changes
+        txt.insert_text_fmt(1, "", &attrs); // nothing changes
 
         assert_eq!(txt.to_string(), "abc");
     }
@@ -1015,11 +1014,11 @@ fn diff_with_embedded_items() {
     let bold = Attrs::from([("b".into(), true.into())]);
     let italic = Attrs::from([("i".into(), true.into())]);
 
-    text.insert_text_with(0, "hello world", italic.clone()); // "<i>hello world</i>"
-    text.format(6, 5, bold.clone()); // "<i>hello <b>world</b></i>"
+    text.insert_text_fmt(0, "hello world", &italic); // "<i>hello world</i>"
+    text.format(6, 5, &bold); // "<i>hello <b>world</b></i>"
     let image = Any::Buffer(vec![0, 0, 0, 0].into());
     text.insert(5, image.clone()); // insert binary after "hello"
-    let array = text.insert(5, In::Node(Delta::new())); // insert array ref after "hello"
+    let array = text.insert(5, In::Node(Box::new(Delta::new()))); // insert array ref after "hello"
 
     let italic_and_bold = Attrs::from([("b".into(), true.into()), ("i".into(), true.into())]);
     let expected = Delta::out()
@@ -1079,12 +1078,14 @@ fn multiline_format() {
     let mut txt = txn.node_mut("text").unwrap();
     let bold = Attrs::from([("bold".into(), true.into())]);
     txt.insert_text(0, "Test\nMulti-line\nFormatting");
-    txt.apply_delta([Delta::new()
-        .retain_fmt(4, &bold)
-        .retain(1) // newline character
-        .retain_fmt(10, &bold)
-        .retain(1) // newline character
-        .retain_fmt(10, &bold)]);
+    txt.apply_delta(
+        Delta::new()
+            .retain_fmt(4, &bold)
+            .retain(1) // newline character
+            .retain_fmt(10, &bold)
+            .retain(1) // newline character
+            .retain_fmt(10, &bold),
+    );
 
     let expected = Delta::out()
         .insert_text_fmt("Test", &bold)
@@ -1103,7 +1104,7 @@ fn delta_with_embeds() {
     let linebreak = any!({
         "linebreak": "s"
     });
-    txt.apply_delta([Delta::new().insert(linebreak.clone())]);
+    txt.apply_delta(Delta::new().insert(linebreak.clone()));
 
     let expected = Delta::new().insert(linebreak).map(|i| match i {
         In::Any(any) => Out::Any(any),
@@ -1127,9 +1128,9 @@ fn delta_with_shared_ref() {
 
     let update = {
         let mut txn1 = d1.transact_mut();
-        txn1.node_mut("text")
-            .unwrap()
-            .apply_delta([Delta::new().insert(In::Node(Delta::new().insert_attr("key", "val")))]);
+        txn1.node_mut("text").unwrap().apply_delta(
+            Delta::new().insert(In::Node(Box::new(Delta::new().insert_attr("key", "val")))),
+        );
         txn1.encode_update_v1()
     };
 
@@ -1172,17 +1173,19 @@ fn delta_snapshots() {
     let mut txn = doc.transact_mut();
     txn.node_mut("text")
         .unwrap()
-        .apply_delta([Delta::new().insert_text("abcd")]);
+        .apply_delta(Delta::new().insert_text("abcd"));
     let snapshot1 = txn.snapshot(); // 'abcd'
     txn.node_mut("text")
         .unwrap()
-        .apply_delta([Delta::new().retain(1).insert_text("x").remove(1)]);
+        .apply_delta(Delta::new().retain(1).insert_text("x").remove(1));
     let snapshot2 = txn.snapshot(); // 'axcd'
-    txn.node_mut("text").unwrap().apply_delta([Delta::new()
-        .retain(2) // ax^cd
-        .remove(1) // ax^d
-        .insert_text("x") // axx^d
-        .remove(1)]); // axx^
+    txn.node_mut("text").unwrap().apply_delta(
+        Delta::new()
+            .retain(2) // ax^cd
+            .remove(1) // ax^d
+            .insert_text("x") // axx^d
+            .remove(1),
+    ); // axx^
     drop(txn);
 
     let delta_opts = |to: &Snapshot, from: Option<&Snapshot>| {
@@ -1229,10 +1232,10 @@ fn snapshot_delete_after() {
     let mut txn = doc.transact_mut();
     txn.node_mut("text")
         .unwrap()
-        .apply_delta([Delta::new().insert_text("abcd")]);
+        .apply_delta(Delta::new().insert_text("abcd"));
     let snapshot1 = txn.snapshot();
     let mut text = txn.node_mut("text").unwrap();
-    text.apply_delta([Delta::new().retain(4).insert_text("e")]);
+    text.apply_delta(Delta::new().retain(4).insert_text("e"));
 
     // TODO(unified-api): snapshot-scoped rendering (`Text::diff_range`) has no `DeltaOptions`
     // equivalent yet - `items_to_render`/`deleted_items` take an `IdSet`, not a `Snapshot`.
@@ -1260,7 +1263,7 @@ fn empty_delta_chunks() {
 
     {
         let mut txt = txn.node_mut("text").unwrap();
-        txt.apply_delta([delta]);
+        txt.apply_delta(delta);
         assert_eq!(txt.to_string(), "ab");
     }
 

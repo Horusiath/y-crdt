@@ -1,13 +1,10 @@
-use crate::encoding::read;
-use crate::encoding::read::Cursor;
-use crate::error::UpdateError;
+use crate::lib0::{Cursor, Decode, Decoder, DecoderV1, Encode, Encoder};
 use crate::sync::{Awareness, AwarenessUpdate, awareness};
-use crate::updates::decoder::{Decode, Decoder, DecoderV1};
-use crate::updates::encoder::{Encode, Encoder};
 use crate::{StateVector, Update};
 use smallvec::SmallVec;
 #[cfg(feature = "sync")]
 use smallvec::smallvec;
+use std::ops::Deref;
 use thiserror::Error;
 /*
  Core Yjs defines two message types:
@@ -71,7 +68,7 @@ pub trait Protocol {
         let mut reader = MessageReader::new(&mut decoder);
         let mut responses = SmallVec::new();
         while let Some(result) = reader.next() {
-            let message = result?;
+            let message = result.map_err(crate::Error::from)?;
             if let Some(response) = self.handle_message(awareness, message)? {
                 responses.push(response);
             }
@@ -91,11 +88,11 @@ pub trait Protocol {
                 self.handle_sync_step1(awareness, state_vector)
             }
             Message::Sync(SyncMessage::SyncStep2(update)) => {
-                let update = Update::decode_v1(&update)?;
+                let update = Update::decode_v1(&update).map_err(crate::Error::from)?;
                 self.handle_sync_step2(awareness, update)
             }
             Message::Sync(SyncMessage::Update(update)) => {
-                let update = Update::decode_v1(&update)?;
+                let update = Update::decode_v1(&update).map_err(crate::Error::from)?;
                 self.handle_update(awareness, update)
             }
             Message::Auth(deny_reason) => self.handle_auth(awareness, deny_reason),
@@ -124,7 +121,7 @@ pub trait Protocol {
         update: Update,
     ) -> Result<Option<Message>, Error> {
         let mut txn = awareness.doc_mut().transact_mut();
-        txn.apply_update(update)?;
+        txn.apply_update(update).map_err(|e| *e)?;
         Ok(None)
     }
 
@@ -235,7 +232,7 @@ impl Encode for Message {
 }
 
 impl Decode for Message {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, read::Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let tag: u8 = decoder.read_var()?;
         match tag {
             MSG_SYNC => {
@@ -298,7 +295,7 @@ impl Encode for SyncMessage {
 }
 
 impl Decode for SyncMessage {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, read::Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let tag: u8 = decoder.read_var()?;
         match tag {
             MSG_SYNC_STEP_1 => {
@@ -314,7 +311,7 @@ impl Decode for SyncMessage {
                 let buf = decoder.read_buf()?;
                 Ok(SyncMessage::Update(buf.into()))
             }
-            _ => Err(read::Error::UnexpectedValue),
+            _ => Err(crate::lib0::Error::UnexpectedValue),
         }
     }
 }
@@ -323,8 +320,8 @@ impl Decode for SyncMessage {
 #[derive(Debug, Error)]
 pub enum Error {
     /// Incoming Y-protocol message couldn't be deserialized.
-    #[error("failed to deserialize message: {0}")]
-    DecodingError(#[from] read::Error),
+    #[error("failed to sync: {0}")]
+    Sync(#[from] crate::Error),
 
     /// Applying incoming Y-protocol awareness update has failed.
     #[error("failed to process awareness update: {0}")]
@@ -341,9 +338,6 @@ pub enum Error {
     /// Thrown in case of I/O errors.
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
-
-    #[error("failed to apply update: {0}")]
-    Update(#[from] UpdateError),
 
     /// Custom dynamic kind of error, usually related to a warp internal error messages.
     #[error("internal failure: {0}")]
@@ -362,12 +356,12 @@ impl<'a, D: Decoder> MessageReader<'a, D> {
 }
 
 impl<'a, D: Decoder> Iterator for MessageReader<'a, D> {
-    type Item = Result<Message, read::Error>;
+    type Item = Result<Message, crate::lib0::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match Message::decode(self.0) {
             Ok(msg) => Some(Ok(msg)),
-            Err(read::Error::EndOfBuffer(_)) => None,
+            Err(crate::lib0::Error::EndOfBuffer(_)) => None,
             Err(error) => Some(Err(error)),
         }
     }
@@ -376,11 +370,9 @@ impl<'a, D: Decoder> Iterator for MessageReader<'a, D> {
 #[cfg(test)]
 mod test {
     use crate::block::ClientID;
-    use crate::encoding::read::Cursor;
+    use crate::lib0::{Cursor, Decode, DecoderV1, Encode, Encoder, EncoderV1};
     use crate::sync::protocol::MessageReader;
     use crate::sync::{Awareness, Protocol};
-    use crate::updates::decoder::{Decode, DecoderV1};
-    use crate::updates::encoder::{Encode, Encoder, EncoderV1};
     use crate::{Doc, StateVector, Update};
     use serde_json::json;
     use std::collections::HashMap;

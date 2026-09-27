@@ -7,8 +7,8 @@ use crate::xml::XmlAttrs;
 use crate::xml_elem::YXmlElement;
 use crate::{ImplicitTransaction, Snapshot};
 use std::collections::HashMap;
-use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::wasm_bindgen;
 use yrs::types::xml::XmlTextEvent;
 use yrs::types::{Attrs, TYPE_REFS_XML_TEXT};
 use yrs::{
@@ -29,7 +29,7 @@ pub(crate) struct PrelimXmlText {
 ///
 /// Just like `YXmlElement`, `YXmlText` can be marked with extra metadata in form of attributes.
 ///
-/// `YXmlText` structure internally uses UTF-8 encoding and its length is described in a number of
+/// `YXmlText` structure internally uses UTF-8 lib0 and its length is described in a number of
 /// bytes rather than individual characters (a single UTF-8 code point can consist of many bytes).
 ///
 /// Like all Yrs shared data types, `YXmlText` is resistant to the problem of interleaving (situation

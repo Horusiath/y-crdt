@@ -4,7 +4,7 @@ use rand::prelude::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use std::cell::Cell;
 use std::collections::HashMap;
-use yrs::encoding::read::{Cursor, Read};
+use yrs::lib0::read::{Cursor, Read};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, In, TransactionMut, Update};
 

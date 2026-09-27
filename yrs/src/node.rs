@@ -1,8 +1,6 @@
-use crate::block::{Block, Item, ItemContent, ItemPosition, ItemPtr};
-use crate::encoding::read::Error;
+use crate::block::{Block, Item, ItemContent, ItemPtr};
 use crate::event::Event;
-use crate::updates::decoder::{Decode, Decoder};
-use crate::updates::encoder::{Encode, Encoder};
+use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::{
     Any, Assoc, ClientID, Doc, ID, In, IndexScope, Observer, Origin, Out, StickyIndex,
     Subscription, Transaction, TransactionMut,
@@ -445,37 +443,6 @@ impl Node {
         }
 
         len - remaining
-    }
-
-    /// Inserts a preliminary `value` into a current branch indexed sequence component at the given
-    /// `index`. Returns an item reference created as a result of this operation.
-    pub(crate) fn insert_at(
-        &self,
-        txn: &mut TransactionMut,
-        index: u32,
-        value: In,
-    ) -> Option<ItemPtr> {
-        let (start, parent) = {
-            if index <= self.len() {
-                (self.start, NodePtr::from(self))
-            } else {
-                panic!("Cannot insert item at index over the length of an array")
-            }
-        };
-        let (left, right) = if index == 0 {
-            (None, self.start)
-        } else {
-            Node::index_to_ptr(txn, start, index)
-        };
-        let pos = ItemPosition {
-            parent: parent.into(),
-            left,
-            right,
-            index: 0,
-            current_attrs: None,
-        };
-
-        txn.create_item(&pos, value, None)
     }
 
     pub(crate) fn path(from: NodePtr, to: NodePtr) -> Path {
@@ -939,7 +906,7 @@ impl Encode for TypeRef {
 }
 
 impl Decode for TypeRef {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let type_ref = decoder.read_type_ref()?;
         match type_ref {
             TYPE_REFS_ARRAY => Ok(TypeRef::Array),
@@ -956,7 +923,7 @@ impl Decode for TypeRef {
                 Ok(TypeRef::WeakLink(source))
             }
             TYPE_REFS_UNDEFINED => Ok(TypeRef::Undefined),
-            _ => Err(Error::UnexpectedValue),
+            _ => Err(crate::lib0::Error::UnexpectedValue),
         }
     }
 }

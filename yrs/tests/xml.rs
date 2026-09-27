@@ -1,10 +1,7 @@
-use arc_swap::ArcSwapOption;
-use std::collections::HashMap;
-use std::sync::Arc;
+use yrs::lib0::Decode;
 use yrs::node::Observable;
 use yrs::test_utils::exchange_updates;
-use yrs::updates::decoder::Decode;
-use yrs::{Acquire, AcquireMut, Any, Cell, Delta, Doc, In, Out, StateVector, Update};
+use yrs::{Acquire, AcquireMut, Cell, Delta, Doc, In, Out, StateVector, Update};
 
 #[test]
 fn insert_attribute() {
@@ -13,7 +10,7 @@ fn insert_attribute() {
     let Out::Node(xml1) = t1
         .node_mut("xml")
         .unwrap()
-        .push_back(In::Node(Delta::with_name("div")))
+        .push_back(In::Node(Box::new(Delta::with_name("div"))))
     else {
         panic!("expected a nested node")
     };
@@ -30,7 +27,7 @@ fn insert_attribute() {
     let Out::Node(xml2) = t2
         .node_mut("xml")
         .unwrap()
-        .push_back(In::Node(Delta::with_name("div")))
+        .push_back(In::Node(Box::new(Delta::with_name("div"))))
     else {
         panic!("expected a nested node")
     };
@@ -51,7 +48,7 @@ fn event_observers() {
         let out = txn
             .node_mut("xml")
             .unwrap()
-            .insert(0, In::Node(Delta::with_name("test")));
+            .insert(0, In::Node(Box::new(Delta::with_name("test"))));
         let Out::Node(xml) = out else {
             panic!("expected a nested node")
         };
@@ -115,10 +112,10 @@ fn event_observers() {
     let (n1, n2) = {
         let mut txn = d1.transact_mut();
         let mut node = txn.node_mut(xml.clone()).unwrap();
-        let Out::Node(n1) = node.insert(0, In::Node(Delta::new().insert_text(""))) else {
+        let Out::Node(n1) = node.insert(0, In::Node(Box::new(Delta::new().insert_text("")))) else {
             unreachable!()
         };
-        let Out::Node(n2) = node.insert(1, In::Node(Delta::with_name("div"))) else {
+        let Out::Node(n2) = node.insert(1, In::Node(Box::new(Delta::with_name("div")))) else {
             unreachable!()
         };
         (n1.id, n2.id)
@@ -135,7 +132,7 @@ fn event_observers() {
         let mut txn = d1.transact_mut();
         let mut node = txn.node_mut(xml.clone()).unwrap();
         node.remove(1, 1);
-        let Out::Node(n) = node.insert(1, In::Node(Delta::with_name("p"))) else {
+        let Out::Node(n) = node.insert(1, In::Node(Box::new(Delta::with_name("p")))) else {
             unreachable!()
         };
         n.id

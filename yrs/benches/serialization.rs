@@ -1,12 +1,12 @@
 use criterion::{Criterion, SamplingMode, black_box, criterion_group, criterion_main};
 use yrs::Any;
-use yrs::encoding::read::{Cursor, Read};
-use yrs::encoding::write::Write;
+use yrs::lib0::read::{Cursor, Read};
+use yrs::lib0::write::Write;
 
 const BENCHMARK_SIZE: u32 = 100000;
 
 fn bench_encoding(c: &mut Criterion) {
-    let mut encoding_group = c.benchmark_group("encoding");
+    let mut encoding_group = c.benchmark_group("lib0");
     encoding_group.sampling_mode(SamplingMode::Flat);
 
     encoding_group.bench_function("var_int (64 bit)", |b| {

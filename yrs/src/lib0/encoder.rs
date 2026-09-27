@@ -1,21 +1,20 @@
+use super::{Signed, Write};
 use crate::block::ClientID;
-use crate::encoding::varint::Signed;
-use crate::encoding::write::Write;
 use crate::*;
 use std::collections::HashMap;
 
-/// A trait that can be implemented by any other type in order to support lib0 encoding capability.
+/// A trait that can be implemented by any other type in order to support lib0 capability.
 pub trait Encode {
     fn encode<E: Encoder>(&self, encoder: &mut E);
 
-    /// Helper function for encoding 1st version of lib0 encoding.
+    /// Helper function for lib0 1st version.
     fn encode_v1(&self) -> Vec<u8> {
         let mut encoder = EncoderV1::new();
         self.encode(&mut encoder);
         encoder.to_vec()
     }
 
-    /// Helper function for encoding 2nd version of lib0 encoding.
+    /// Helper function for lib0 2nd version.
     fn encode_v2(&self) -> Vec<u8> {
         let mut encoder = EncoderV2::new();
         self.encode(&mut encoder);
@@ -23,10 +22,10 @@ pub trait Encode {
     }
 }
 
-/// Trait used by lib0 encoders. Natively lib0 encoding supports two versions:
+/// Trait used by lib0 encoders. Natively lib0 supports two versions:
 ///
-/// 1. 1st version (implemented in Yrs) uses simple optimization techniques like var int encoding.
-/// 2. 2nd version optimizes bigger batches of blocks by using run-length encoding.
+/// 1. 1st version (implemented in Yrs) uses simple optimization techniques like var int lib0.
+/// 2. 2nd version optimizes bigger batches of blocks by using run-length lib0.
 ///
 /// Both of these define a common set of operations defined in this trait.
 pub trait Encoder: Write {
@@ -342,7 +341,7 @@ impl Encoder for EncoderV2 {
 ///
 /// Encodes [1, 2, 3, 2] as [3, 1, 6, -1] (more specifically [(1 << 1) | 1, (3 << 0) | 0, -1])
 ///
-/// Internally uses variable length encoding. Contrary to normal UintVar encoding, the first byte contains:
+/// Internally uses variable length lib0. Contrary to normal UintVar lib0, the first byte contains:
 /// * 1 bit that denotes whether the next value is a count (LSB)
 /// * 1 bit that denotes whether this value is negative (MSB - 1)
 /// * 1 bit that denotes whether to continue reading the variable length integer (MSB)
@@ -496,7 +495,7 @@ impl RleEncoder {
 /// Encoding many small strings in a simple Encoder is not very efficient. The function call to decode a string takes some time and creates references that must be eventually deleted.
 /// In practice, when decoding several million small strings, the GC will kick in more and more often to collect orphaned string objects (or maybe there is another reason?).
 ///
-/// This string encoder solves the above problem. All strings are concatenated and written as a single string using a single encoding call.
+/// This string encoder solves the above problem. All strings are concatenated and written as a single string using a single lib0 call.
 ///
 /// The lengths are encoded using a UintOptRleEncoder.
 struct StringEncoder {
