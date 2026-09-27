@@ -795,7 +795,9 @@ impl TypeRef {
     }
 
     #[cfg(feature = "weak")]
-    fn decode_weak_link<D: Decoder>(decoder: &mut D) -> Result<crate::weak::LinkSource, Error> {
+    fn decode_weak_link<D: Decoder>(
+        decoder: &mut D,
+    ) -> Result<crate::weak::LinkSource, crate::lib0::Error> {
         let flags = decoder.read_u8()?;
         let is_single = flags & WEAK_REF_FLAGS_QUOTE == 0;
         let start_assoc = if flags & WEAK_REF_FLAGS_START_ASSOC == WEAK_REF_FLAGS_START_ASSOC {

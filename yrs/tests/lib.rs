@@ -6,5 +6,3 @@ mod text;
 #[cfg(feature = "weak")]
 mod weak;
 mod xml;
-
-use yrs::test_utils::*;
