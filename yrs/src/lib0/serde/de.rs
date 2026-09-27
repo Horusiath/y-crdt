@@ -587,9 +587,9 @@ impl<'de> Deserializer<'de> for Any {
     {
         match self {
             // avoid cloning map entries if this is the only reference to them
-            Any::Map(m) => visitor.visit_map(MapDeserializer::new(
-                Arc::unwrap_or_clone(m).into_iter(),
-            )),
+            Any::Map(m) => {
+                visitor.visit_map(MapDeserializer::new(Arc::unwrap_or_clone(m).into_iter()))
+            }
             _ => Err(Error::type_mismatch::<V::Value>()),
         }
     }
@@ -835,7 +835,10 @@ mod test {
 
         let any: Any = HashMap::from([
             ("str".to_string(), Any::from("String")),
-            ("nested".to_string(), Any::from(vec![Any::from(1), Any::Null])),
+            (
+                "nested".to_string(),
+                Any::from(vec![Any::from(1), Any::Null]),
+            ),
         ])
         .into();
 

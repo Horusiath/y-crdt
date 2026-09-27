@@ -3,10 +3,15 @@ use crate::cursor::Cursor;
 use crate::delta::{AttrOp, Op};
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
+use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
-use serde::de::Visitor;
+use serde::Deserialize;
+use serde::de::value::{MapDeserializer, SeqDeserializer};
+use serde::de::{
+    DeserializeOwned, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, Visitor,
+};
 use smallvec::SmallVec;
 use std::collections::{Bound, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
@@ -172,9 +177,14 @@ where
         })
     }
 
+    pub fn deserialize<A: DeserializeOwned>(&self) -> crate::Result<A> {
+        let node = NodeRef::new(self.ptr, &*self.txn);
+        A::deserialize(node).map_err(|e| Box::new(e.into()))
+    }
+
     /// Converts this type to a JSON-compatible representation.
     pub fn to_json(&self) -> Any {
-        todo!()
+        self.deserialize().unwrap()
     }
 
     /// Returns a delta representation of this type's contents.
@@ -439,6 +449,262 @@ where
                 },
             }
         }
+    }
+}
+
+/// Deserializes node's children when sequence is requested, and node's attributes when map or
+/// struct is requested. Otherwise, node is deserialized as `{ name?, attrs?, children? }` object.
+impl<'de, T, D> Deserializer<'de> for NodeRef<T>
+where
+    T: Deref<Target = Transaction<D>>,
+    D: Deref<Target = Doc>,
+{
+    type Error = lib0::Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_map(NodeAccess {
+            node: NodeRef::new(self.ptr, &*self.txn),
+            next: 0,
+        })
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.children_deserializer().deserialize_any(visitor)
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.attrs_deserializer().deserialize_any(visitor)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf unit
+        unit_struct enum identifier
+    }
+}
+
+impl<T, D> NodeRef<T>
+where
+    T: Deref<Target = Transaction<D>>,
+    D: Deref<Target = Doc>,
+{
+    /// Deserializer of node's children as a sequence.
+    fn children_deserializer<'a>(
+        &'a self,
+    ) -> SeqDeserializer<impl Iterator<Item = OutDeserializer<'a, D>>, lib0::Error>
+    where
+        D: 'a,
+    {
+        let txn = &*self.txn;
+        SeqDeserializer::new(self.iter().map(move |value| OutDeserializer { value, txn }))
+    }
+
+    /// Deserializer of node's attributes as a map.
+    fn attrs_deserializer<'a, 'de>(
+        &'a self,
+    ) -> MapDeserializer<'de, impl Iterator<Item = (&'a str, OutDeserializer<'a, D>)>, lib0::Error>
+    where
+        D: 'a,
+    {
+        let txn = &*self.txn;
+        MapDeserializer::new(
+            self.attrs()
+                .map(move |(key, value)| (key, OutDeserializer { value, txn })),
+        )
+    }
+}
+
+/// Fields of the default representation of a deserialized node.
+const NODE_FIELDS: [&str; 3] = ["name", "attrs", "children"];
+
+/// [MapAccess] over the default `{ name?, attrs?, children? }` representation of a node.
+/// Fields which are absent or empty are skipped.
+struct NodeAccess<'a, D> {
+    node: NodeRef<&'a Transaction<D>>,
+    /// Index of the next [NODE_FIELDS] entry to visit.
+    next: usize,
+}
+
+impl<'de, 'a, D> MapAccess<'de> for NodeAccess<'a, D>
+where
+    D: Deref<Target = Doc>,
+{
+    type Error = lib0::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        while let Some(&key) = NODE_FIELDS.get(self.next) {
+            let present = match self.next {
+                0 => self.node.name().is_some(),
+                1 => self.node.attr_len() > 0,
+                _ => self.node.len() > 0,
+            };
+            if present {
+                return seed.deserialize(key.into_deserializer()).map(Some);
+            }
+            self.next += 1;
+        }
+        Ok(None)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let field = self.next;
+        self.next += 1;
+        match field {
+            0 => {
+                let name: &str = self.node.name().map_or("", |name| name);
+                seed.deserialize(name.into_deserializer())
+            }
+            1 => seed.deserialize(self.node.attrs_deserializer()),
+            _ => seed.deserialize(self.node.children_deserializer()),
+        }
+    }
+}
+
+/// Deserializer of node's child or attribute value. Nested nodes are resolved using `txn`.
+struct OutDeserializer<'a, D> {
+    value: Out,
+    txn: &'a Transaction<D>,
+}
+
+impl<'de, 'a, D> IntoDeserializer<'de, lib0::Error> for OutDeserializer<'a, D>
+where
+    D: Deref<Target = Doc>,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self::Deserializer {
+        self
+    }
+}
+
+/// Forwards [Deserializer] methods to the deserializer of the underlying [Out] variant.
+macro_rules! forward_out {
+    ($($method:ident($($arg:ident: $ty:ty),*);)*) => {$(
+        fn $method<V>(self, $($arg: $ty,)* visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            match self.value {
+                Out::Any(any) => any.$method($($arg,)* visitor),
+                Out::Node(node) => match self.txn.node(node.id.clone()) {
+                    Some(n) => n.$method($($arg,)* visitor),
+                    None => Err(lib0::Error::Custom(format!("node {} not found", node.id))),
+                },
+                Out::Doc(guid) => {
+                    let guid: &str = &guid;
+                    guid.into_deserializer().$method($($arg,)* visitor)
+                }
+            }
+        }
+    )*};
+}
+
+impl<'de, 'a, D> Deserializer<'de> for OutDeserializer<'a, D>
+where
+    D: Deref<Target = Doc>,
+{
+    type Error = lib0::Error;
+
+    forward_out! {
+        deserialize_any();
+        deserialize_bool();
+        deserialize_i8();
+        deserialize_i16();
+        deserialize_i32();
+        deserialize_i64();
+        deserialize_u8();
+        deserialize_u16();
+        deserialize_u32();
+        deserialize_u64();
+        deserialize_f32();
+        deserialize_f64();
+        deserialize_char();
+        deserialize_str();
+        deserialize_string();
+        deserialize_bytes();
+        deserialize_byte_buf();
+        deserialize_option();
+        deserialize_unit();
+        deserialize_unit_struct(name: &'static str);
+        deserialize_newtype_struct(name: &'static str);
+        deserialize_seq();
+        deserialize_tuple(len: usize);
+        deserialize_tuple_struct(name: &'static str, len: usize);
+        deserialize_map();
+        deserialize_struct(name: &'static str, fields: &'static [&'static str]);
+        deserialize_enum(name: &'static str, variants: &'static [&'static str]);
+        deserialize_identifier();
+        deserialize_ignored_any();
     }
 }
 
@@ -784,5 +1050,74 @@ fn update_format(formats: &mut Attrs, key: &Arc<str>, value: &Any) {
         formats.remove(key);
     } else {
         formats.insert(key.clone(), value.clone());
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{Any, Delta, Doc, In, Out, any};
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Inner {
+        value: i32,
+    }
+
+    #[test]
+    fn deserialize_default_shape() {
+        let mut doc = Doc::new();
+        let mut txn = doc.transact_mut();
+        let p = Delta::with_name("p")
+            .insert_attr("class", "x")
+            .insert_text("ab");
+        let Out::Node(p) = txn
+            .node_mut("test")
+            .unwrap()
+            .push_back(In::Node(Box::new(p)))
+        else {
+            unreachable!()
+        };
+        let actual = txn.node(p.id).unwrap().to_json();
+        let expected = any!({"name": "p", "attrs": {"class": "x"}, "children": ["a", "b"]});
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn deserialize_children_as_seq() {
+        let mut doc = Doc::new();
+        let mut txn = doc.transact_mut();
+        let mut root = txn.node_mut("test").unwrap();
+        root.insert_attr("ignored", true);
+        root.push_back(In::Node(Box::new(Delta::new().insert_attr("value", 1))));
+        root.push_back(In::Node(Box::new(Delta::new().insert_attr("value", 2))));
+        let actual = Vec::<Inner>::deserialize(txn.node("test").unwrap()).unwrap();
+        assert_eq!(actual, vec![Inner { value: 1 }, Inner { value: 2 }]);
+    }
+
+    #[test]
+    fn deserialize_attrs_as_struct() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Outer {
+            title: String,
+            inner: Inner,
+            missing: Option<bool>,
+        }
+
+        let mut doc = Doc::new();
+        let mut txn = doc.transact_mut();
+        let mut root = txn.node_mut("test").unwrap();
+        root.insert_attr("title", "hello");
+        root.insert_attr(
+            "inner",
+            In::Node(Box::new(Delta::new().insert_attr("value", 1))),
+        );
+        root.push_back("ignored child");
+        let actual = Outer::deserialize(txn.node("test").unwrap()).unwrap();
+        let expected = Outer {
+            title: "hello".into(),
+            inner: Inner { value: 1 },
+            missing: None,
+        };
+        assert_eq!(actual, expected);
     }
 }
