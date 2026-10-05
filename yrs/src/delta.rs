@@ -287,6 +287,14 @@ impl<T> Delta<T> {
         );
     }
 
+    /// Removes trailing retains without formatting, as they don't change anything - a port of
+    /// lib0 `DeltaBuilder.done`.
+    pub(crate) fn trim_retains(&mut self) {
+        while let Some(Op::Retain { format: None, .. }) = self.children.last() {
+            self.children.pop();
+        }
+    }
+
     /// Composes another delta on top of this one. The result represents
     /// applying `self` followed by `other`.
     pub fn join(mut self, other: Self) -> Self {
@@ -338,9 +346,14 @@ impl<T> Delta<T> {
         {
             items.push(content.into());
         } else {
+            let format = if attrs.is_empty() {
+                None
+            } else {
+                Some(Box::new(attrs.clone()))
+            };
             self.children.push(Op::Insert {
                 items: vec![content.into()],
-                format: Some(Box::new(attrs.clone())),
+                format,
             });
         }
     }
@@ -380,9 +393,14 @@ impl<T> Delta<T> {
         {
             items.extend(contents);
         } else {
+            let format = if attrs.is_empty() {
+                None
+            } else {
+                Some(Box::new(attrs.clone()))
+            };
             self.children.push(Op::Insert {
                 items: contents.into_iter().collect(),
-                format: Some(Box::new(attrs.clone())),
+                format,
             });
         }
     }

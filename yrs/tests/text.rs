@@ -399,7 +399,7 @@ fn observer() {
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().format(1, 1, &attrs); // => 'aed'
     }
-    assert_eq!(delta(), Delta::out().retain(1).retain_fmt(2, &attrs));
+    assert_eq!(delta(), Delta::out().retain(1).retain_fmt(1, &attrs));
 
     // free the observer and make sure that callback is no longer called
     drop(sub);
@@ -534,7 +534,6 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(&*delta1.acquire(), &expected);
-        assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "abc");
 
         let mut txn = d2.transact_mut();
@@ -543,6 +542,7 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "abc");
+        assert_eq!(&*delta2.acquire(), &expected);
     }
 
     // step 2
@@ -557,7 +557,6 @@ fn basic_format() {
 
         let expected = Delta::out().remove(1);
         assert_eq!(&*delta1.acquire(), &expected);
-        assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "bc");
 
         let mut txn = d2.transact_mut();
@@ -566,6 +565,7 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "bc");
+        assert_eq!(&*delta2.acquire(), &expected);
     }
 
     // step 3
@@ -582,7 +582,6 @@ fn basic_format() {
 
         let expected = Delta::out().retain(1).remove(1);
         assert_eq!(&*delta1.acquire(), &expected);
-        assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "b");
 
         let mut txn = d2.transact_mut();
@@ -591,6 +590,7 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "b");
+        assert_eq!(&*delta2.acquire(), &expected);
     }
 
     // step 4
@@ -603,10 +603,8 @@ fn basic_format() {
         let update = txn.encode_update_v1();
         drop(txn);
 
-        // TODO(unified-api): Text::diff/Diff and the `Delta` event enum are not available yet
         let expected = Delta::out().insert_text_fmt("z", &a);
         assert_eq!(&*delta1.acquire(), &expected);
-        assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "zb");
 
         let mut txn = d2.transact_mut();
@@ -615,6 +613,7 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "zb");
+        assert_eq!(&*delta2.acquire(), &expected);
     }
 
     // step 5
@@ -625,14 +624,13 @@ fn basic_format() {
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(
             actual,
-            Delta::out().insert_text("y").insert_text_fmt("ab", &a)
+            Delta::out().insert_text("y").insert_text_fmt("zb", &a)
         );
         let update = txn.encode_update_v1();
         drop(txn);
 
         let expected = Delta::out().insert_text("y");
         assert_eq!(&*delta1.acquire(), &expected);
-        assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "yzb");
 
         let mut txn = d2.transact_mut();
@@ -641,6 +639,7 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "yzb");
+        assert_eq!(&*delta2.acquire(), &expected);
     }
 
     // step 6
@@ -652,14 +651,13 @@ fn basic_format() {
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(
             actual,
-            Delta::out().insert_text("yz").insert_text_fmt("b", &b)
+            Delta::out().insert_text("yz").insert_text_fmt("b", &a)
         );
         let update = txn.encode_update_v1();
         drop(txn);
 
         let expected = Delta::out().retain(1).retain_fmt(1, &b);
         assert_eq!(&*delta1.acquire(), &expected);
-        assert_eq!(&*delta2.acquire(), &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "yzb");
 
         let mut txn = d2.transact_mut();
@@ -668,6 +666,7 @@ fn basic_format() {
         drop(txn);
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "yzb");
+        assert_eq!(&*delta2.acquire(), &expected);
     }
 }
 

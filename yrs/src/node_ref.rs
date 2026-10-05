@@ -6,7 +6,7 @@ use crate::iter::TxnIterator;
 use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
-use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction};
+use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction, TransactionState};
 use serde::Deserialize;
 use serde::de::value::{MapDeserializer, SeqDeserializer};
 use serde::de::{
@@ -211,7 +211,7 @@ where
             encoding: self.txn.doc.options.offset_kind,
             items,
             deleted: options.deleted_items.as_ref(),
-            modified,
+            modified: modified.as_ref(),
             retain_inserts: options.retain_inserts,
             deep: options.deep,
             link_depth: options.link_depth,
@@ -741,7 +741,50 @@ impl Default for DeltaOptions {
 
 /// Nodes that should be formatter as modified children, mapped onto the keys changed within them.
 /// A `None` key marks a change made to node's children.
-type Modified = HashMap<NodePtr, HashSet<Option<Arc<str>>>>;
+pub(crate) type Modified = HashMap<NodePtr, HashSet<Option<Arc<str>>>>;
+
+pub(crate) fn get_delta(doc: &Doc, state: &TransactionState, node: NodePtr, deep: bool) -> Delta {
+    // content that was both inserted AND deleted by this transaction is normally invisible — but a
+    // renderer may still render it (e.g. remote content integrated under a suggestion-deleted
+    // parent is auto-deleted yet rendered with a delete attribution). Render
+    // `(I ∪ D) − ((I ∩ D) − renderer.attributed)`: the symmetric difference plus the attributed
+    // part of the intersection.
+    let mut items = state.insert_set.diff(&state.delete_set);
+    items.merge_with(state.delete_set.diff(&state.insert_set));
+    let deep_modified;
+    let modified = if deep {
+        deep_modified = expand_modified(&state.changed);
+        &deep_modified
+    } else {
+        &state.changed
+    };
+    let render = NodeFormatter {
+        encoding: doc.options.offset_kind,
+        items: Some(items),
+        deleted: None,
+        modified: Some(modified),
+        retain_inserts: false,
+        deep,
+        link_depth: 0,
+    };
+    render.node(node)
+}
+
+fn expand_modified(changed: &Modified) -> Modified {
+    let mut modified = changed.clone();
+    for &node in changed.keys() {
+        let mut current = node.item;
+        while let Some(item) = current {
+            let parent = *item.parent.as_node().unwrap();
+            let keys = modified.entry(parent).or_default();
+            if !keys.insert(item.parent_sub.clone()) {
+                break; // has already been marked as modified
+            }
+            current = parent.item;
+        }
+    }
+    modified
+}
 
 /// Renders a [Node] as a [Delta] - a port of Yjs `YType.toDelta`.
 struct NodeFormatter<'a> {
@@ -751,7 +794,7 @@ struct NodeFormatter<'a> {
     items: Option<IdSet>,
     /// Ids deleted by the change being formatter. Used to resolve previous values of attributes.
     deleted: Option<&'a IdSet>,
-    modified: Option<Modified>,
+    modified: Option<&'a Modified>,
     /// If `true`, formatter inserts are retained instead of being formatter as inserts.
     retain_inserts: bool,
     /// Render child nodes as delta.
@@ -776,6 +819,9 @@ impl<'a> NodeFormatter<'a> {
         self.attrs(&mut delta, node, attrs_to_render);
         if render_children {
             self.children(&mut delta, node);
+            if self.items.is_some() {
+                delta.trim_retains();
+            }
         }
         delta
     }
@@ -808,7 +854,7 @@ impl<'a> NodeFormatter<'a> {
             if let Some(items) = &self.items
                 && items.contains(&item.last_id())
             {
-                AttrOp::remove(item.content.get_last())
+                AttrOp::remove(self.deleted.and_then(|_| item.content.get_last()))
             } else {
                 return;
             }

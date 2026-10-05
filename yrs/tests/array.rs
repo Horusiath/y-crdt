@@ -393,7 +393,7 @@ fn insert_and_remove_event_changes() {
         let mut txn = d1.transact_mut();
         txn.node_mut("array").unwrap().remove(0, 1);
     }
-    assert_eq!(delta(), Delta::out().remove(1).insert("dtrn"));
+    assert_eq!(delta(), Delta::out().remove(1));
 
     {
         let mut txn = d1.transact_mut();

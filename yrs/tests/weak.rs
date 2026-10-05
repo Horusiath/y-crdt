@@ -651,7 +651,7 @@ fn deep_observe_map() {
         let mut txn = doc.transact_mut();
         txn.node_mut("map").unwrap().observe_deep(move |e| {
             let mut rs = events.lock().unwrap();
-            for e in e.iter() {
+            for e in e.iter_mut() {
                 rs.push((e.target().id(), e.delta(false)));
             }
         })
@@ -744,7 +744,7 @@ fn deep_observe_array() {
         let mut txn = doc.transact_mut();
         txn.node_mut("array").unwrap().observe_deep(move |e| {
             let mut events = events.lock().unwrap();
-            for e in e.iter() {
+            for e in e.iter_mut() {
                 events.push((e.target().id(), e.delta(false)));
             }
         })
@@ -831,7 +831,7 @@ fn deep_observe_new_element_within_quoted_range() {
         txn.node(l1).unwrap().observe_deep(move |e| {
             let mut events = events.lock().unwrap();
             events.clear();
-            for e in e.iter() {
+            for e in e.iter_mut() {
                 events.push((e.target().id(), e.delta(false)));
             }
         })
@@ -852,7 +852,7 @@ fn deep_observe_new_element_within_quoted_range() {
         txn.node(l2).unwrap().observe_deep(move |e| {
             let mut events = events.lock().unwrap();
             events.clear();
-            for e in e.iter() {
+            for e in e.iter_mut() {
                 events.push((e.target().id(), e.delta(false)));
             }
         })
@@ -939,7 +939,7 @@ fn deep_observe_recursive() {
         let mut txn = doc.transact_mut();
         txn.node_mut(m0).unwrap().observe_deep(move |e| {
             let mut rs = events.lock().unwrap();
-            for e in e.iter() {
+            for e in e.iter_mut() {
                 rs.push((e.target().id(), e.delta(false)));
             }
         })

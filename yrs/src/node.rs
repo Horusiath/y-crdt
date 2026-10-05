@@ -19,7 +19,7 @@ pub type Attrs = HashMap<Arc<str>, Any>;
 
 /// A batch of [Event]s bubbled up from nested shared collections, passed to deep observers.
 /// They are sorted by the length of their [Event::path], so that top-most events come first.
-pub type Events<'txn> = [&'txn Event<'txn>];
+pub type Events<'txn> = [Event<'txn>];
 
 /// A wrapper around [Node] cell, supplied with a bunch of convenience methods to operate on both
 /// map-like and array-like contents of a [Node].
@@ -34,22 +34,14 @@ impl NodePtr {
     pub(crate) fn trigger<'txn>(
         &mut self,
         txn: &'txn Transaction<&'txn Doc>,
-        subs: HashSet<Option<Arc<str>>>,
-    ) -> Option<Event<'txn>> {
-        // TODO(unified-api): make_event is unimplemented; skip event creation when nobody listens
-        if !self.observers.has_subscribers() && !self.deep_observers.has_subscribers() {
-            return None;
-        }
-        let e = self.make_event(txn, subs)?;
-        self.observers.trigger(|fun| fun(&e));
-        Some(e)
+        subs: &'txn HashSet<Option<Arc<str>>>,
+    ) -> Event<'txn> {
+        let mut e = self.make_event(txn, subs);
+        self.observers.trigger(|fun| fun(&mut e));
+        e
     }
 
-    pub(crate) fn trigger_deep<'txn>(
-        &mut self,
-        txn: &'txn Transaction<&'txn Doc>,
-        e: &Events<'txn>,
-    ) {
+    pub(crate) fn trigger_deep<'txn>(&mut self, e: &mut Events<'txn>) {
         self.deep_observers.trigger(|fun| fun(e));
     }
 }
@@ -213,14 +205,14 @@ pub struct Node {
 }
 
 #[cfg(feature = "sync")]
-type ObserveFn = Box<dyn FnMut(&Event) + Send + Sync + 'static>;
+type ObserveFn = Box<dyn FnMut(&mut Event) + Send + Sync + 'static>;
 #[cfg(feature = "sync")]
-type DeepObserveFn = Box<dyn FnMut(&Events) + Send + Sync + 'static>;
+type DeepObserveFn = Box<dyn FnMut(&mut Events) + Send + Sync + 'static>;
 
 #[cfg(not(feature = "sync"))]
-type ObserveFn = Box<dyn FnMut(&Event) + 'static>;
+type ObserveFn = Box<dyn FnMut(&mut Event) + 'static>;
 #[cfg(not(feature = "sync"))]
-type DeepObserveFn = Box<dyn FnMut(&Events) + 'static>;
+type DeepObserveFn = Box<dyn FnMut(&mut Events) + 'static>;
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -481,7 +473,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Event) + Send + Sync + 'static,
+        F: FnMut(&mut Event) + Send + Sync + 'static,
     {
         self.observers.subscribe(Box::new(f))
     }
@@ -489,7 +481,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Event) + 'static,
+        F: FnMut(&mut Event) + 'static,
     {
         self.observers.subscribe(Box::new(f))
     }
@@ -497,7 +489,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Event) + Send + Sync + 'static,
+        F: FnMut(&mut Event) + Send + Sync + 'static,
     {
         self.observers.subscribe_with(key, Box::new(f))
     }
@@ -505,7 +497,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Event) + 'static,
+        F: FnMut(&mut Event) + 'static,
     {
         self.observers.subscribe_with(key, Box::new(f))
     }
@@ -517,7 +509,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe_deep<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Events) + Send + Sync + 'static,
+        F: FnMut(&mut Events) + Send + Sync + 'static,
     {
         self.deep_observers.subscribe(Box::new(f))
     }
@@ -525,7 +517,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe_deep<F>(&mut self, f: F) -> Subscription
     where
-        F: FnMut(&Events) + 'static,
+        F: FnMut(&mut Events) + 'static,
     {
         self.deep_observers.subscribe(Box::new(f))
     }
@@ -533,7 +525,7 @@ impl Node {
     #[cfg(feature = "sync")]
     pub fn observe_deep_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Events) + Send + Sync + 'static,
+        F: FnMut(&mut Events) + Send + Sync + 'static,
     {
         self.deep_observers.subscribe_with(key, Box::new(f))
     }
@@ -541,7 +533,7 @@ impl Node {
     #[cfg(not(feature = "sync"))]
     pub fn observe_deep_with<F>(&mut self, key: Origin, f: F)
     where
-        F: FnMut(&Events) + 'static,
+        F: FnMut(&mut Events) + 'static,
     {
         self.deep_observers.subscribe_with(key, Box::new(f))
     }
@@ -563,9 +555,9 @@ impl Node {
     pub(crate) fn make_event<'txn>(
         &self,
         txn: &'txn Transaction<&'txn Doc>,
-        keys: HashSet<Option<Arc<str>>>,
-    ) -> Option<Event<'txn>> {
-        todo!()
+        subs: &'txn HashSet<Option<Arc<str>>>,
+    ) -> Event<'txn> {
+        Event::new(NodePtr::from(self), txn, subs)
     }
 }
 
@@ -942,7 +934,7 @@ pub trait Observable: AsRef<Node> {
     /// Returns a [Subscription] which, when dropped, will unsubscribe current callback.
     fn observe<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Event) + Send + Sync + 'static,
+        F: FnMut(&mut Event) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe(f)
@@ -951,7 +943,7 @@ pub trait Observable: AsRef<Node> {
     fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Event) + Send + Sync + 'static,
+        F: FnMut(&mut Event) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_with(key.into(), f)
@@ -967,7 +959,7 @@ pub trait Observable: AsRef<Node> {
 pub trait Observable: AsRef<Node> {
     fn observe<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Event) + 'static,
+        F: FnMut(&mut Event) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe(f)
@@ -976,7 +968,7 @@ pub trait Observable: AsRef<Node> {
     fn observe_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Event) + 'static,
+        F: FnMut(&mut Event) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_with(key.into(), f)
@@ -994,7 +986,7 @@ pub trait Observable: AsRef<Node> {
 pub trait DeepObservable: AsRef<Node> {
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Events) + Send + Sync + 'static,
+        F: FnMut(&mut Events) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep(f)
@@ -1003,7 +995,7 @@ pub trait DeepObservable: AsRef<Node> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Events) + Send + Sync + 'static,
+        F: FnMut(&mut Events) + Send + Sync + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep_with(key.into(), f)
@@ -1019,7 +1011,7 @@ pub trait DeepObservable: AsRef<Node> {
 pub trait DeepObservable: AsRef<Node> {
     fn observe_deep<F>(&self, f: F) -> Subscription
     where
-        F: FnMut(&Events) + Send + Sync + 'static,
+        F: FnMut(&mut Events) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep(f)
@@ -1028,7 +1020,7 @@ pub trait DeepObservable: AsRef<Node> {
     fn observe_deep_with<K, F>(&self, key: K, f: F)
     where
         K: Into<Origin>,
-        F: FnMut(&Events) + 'static,
+        F: FnMut(&mut Events) + 'static,
     {
         let mut branch = NodePtr::from(self.as_ref());
         branch.observe_deep_with(key.into(), f)

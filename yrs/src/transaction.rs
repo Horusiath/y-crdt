@@ -1,7 +1,7 @@
 use crate::block::{ID, Item, ItemContent, ItemPtr};
 use crate::cursor::Cursor;
 use crate::doc::DocEvents;
-use crate::event::{Event, SubdocsEvent};
+use crate::event::SubdocsEvent;
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
@@ -98,7 +98,7 @@ pub struct TransactionState {
     pub(crate) cleanups: IdSet,
     /// All types that were directly modified (property added or child inserted/deleted).
     /// New types are not included in this Set.
-    pub(crate) changed: HashMap<TypePtr, HashSet<Option<Arc<str>>>>,
+    pub(crate) changed: HashMap<NodePtr, HashSet<Option<Arc<str>>>>,
     pub(crate) changed_parent_types: Vec<NodePtr>,
     pub(crate) subdocs: Option<Box<Subdocs>>,
     pub(crate) origin: Option<Origin>,
@@ -593,9 +593,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
                         source.unlink_all(self, branch_ptr);
                     }
                     let mut ptr = branch_ptr.start;
-                    ensure_state(&mut self.state)
-                        .changed
-                        .remove(&TypePtr::Node(branch_ptr));
+                    ensure_state(&mut self.state).changed.remove(&branch_ptr);
 
                     while let Some(item) = ptr.as_deref() {
                         if !item.is_deleted() {
@@ -770,7 +768,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         all_links: &HashMap<ItemPtr, HashSet<NodePtr>>,
         branch: NodePtr,
         changed_parents: &mut HashMap<NodePtr, Vec<usize>>,
-        event_cache: &Vec<Event>,
+        event_index: usize,
         visited: &mut HashSet<NodePtr>,
     ) {
         let mut current = branch;
@@ -778,7 +776,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
             changed_parent_types.push(current);
             if current.deep_observers.has_subscribers() {
                 let entries = changed_parents.entry(current).or_default();
-                entries.push(event_cache.len() - 1);
+                entries.push(event_index);
             }
 
             if let Some(item) = current.item {
@@ -791,7 +789,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
                                     all_links,
                                     link,
                                     changed_parents,
-                                    event_cache,
+                                    event_index,
                                     visited,
                                 )
                             }
@@ -809,53 +807,56 @@ impl<'doc> Transaction<&'doc mut Doc> {
     }
 
     fn call_observers(&mut self) {
+        let txn = self.as_readonly();
+        let state = txn.state.as_deref().unwrap();
+        let mut needs_cleanup = false;
+        let mut changed_parent_types = Vec::new();
         let mut changed_parents: HashMap<NodePtr, Vec<usize>> = HashMap::new();
         let mut event_cache = Vec::new();
-
-        // Take changed out to avoid holding a mutable borrow on self.state during iteration
-        let state = self.state.as_mut().unwrap();
-        let changed = std::mem::take(&mut state.changed);
-        let local = state.local;
-        for (ptr, subs) in changed.iter() {
-            if let TypePtr::Node(branch) = ptr {
-                if branch.has_formatting && !local {
-                    self.state.as_mut().unwrap().needs_cleanup = true;
-                }
-                let mut branch = *branch;
-                // SAFETY: same as as_readonly() — identical layout, shared ref only
-                let txn: &Transaction<&Doc> = unsafe { std::mem::transmute(&*self) };
-                if let Some(e) = branch.trigger(txn, subs.clone()) {
-                    event_cache.push(e);
-                    let state = self.state.as_mut().unwrap();
-                    Self::call_type_observers(
-                        &mut state.changed_parent_types,
-                        &self.doc.linked_by,
-                        branch,
-                        &mut changed_parents,
-                        &event_cache,
-                        &mut HashSet::default(),
-                    );
-                }
+        for (&branch, subs) in state.changed.iter() {
+            if branch.has_formatting && !state.local {
+                needs_cleanup = true;
             }
+            let mut branch = branch;
+            event_cache.push(branch.trigger(txn, subs));
+            Self::call_type_observers(
+                &mut changed_parent_types,
+                &txn.doc.linked_by,
+                branch,
+                &mut changed_parents,
+                event_cache.len() - 1,
+                &mut HashSet::default(),
+            );
         }
 
         // deep observe events
-        for (&branch, events) in changed_parents.iter() {
-            for &i in events.iter() {
-                event_cache[i].set_current_target(branch);
+        let mut event_cache: Vec<_> = event_cache.into_iter().map(Some).collect();
+        for (&branch, indexes) in changed_parents.iter_mut() {
+            // node reachable through both its parent and a weak link is registered twice
+            indexes.sort_unstable();
+            indexes.dedup();
+            for &i in indexes.iter() {
+                event_cache[i].as_mut().unwrap().set_current_target(branch);
             }
+            // sort events by path length so that top-level events are fired first
+            indexes.sort_by_cached_key(|&i| event_cache[i].as_ref().unwrap().path().len());
 
-            // sort events by path length so that top-level events are fired first.
-            // We don't need to check for events.length
-            // because we know it has at least one element
-            let mut sorted: Vec<&Event> = events.iter().map(|&i| &event_cache[i]).collect();
-            sorted.sort_by_key(|e| e.path().len());
-
+            // move events out for the time of the callback, so that their cached deltas are kept
+            let mut events: Vec<_> = indexes
+                .iter()
+                .map(|&i| event_cache[i].take().unwrap())
+                .collect();
             let mut branch = branch;
-            // SAFETY: same as as_readonly() — identical layout, shared ref only
-            let txn: &Transaction<&Doc> = unsafe { std::mem::transmute(&*self) };
-            branch.trigger_deep(txn, &sorted);
+            branch.trigger_deep(&mut events);
+            for (&i, e) in indexes.iter().zip(events) {
+                event_cache[i] = Some(e);
+            }
         }
+        drop(event_cache);
+
+        let state = self.state.as_mut().unwrap();
+        state.changed_parent_types.extend(changed_parent_types);
+        state.needs_cleanup |= needs_cleanup;
     }
 
     /// Commits current transaction. This step involves cleaning up and optimizing changes performed
@@ -1193,7 +1194,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
         if trigger {
             let e = ensure_state(&mut self.state)
                 .changed
-                .entry(parent.into())
+                .entry(parent)
                 .or_default();
             e.insert(parent_sub.clone());
         }

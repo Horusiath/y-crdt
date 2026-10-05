@@ -2238,7 +2238,7 @@ mod test {
 
         assert_eq!(
             d1.transact().node("map").unwrap().to_json(),
-            any!({"a": 1.1, "b": 2})
+            any!({"attrs": {"a": 1.1, "b": 2}})
         );
 
         let mut d2 = Doc::new();
@@ -2251,13 +2251,22 @@ mod test {
             let mut txn = d2.transact_mut();
 
             txn.apply_update(u1).unwrap(); // apply: 'a' => 1
-            assert_eq!(txn.node("map").unwrap().to_json(), any!({"a": 1}));
+            assert_eq!(
+                txn.node("map").unwrap().to_json(),
+                any!({"attrs": {"a": 1}})
+            );
 
             txn.apply_update(u3).unwrap(); // apply: 'b' => 2 (it's ok, we insert a skip for u2)
-            assert_eq!(txn.node("map").unwrap().to_json(), any!({"a": 1, "b": 2}));
+            assert_eq!(
+                txn.node("map").unwrap().to_json(),
+                any!({"attrs": {"a": 1, "b": 2}})
+            );
 
             txn.apply_update(u2).unwrap(); // apply: 'a' => 1.1
-            assert_eq!(txn.node("map").unwrap().to_json(), any!({"a": 1.1, "b": 2}));
+            assert_eq!(
+                txn.node("map").unwrap().to_json(),
+                any!({"attrs": {"a": 1.1, "b": 2}})
+            );
         }
     }
 

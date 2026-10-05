@@ -89,7 +89,7 @@ fn event_observers() {
     }
     assert_eq!(
         delta(),
-        Delta::out()
+        Delta::with_name("test")
             .insert_attr("key1", "value1")
             .insert_attr("key2", "value2")
     );
@@ -103,7 +103,7 @@ fn event_observers() {
     }
     assert_eq!(
         delta(),
-        Delta::out()
+        Delta::with_name("test")
             .insert_attr("key1", "value11")
             .remove_attr("key2")
     );
@@ -122,7 +122,7 @@ fn event_observers() {
     };
     assert_eq!(
         delta(),
-        Delta::out()
+        Delta::with_name("test")
             .insert(Out::node(n1.clone()))
             .insert(Out::node_with_delta(n2.clone(), Delta::with_name("div")))
     );
@@ -139,7 +139,7 @@ fn event_observers() {
     };
     assert_eq!(
         delta(),
-        Delta::out()
+        Delta::with_name("test")
             .retain(1)
             .remove(1)
             .insert(Out::node_with_delta(n3.clone(), Delta::with_name("p")))
@@ -163,7 +163,7 @@ fn event_observers() {
     }
     assert_eq!(
         delta(),
-        Delta::out()
+        Delta::with_name("test")
             .insert_attr("key1", "value11")
             .insert(Out::node(n1))
             .insert(Out::node_with_delta(n3, Delta::with_name("p")))
