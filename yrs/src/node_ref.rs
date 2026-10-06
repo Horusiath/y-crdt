@@ -243,7 +243,7 @@ where
         modified
     }
 
-    pub fn format_xml(&self) -> XmlFormat<'_, T> {
+    pub fn format_xml(&self) -> XmlFormat {
         XmlFormat::new(self)
     }
 }
@@ -793,73 +793,107 @@ fn expand_modified(changed: &Modified) -> Modified {
     modified
 }
 
-pub struct XmlFormat<'a, T> {
-    node: &'a NodeRef<T>,
+pub struct XmlFormat {
+    delta: Delta<Out>,
 }
 
-impl<'a, T> XmlFormat<'a, T> {
-    fn new(node: &'a NodeRef<T>) -> Self {
-        XmlFormat { node }
+impl XmlFormat {
+    fn new<T, D>(node: &NodeRef<T>) -> Self
+    where
+        T: Deref<Target = Transaction<D>>,
+        D: Deref<Target = Doc>,
+    {
+        XmlFormat {
+            delta: node.delta(&DeltaOptions {
+                deep: true,
+                ..Default::default()
+            }),
+        }
     }
-}
 
-impl<'a, T, D> std::fmt::Display for XmlFormat<'a, T>
-where
-    T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let tag = self.node.name();
-        if let Some(tag) = &tag {
-            write!(f, "<{tag}")?;
+    fn delta_fmt(delta: &Delta, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(tag) = &delta.name {
+            write!(f, "<{}", tag)?;
 
-            for (attr_name, attr_value) in self.node.attrs() {
-                match attr_value {
-                    Out::Any(value) => {
-                        write!(f, " {attr_name}=\"{value}\"")?;
+            for (key, op) in delta.attrs.iter() {
+                write!(f, " {}=\"", key)?;
+                match op {
+                    AttrOp::Update {
+                        value: Out::Any(value),
+                        ..
+                    } => {
+                        write!(f, "{}", value)?;
                     }
-                    Out::Node(node) => {
-                        if let Some(node_ref) = self.node.txn.node(node.id) {
-                            write!(f, " {attr_name}=\"{node_ref}\"")?;
+                    AttrOp::Update {
+                        value: Out::Node(node),
+                        ..
+                    } => {
+                        if let Some(delta) = node.delta.as_deref() {
+                            Self::delta_fmt(delta, f)?;
                         }
                     }
-                    _ => { /* do nothing */ }
-                };
+                    AttrOp::Modify { delta } => {}
+                    _ => { /* ignore */ }
+                }
+                write!(f, "\"")?;
             }
-
             write!(f, ">")?;
         }
 
-        let mut curr = self.node.ptr.start;
-        while let Some(item) = curr {
-            if !item.is_deleted() {
-                match &item.content {
-                    ItemContent::Any(_) => {}
-                    ItemContent::Binary(_) => {}
-                    ItemContent::Format(name, value) => {
-                        if &**value == &Any::Null {
-                            write!(f, "</{name}>")?;
-                        } else {
-                            write!(f, "<{name}>")?;
+        for op in delta.children.iter() {
+            let mut attrs = Vec::new();
+            match op {
+                Op::InsertText { text, format } => {
+                    if let Some(format) = format.as_deref() {
+                        for (key, value) in format.iter() {
+                            attrs.push((key, value));
+                        }
+                        attrs.sort_by(|x, y| x.0.cmp(y.0))
+                    }
+
+                    // write attributes as xml opening tags
+                    for (node, at) in attrs.iter() {
+                        write!(f, "<{}", node)?;
+                        if let Any::Map(at) = at {
+                            for (k, v) in at.iter() {
+                                write!(f, " {}=\"{}\"", k, v)?;
+                            }
+                        }
+                        write!(f, ">")?;
+                    }
+
+                    write!(f, "{}", text)?;
+
+                    // write attributes as xml closing tags
+                    attrs.reverse();
+                    for (key, _) in attrs {
+                        write!(f, "</{}>", key)?;
+                    }
+                }
+                Op::Insert { items, .. } => {
+                    for out in items {
+                        if let Out::Node(node) = out
+                            && let Some(delta) = node.delta.as_deref()
+                        {
+                            Self::delta_fmt(delta, f)?;
                         }
                     }
-                    ItemContent::String(text) => {
-                        write!(f, "{}", text)?;
-                    }
-                    ItemContent::Node(child) => {
-                        let node_ref = NodeRef::new(NodePtr::from(&*child), &*self.node.txn);
-                        node_ref.format_xml().fmt(f)?;
-                    }
-                    _ => { /* not supported */ }
                 }
+                Op::Modify { delta, format } => {}
+                _ => { /* ignore */ }
             }
-            curr = item.right;
         }
 
-        if let Some(tag) = &tag {
-            write!(f, "</{tag}>")?;
+        if let Some(tag) = &delta.name {
+            write!(f, "</{}>", tag)?;
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for XmlFormat {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Self::delta_fmt(&self.delta, f)
     }
 }
 

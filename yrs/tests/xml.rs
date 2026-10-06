@@ -195,7 +195,10 @@ fn serialization_compatibility() {
 
     let actual = txn.encode_state_as_update_v1(&StateVector::default());
     assert_eq!(actual.as_slice(), expected);
-    assert_eq!(txn.node("root").unwrap().to_string(), "hello<p></p>");
+    assert_eq!(
+        txn.node("root").unwrap().format_xml().to_string(),
+        "hello<p></p>"
+    );
 }
 
 #[test]
@@ -212,7 +215,7 @@ fn format_attributes_decode_compatibility_v1() {
 
     txn.apply_update(update).unwrap();
     assert_eq!(
-        txn.node("test").unwrap().to_string(),
+        txn.node("test").unwrap().format_xml().to_string(),
         "<i>hello </i><b><i>world</i></b>"
     );
 
@@ -233,7 +236,7 @@ fn format_attributes_decode_compatibility_v2() {
 
     txn.apply_update(update).unwrap();
     assert_eq!(
-        txn.node("test").unwrap().to_string(),
+        txn.node("test").unwrap().format_xml().to_string(),
         "<i>hello </i><b><i>world</i></b>"
     );
 
@@ -280,7 +283,7 @@ fn issue_607() {
         let Out::Node(n) = txn.node("doc").unwrap().get(0).unwrap() else {
             panic!("expected xml element node");
         };
-        let actual = txn.node(n.id).unwrap().to_string();
+        let actual = txn.node(n.id).unwrap().format_xml().to_string();
         assert_eq!(actual, "<p><a></a></p>");
     }
 
@@ -290,7 +293,7 @@ fn issue_607() {
         let Out::Node(n) = txn.node("doc").unwrap().get(0).unwrap() else {
             panic!("expected xml element node");
         };
-        let actual = txn.node(n.id).unwrap().to_string();
+        let actual = txn.node(n.id).unwrap().format_xml().to_string();
         assert_eq!(actual, "<p><b></b></p>");
     }
 }
