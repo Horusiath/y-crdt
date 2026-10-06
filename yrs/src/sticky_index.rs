@@ -216,10 +216,17 @@ impl StickyIndex {
     pub fn at<D: Deref<Target = Doc>>(
         txn: &Transaction<D>,
         branch: NodePtr,
-        index: u32,
+        mut index: u32,
         assoc: Assoc,
     ) -> Option<Self> {
-        let mut cursor = Cursor::at(branch, txn.doc().options.offset_kind, index)?; // index already decremented for Assoc::Before
+        if assoc == Assoc::Before {
+            if index == 0 {
+                return Some(Self::new(IndexScope::Absolute(branch.id()), assoc));
+            }
+            // Assoc::Before sticks to the element on the left side of the index
+            index -= 1;
+        }
+        let mut cursor = Cursor::at(branch, txn.doc().options.offset_kind, index)?;
         let context = match cursor.next_id() {
             Some(id) => IndexScope::Relative(id),
             None if assoc == Assoc::Before => IndexScope::Absolute(branch.id()),
