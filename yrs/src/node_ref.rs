@@ -64,8 +64,11 @@ where
         Some(parent.id())
     }
 
-    /// The element name. `None` for text/array/map types, `Some` for XML elements.
+    /// The element name. `None` for text/array/map types and root nodes, `Some` for XML elements.
     pub fn name(&self) -> Option<&Arc<str>> {
+        if self.ptr.item.is_none() {
+            return None; // root nodes keep their key under `name`
+        }
         self.ptr.name.as_ref()
     }
 
@@ -238,6 +241,10 @@ where
             }
         }
         modified
+    }
+
+    pub fn format_xml(&self) -> XmlFormat<'_, T> {
+        XmlFormat::new(self)
     }
 }
 
@@ -784,6 +791,76 @@ fn expand_modified(changed: &Modified) -> Modified {
         }
     }
     modified
+}
+
+pub struct XmlFormat<'a, T> {
+    node: &'a NodeRef<T>,
+}
+
+impl<'a, T> XmlFormat<'a, T> {
+    fn new(node: &'a NodeRef<T>) -> Self {
+        XmlFormat { node }
+    }
+}
+
+impl<'a, T, D> std::fmt::Display for XmlFormat<'a, T>
+where
+    T: Deref<Target = Transaction<D>>,
+    D: Deref<Target = Doc>,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let tag = self.node.name();
+        if let Some(tag) = &tag {
+            write!(f, "<{tag}")?;
+
+            for (attr_name, attr_value) in self.node.attrs() {
+                match attr_value {
+                    Out::Any(value) => {
+                        write!(f, " {attr_name}=\"{value}\"")?;
+                    }
+                    Out::Node(node) => {
+                        if let Some(node_ref) = self.node.txn.node(node.id) {
+                            write!(f, " {attr_name}=\"{node_ref}\"")?;
+                        }
+                    }
+                    _ => { /* do nothing */ }
+                };
+            }
+
+            write!(f, ">")?;
+        }
+
+        let mut curr = self.node.ptr.start;
+        while let Some(item) = curr {
+            if !item.is_deleted() {
+                match &item.content {
+                    ItemContent::Any(_) => {}
+                    ItemContent::Binary(_) => {}
+                    ItemContent::Format(name, value) => {
+                        if &**value == &Any::Null {
+                            write!(f, "</{name}>")?;
+                        } else {
+                            write!(f, "<{name}>")?;
+                        }
+                    }
+                    ItemContent::String(text) => {
+                        write!(f, "{}", text)?;
+                    }
+                    ItemContent::Node(child) => {
+                        let node_ref = NodeRef::new(NodePtr::from(&*child), &*self.node.txn);
+                        node_ref.format_xml().fmt(f)?;
+                    }
+                    _ => { /* not supported */ }
+                }
+            }
+            curr = item.right;
+        }
+
+        if let Some(tag) = &tag {
+            write!(f, "</{tag}>")?;
+        }
+        Ok(())
+    }
 }
 
 /// Renders a [Node] as a [Delta] - a port of Yjs `YType.toDelta`.

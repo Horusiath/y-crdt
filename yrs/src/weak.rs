@@ -64,22 +64,22 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use yrs::{Doc, Map};
+    /// use yrs::{Delta, Doc};
     ///
     /// let mut doc = Doc::new();
-    /// let map = doc.get_or_insert_map("map");
     /// let mut txn = doc.transact_mut();
+    /// let mut map = txn.node_mut("map").unwrap();
     ///
     /// // insert a value and the link referencing it
-    /// map.insert(&mut txn, "A", "value");
-    /// let link = map.link(&txn, "A").unwrap();
-    /// let link = map.insert(&mut txn, "B", link);
+    /// map.insert_attr("A", "value");
+    /// let link = map.link("A").unwrap();
+    /// let link = map.insert_attr("B", Delta::link(link)).node_id().unwrap();
     ///
-    /// assert_eq!(link.try_deref_value(&txn), Some("value".into()));
+    /// assert_eq!(txn.node(link.clone()).unwrap().try_deref(), Some("value".into()));
     ///
     /// // update entry and check if link has been updated
-    /// map.insert(&mut txn, "A", "other");
-    /// assert_eq!(link.try_deref_value(&txn), Some("other".into()));
+    /// txn.node_mut("map").unwrap().insert_attr("A", "other");
+    /// assert_eq!(txn.node(link).unwrap().try_deref(), Some("other".into()));
     /// ```
     pub fn try_deref(&self) -> Option<Out> {
         let source = self.try_source()?;
@@ -313,15 +313,16 @@ pub trait Quotable: AsRef<Node> + Sized {
     ///
     /// # Example
     /// ```
-    /// use yrs::{Doc, Array, Assoc, Quotable};
+    /// use yrs::{Delta, Doc};
     /// let mut doc = Doc::new();
-    /// let array = doc.get_or_insert_array("array");
-    /// array.insert_range(&mut doc.transact_mut(), 0, [1,2,3,4]);
+    /// let mut txn = doc.transact_mut();
+    /// let mut array = txn.node_mut("array").unwrap();
+    /// array.insert_range(0, [1, 2, 3, 4]);
     /// // quote elements 2 and 3
-    /// let prelim = array.quote(&doc.transact(), 1..3).unwrap();
-    /// let quote = array.insert(&mut doc.transact_mut(), 0, prelim);
+    /// let link = array.quote(1..3).unwrap();
+    /// let quote = array.insert(0, Delta::link(link)).node_id().unwrap();
     /// // retrieve quoted values
-    /// let quoted: Vec<_> = quote.unquote(&doc.transact()).collect();
+    /// let quoted: Vec<_> = txn.node(quote).unwrap().unquote().collect();
     /// assert_eq!(quoted, vec![2.into(), 3.into()]);
     /// ```
     fn quote<D, R>(&self, txn: &Transaction<D>, range: R) -> Result<LinkSource, QuoteError>

@@ -484,28 +484,33 @@ where
     /// merged.
     ///
     /// Example:
-    /// ```rust,ignore
-    /// use yrs::{Doc, GetString, Text, UndoManager};
-    /// let mut doc = Doc::new();
+    /// ```rust
+    /// use yrs::{Acquire, AcquireMut, Cell, Doc, UndoManager};
     ///
-    /// // without UndoManager::stop
-    /// let txt = doc.get_or_insert_text("no-stop");
+    /// let doc = Cell::new(Doc::new());
+    /// let insert = |name: &str, index: u32, chunk: &str| {
+    ///     doc.acquire_mut().transact_mut().node_mut(name).unwrap().insert_text(index, chunk);
+    /// };
+    /// let read = |name: &str| doc.acquire().transact().node(name).unwrap().to_string();
+    ///
+    /// // without UndoManager::reset
+    /// doc.acquire_mut().transact_mut().node_mut("no-reset"); // create a root node
     /// let mut mgr = UndoManager::new();
-    /// mgr.expand_scope(&mut doc, &txt);
-    /// txt.insert(&mut doc.transact_mut(), 0, "a");
-    /// txt.insert(&mut doc.transact_mut(), 1, "b");
+    /// mgr.expand_scope(&doc, "no-reset".into());
+    /// insert("no-reset", 0, "a");
+    /// insert("no-reset", 1, "b");
     /// mgr.undo_blocking();
-    /// txt.get_string(&doc.transact()); // => "" (note that 'ab' was removed)
+    /// assert_eq!(read("no-reset"), ""); // note that 'ab' was removed
     ///
-    /// // with UndoManager::stop
-    /// let txt = doc.get_or_insert_text("with-stop");
+    /// // with UndoManager::reset
+    /// doc.acquire_mut().transact_mut().node_mut("with-reset"); // create a root node
     /// let mut mgr = UndoManager::new();
-    /// mgr.expand_scope(&mut doc, &txt);
-    /// txt.insert(&mut doc.transact_mut(), 0, "a");
+    /// mgr.expand_scope(&doc, "with-reset".into());
+    /// insert("with-reset", 0, "a");
     /// mgr.reset();
-    /// txt.insert(&mut doc.transact_mut(), 1, "b");
+    /// insert("with-reset", 1, "b");
     /// mgr.undo_blocking();
-    /// txt.get_string(&doc.transact()); // => "a" (note that only 'b' was removed)
+    /// assert_eq!(read("with-reset"), "a"); // note that only 'b' was removed
     /// ```
     pub fn reset(&mut self) {
         let inner = Arc::get_mut(&mut self.state).unwrap();

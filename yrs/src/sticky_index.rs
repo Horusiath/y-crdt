@@ -21,19 +21,19 @@ use std::ops::Deref;
 /// Example:
 ///
 /// ```rust
-/// use yrs::{Assoc, Doc, IndexedSequence, Text};
+/// use yrs::{Assoc, Doc};
 ///
 /// let mut doc = Doc::new();
-/// let txt = doc.get_or_insert_text("text");
 /// let mut txn = doc.transact_mut();
-/// txt.insert(&mut txn, 0, "abc"); // => 'abc'
+/// let mut txt = txn.node_mut("text").unwrap();
+/// txt.insert_text(0, "abc"); // => 'abc'
 ///
 /// // create position tracker (marked as . in the comments)
-/// let pos = txt.sticky_index(&mut txn, 2, Assoc::After).unwrap(); // => 'ab.c'
+/// let pos = txt.sticky_index(2, Assoc::After).unwrap(); // => 'ab.c'
 ///
 /// // modify text
-/// txt.insert(&mut txn, 1, "def"); // => 'adefb.c'
-/// txt.remove_range(&mut txn, 4, 1); // => 'adef.c'
+/// txt.insert_text(1, "def"); // => 'adefb.c'
+/// txt.remove(4, 1); // => 'adef.c'
 ///
 /// // get current offset index within the containing collection
 /// let a = pos.get_offset(&txn).unwrap();
@@ -117,24 +117,23 @@ impl StickyIndex {
     /// # Examples
     ///
     /// ```rust
-    /// use yrs::{Assoc, Doc, IndexedSequence, Text};
+    /// use yrs::{Assoc, Doc};
     ///
     /// let mut doc = Doc::new();
-    /// let text = doc.get_or_insert_text("text");
     /// let mut txn = doc.transact_mut();
     ///
-    /// text.insert(&mut txn, 0, "hello world");
+    /// txn.node_mut("text").unwrap().insert_text(0, "hello world");
     ///
     /// const INDEX: u32 = 4;
     ///
     /// // set perma index at position before letter 'o' => "hell.o world"
-    /// let pos = text.sticky_index(&mut txn, INDEX, Assoc::After).unwrap();
+    /// let pos = txn.node("text").unwrap().sticky_index(INDEX, Assoc::After).unwrap();
     /// let off = pos.get_offset(&txn).unwrap();
     /// assert_eq!(off.index, INDEX);
     ///
     /// // perma index will maintain it's position before letter 'o' even if another update
     /// // shifted it's index inside of the text
-    /// text.insert(&mut txn, 1, "(see)"); // => "h(see)ell.o world" where . is perma index position
+    /// txn.node_mut("text").unwrap().insert_text(1, "(see)"); // => "h(see)ell.o world" where . is perma index position
     /// let off2 = pos.get_offset(&txn).unwrap();
     /// assert_ne!(off2.index, off.index); // offset index changed due to new insert above
     /// ```

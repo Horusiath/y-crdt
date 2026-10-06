@@ -41,7 +41,7 @@ fn map_basic() {
 
     //TODO: YArray within YMap
     fn compare_all<D: std::ops::Deref<Target = Doc>>(m: &NodeRef<&Transaction<D>>) {
-        assert_eq!(m.len(), 5);
+        assert_eq!(m.attr_len(), 5);
         assert_eq!(m.attr("number"), Some(Out::from(1f64)));
         assert_eq!(m.attr("boolean0"), Some(Out::from(false)));
         assert_eq!(m.attr("boolean1"), Some(Out::from(true)));

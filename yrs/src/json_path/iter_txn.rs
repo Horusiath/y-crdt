@@ -18,25 +18,21 @@ where
     ///
     /// # Example
     /// ```rust
-    /// use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out};
+    /// use yrs::{any, Delta, Doc, JsonPath, JsonPathEval, Out};
     ///
     /// let mut doc = Doc::new();
     /// let mut txn = doc.transact_mut();
-    /// let users = txn.get_or_insert_array("users");
     ///
     /// // populate the document with some data to query
-    /// users.insert(&mut txn, 0, MapPrelim::from([
-    ///     ("name".to_string(), In::Any(any!("Alice"))),
-    ///     ("surname".into(), In::Any(any!("Smith"))),
-    ///     ("age".into(), In::Any(any!(25))),
-    ///     (
-    ///         "friends".into(),
-    ///         In::from(ArrayPrelim::from([
-    ///             any!({ "name": "Bob", "nick": "boreas" }),
-    ///             any!({ "nick": "crocodile91" }),
-    ///         ])),
-    ///     ),
-    /// ]));
+    /// let friends = Delta::new()
+    ///     .insert(any!({ "name": "Bob", "nick": "boreas" }))
+    ///     .insert(any!({ "nick": "crocodile91" }));
+    /// let alice = Delta::new()
+    ///     .insert_attr("name", "Alice")
+    ///     .insert_attr("surname", "Smith")
+    ///     .insert_attr("age", 25)
+    ///     .insert_attr("friends", friends);
+    /// txn.node_mut("users").unwrap().insert(0, alice);
     ///
     /// let query = JsonPath::parse("$.users..friends.*.nick").unwrap();
     /// let values: Vec<Out> = txn.json_path(&query).collect();

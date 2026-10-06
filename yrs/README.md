@@ -13,43 +13,45 @@ This library contains Rust API, that's used further on by other projects in this
 ## Example
 
 ```rust
-use yrs::*;
+use yrs::lib0::Decode;
+use yrs::node::Attrs;
+use yrs::{DeltaOptions, Doc, Update};
 
-fn main() {    
-    let doc = Doc::new();
-    let text = doc.get_or_insert_text("name");
+fn main() {
+    let mut doc = Doc::new();
     // every operation in Yrs happens in scope of a transaction
-    let mut txn = doc.transact_mut(); 
+    let mut txn = doc.transact_mut();
+    let mut text = txn.node_mut("name").unwrap();
     // append text to our collaborative document
-    text.push(&mut txn, "Hello from yrs!");
+    text.push_text("Hello from yrs!");
     // add formatting section to part of the text
-    text.format(&mut txn, 11, 3, HashMap::from([
+    text.format(11, 3, &Attrs::from([
       ("link".into(), "https://github.com/y-crdt/y-crdt".into())
     ]));
-    
+
     // simulate update with remote peer
-    let remote_doc = Doc::new();
-    let remote_text = remote_doc.get_or_insert_text("name");
+    let mut remote_doc = Doc::new();
     let mut remote_txn = remote_doc.transact_mut();
 
-    // in order to exchange data with other documents 
+    // in order to exchange data with other documents
     // we first need to create a state vector
     let state_vector = remote_txn.state_vector();
-    
-    // now compute a differential update based on remote document's 
+
+    // now compute a differential update based on remote document's
     // state vector
     let bytes = txn.encode_diff_v1(&state_vector);
-    
-    // both update and state vector are serializable, we can pass them 
+
+    // both update and state vector are serializable, we can pass them
     // over the wire now apply update to a remote document
     let update = Update::decode_v1(&bytes).unwrap();
-    remote_txn.apply_update(update);
+    remote_txn.apply_update(update).unwrap();
 
     // display raw text (no attributes)
-    println!("{}", remote_text.get_string(&remote_txn));
-  
-    // create sequence of text chunks with optional format attributes
-    let diff = remote_text.diff(&remote_txn, YChange::identity);
+    let remote_text = remote_txn.node("name").unwrap();
+    println!("{}", remote_text);
+
+    // create a delta: a sequence of text chunks with optional format attributes
+    let delta = remote_text.delta(&DeltaOptions::default());
 }
 ```
 

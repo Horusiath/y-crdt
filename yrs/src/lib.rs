@@ -25,33 +25,31 @@
 //! the following code snippet:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, StateVector, Text, Update};
-//! use yrs::updates::decoder::Decode;
-//! use yrs::updates::encoder::Encode;
+//! use yrs::{Doc, StateVector, Update};
+//! use yrs::lib0::{Decode, Encode};
 //!
 //! let mut doc = Doc::new();
-//! let text = doc.get_or_insert_text("article");
 //!
 //! {
 //!   let mut txn = doc.transact_mut();
-//!   text.insert(&mut txn, 0, "hello");
-//!   text.insert(&mut txn, 5, " world");
+//!   let mut text = txn.node_mut("article").unwrap();
+//!   text.insert_text(0, "hello");
+//!   text.insert_text(5, " world");
 //!   // other rich text operations include formatting or inserting embedded elements
 //! } // transaction is automatically committed when dropped
 //!
-//! assert_eq!(text.get_string(&doc.transact()), "hello world".to_owned());
+//! assert_eq!(doc.transact().node("article").unwrap().to_string(), "hello world");
 //!
 //! // synchronize state with remote replica
 //! let mut remote_doc = Doc::new();
-//! let remote_text = remote_doc.get_or_insert_text("article");
 //! let remote_timestamp = remote_doc.transact().state_vector().encode_v1();
 //!
 //! // get update with contents not observed by remote_doc
 //! let update = doc.transact().encode_diff_v1(&StateVector::decode_v1(&remote_timestamp).unwrap());
 //! // apply update on remote doc
-//! remote_doc.transact_mut().apply_update(Update::decode_v1(&update).unwrap());
+//! remote_doc.transact_mut().apply_update(Update::decode_v1(&update).unwrap()).unwrap();
 //!
-//! assert_eq!(text.get_string(&doc.transact()), remote_text.get_string(&remote_doc.transact()));
+//! assert_eq!(remote_doc.transact().node("article").unwrap().to_string(), "hello world");
 //! ```
 //!
 //! [Doc] is a core structure of Yrs. All other structures and operations are performed in
@@ -113,37 +111,37 @@
 //! (eg. image binaries or [ArrayRef]s that we could interpret in example as nested tables).
 //!
 //! ```rust
-//! use yrs::{Any, Array, ArrayPrelim, Doc, GetString, Text, XmlFragment, XmlTextPrelim};
-//! use yrs::types::Attrs;
+//! use yrs::{Any, Delta, Doc};
+//! use yrs::node::Attrs;
 //!
 //! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
-//! let f = txn.get_or_insert_xml_fragment("article");
-//! let xml = f.insert(&mut txn, 0, XmlTextPrelim::new(""));
+//! let mut text = txn.node_mut("article").unwrap();
 //!
 //! let bold = Attrs::from([("b".into(), true.into())]);
 //! let italic = Attrs::from([("i".into(), true.into())]);
 //!
-//! xml.insert(&mut txn, 0, "hello ");
-//! xml.insert_with_attributes(&mut txn, 6, "world", italic);
-//! xml.format(&mut txn, 0, 5, bold);
+//! text.insert_text(0, "hello ");
+//! text.insert_text_fmt(6, "world", &italic);
+//! text.format(0, 5, &bold);
 //!
-//! assert_eq!(xml.get_string(&txn), "<b>hello</b> <i>world</i>");
+//! assert_eq!(text.xml_string().to_string(), "<b>hello</b> <i>world</i>");
 //!
 //! // remove formatting
 //! let remove_italic = Attrs::from([("i".into(), Any::Null)]);
-//! xml.format(&mut txn, 6, 5, remove_italic);
+//! text.format(6, 5, &remove_italic);
 //!
-//! assert_eq!(xml.get_string(&txn), "<b>hello</b> world");
+//! assert_eq!(text.xml_string().to_string(), "<b>hello</b> world");
 //!
 //! // insert binary payload eg. images
 //! let image = b"deadbeaf".to_vec();
-//! xml.insert_embed(&mut txn, 1, image);
+//! text.insert(1, image);
 //!
-//! // insert nested shared type eg. table as ArrayRef of ArrayRefs
-//! let table = xml.insert_embed(&mut txn, 5, ArrayPrelim::default());
-//! let header = table.insert(&mut txn, 0, ArrayPrelim::from(["Book title", "Author"]));
-//! let row = table.insert(&mut txn, 1, ArrayPrelim::from(["\"Moby-Dick\"", "Herman Melville"]));
+//! // insert nested node eg. table as a list of rows
+//! let table = Delta::new()
+//!     .insert(Delta::new().insert("Book title").insert("Author"))
+//!     .insert(Delta::new().insert("\"Moby-Dick\"").insert("Herman Melville"));
+//! text.insert(5, table);
 //! ```
 //!
 //! Keep in mind that this kind of special content may not be displayed using standard methods
@@ -160,30 +158,28 @@
 //! on following example:
 //!
 //! ```rust
-//! use yrs::{Doc, ClientID, GetString, StateVector, Text, Update};
-//! use yrs::updates::decoder::Decode;
+//! use yrs::{Doc, StateVector, Update};
+//! use yrs::lib0::Decode;
 //!
 //! let mut doc1 = Doc::with_client_id(1);
-//! let text1 = doc1.get_or_insert_text("article");
 //! let mut txn1 = doc1.transact_mut();
-//! text1.insert(&mut txn1, 0, "hello");
+//! txn1.node_mut("article").unwrap().insert_text(0, "hello");
 //!
 //! let mut doc2 = Doc::with_client_id(2);
-//! let text2 = doc2.get_or_insert_text("article");
 //! let mut txn2 = doc2.transact_mut();
-//! text2.insert(&mut txn2, 0, "world");
+//! txn2.node_mut("article").unwrap().insert_text(0, "world");
 //!
 //! const INDEX: usize = 1;
 //!
 //! // Doc 2: cursor at index 1 points to character 'o'
-//! let str = text2.get_string(&txn2);
+//! let str = txn2.node("article").unwrap().to_string();
 //! assert_eq!(str.chars().nth(INDEX), Some('o'));
 //!
 //! // synchronize full state of doc1 -> doc2
-//! txn2.apply_update(Update::decode_v1(&txn1.encode_diff_v1(&StateVector::default())).unwrap());
+//! txn2.apply_update(Update::decode_v1(&txn1.encode_diff_v1(&StateVector::default())).unwrap()).unwrap();
 //!
 //! // Doc 2: cursor at index 1 no longer points to the same character
-//! let str = text2.get_string(&txn2);
+//! let str = txn2.node("article").unwrap().to_string();
 //! assert_ne!(str.chars().nth(INDEX), Some('o'));
 //! ```
 //!
@@ -195,34 +191,32 @@
 //! location, that will persist between concurrent updates being made:
 //!
 //! ```rust
-//! use yrs::{Assoc, ClientID, Doc, GetString, IndexedSequence, StateVector, Text, Update};
-//! use yrs::updates::decoder::Decode;
+//! use yrs::{Assoc, Doc, StateVector, Update};
+//! use yrs::lib0::Decode;
 //!
 //! let mut doc1 = Doc::with_client_id(1);
-//! let text1 = doc1.get_or_insert_text("article");
 //! let mut txn1 = doc1.transact_mut();
-//! text1.insert(&mut txn1, 0, "hello");
+//! txn1.node_mut("article").unwrap().insert_text(0, "hello");
 //!
-//! let mut doc2 = Doc::with_client_id(1);
-//! let text2 = doc2.get_or_insert_text("article");
+//! let mut doc2 = Doc::with_client_id(2);
 //! let mut txn2 = doc2.transact_mut();
-//! text2.insert(&mut txn2, 0, "world");
+//! txn2.node_mut("article").unwrap().insert_text(0, "world");
 //!
 //! const INDEX: usize = 1;
 //!
 //! // Doc 2: cursor at index 1 points to character 'o'
-//! let str = text2.get_string(&txn2);
-//! assert_eq!(str.chars().nth(INDEX), Some('o'));
+//! let text2 = txn2.node("article").unwrap();
+//! assert_eq!(text2.to_string().chars().nth(INDEX), Some('o'));
 //!
 //! // get a permanent index for cursor at index 1
-//! let pos = text2.sticky_index(&mut txn2, INDEX as u32, Assoc::After).unwrap();
+//! let pos = text2.sticky_index(INDEX as u32, Assoc::After).unwrap();
 //!
 //! // synchronize full state of doc1 -> doc2
-//! txn2.apply_update(Update::decode_v1(&txn1.encode_diff_v1(&StateVector::default())).unwrap());
+//! txn2.apply_update(Update::decode_v1(&txn1.encode_diff_v1(&StateVector::default())).unwrap()).unwrap();
 //!
 //! // restore the index from position saved previously
 //! let idx = pos.get_offset(&txn2).unwrap();
-//! let str = text2.get_string(&txn2);
+//! let str = txn2.node("article").unwrap().to_string();
 //! assert_eq!(str.chars().nth(idx.index as usize), Some('o'));
 //! ```
 //!
@@ -251,24 +245,28 @@
 //! ```rust
 //! #[cfg(feature = "weak")]
 //! fn example() {
-//!     use yrs::{Doc, Text, GetString, Quotable, Map};
+//!     use yrs::{Delta, Doc};
 //!
 //!     let mut doc = Doc::new();
-//!     let text = doc.get_or_insert_text("text");
-//!     let map = doc.get_or_insert_map("map");
 //!     let mut txn = doc.transact_mut();
-//!     text.insert(&mut txn, 0, "hello!");
-//!     let quote = text.quote(&txn, 0..5).unwrap();
-//!     let quote = map.insert(&mut txn, "title", quote);
+//!     let mut text = txn.node_mut("text").unwrap();
+//!     text.insert_text(0, "hello!");
+//!     let quote = text.quote(0..5).unwrap();
+//!     let quote = txn
+//!         .node_mut("map")
+//!         .unwrap()
+//!         .insert_attr("title", Delta::link(quote))
+//!         .node_id()
+//!         .unwrap();
 //!
 //!     // retrieve quoted text fragment
-//!     assert_eq!(quote.get_string(&txn), "hello".to_string());
+//!     assert_eq!(txn.node(quote.clone()).unwrap().to_string(), "hello");
 //!
 //!     // quotations are actively reacting to changes happening at source within quoted range
-//!     text.insert(&mut txn, 5, " world");
+//!     txn.node_mut("text").unwrap().insert_text(5, " world");
 //!     // since quoted range 0..5 was right-side exclusive, index 5 itself is not included in range,
 //!     // but inserts between position 4 and 5 are
-//!     assert_eq!(quote.get_string(&txn), "hello world".to_string());
+//!     assert_eq!(txn.node(quote).unwrap().to_string(), "hello world");
 //! }
 //! ```
 //!
@@ -281,21 +279,21 @@
 //! ```rust
 //! #[cfg(feature = "weak")]
 //! fn example() {
-//!     use yrs::{Doc, Quotable, Map};
+//!     use yrs::{Delta, Doc};
 //!
 //!     let mut doc = Doc::new();
-//!     let map = doc.get_or_insert_map("map");
 //!     let mut txn = doc.transact_mut();
-//!     map.insert(&mut txn, "origin", "value");
+//!     let mut map = txn.node_mut("map").unwrap();
+//!     map.insert_attr("origin", "value");
 //!     // establish a link 'origin' entry
-//!     let link = map.link(&txn, "origin").unwrap();
-//!     let link = map.insert(&mut txn, "link", link);
-//!     let linked_value: String = link.try_deref(&txn).unwrap();
-//!     assert_eq!(linked_value, "value".to_string());
+//!     let link = map.link("origin").unwrap();
+//!     let link = map.insert_attr("link", Delta::link(link)).node_id().unwrap();
+//!     let linked_value = txn.node(link.clone()).unwrap().try_deref();
+//!     assert_eq!(linked_value, Some("value".into()));
 //!
 //!     // remove original value
-//!     map.remove(&mut txn, "origin");
-//!     let linked_value = link.try_deref_value(&txn);
+//!     txn.node_mut("map").unwrap().remove_attr("origin");
+//!     let linked_value = txn.node(link).unwrap().try_deref();
 //!     assert_eq!(linked_value, None); // linked value is no longer accessible
 //! }
 //! ```
@@ -309,47 +307,49 @@
 //! [UndoManager] is a Yrs response for these needs, supporting wide variety of options:
 //!
 //! ```rust
-//! use yrs::{Acquire, AcquireMut, Cell, Doc, GetString, Text, UndoManager, Update};
+//! use yrs::{Acquire, AcquireMut, Cell, Doc, UndoManager, Update};
+//! use yrs::lib0::Decode;
 //! use yrs::undo::Options;
-//! use yrs::updates::decoder::Decode;
 //!
 //! let local = Cell::new(Doc::with_client_id(123));
-//! let text1 = local.acquire_mut().get_or_insert_text("article");
+//! local.acquire_mut().transact_mut().node_mut("article"); // create a root node
 //! let local_client_id = local.acquire().client_id();
 //! let mut mgr = UndoManager::with_options(Options::default());
-//! mgr.expand_scope(&local, &text1);
+//! mgr.expand_scope(&local, "article".into());
 //! mgr.include_origin(local_client_id); // only track changes originating from local peer
 //!
 //! let remote = Cell::new(Doc::with_client_id(321));
-//! let text2 = remote.acquire_mut().get_or_insert_text("article");
 //! let remote_client_id = remote.acquire().client_id();
 //!
+//! let push_text = |doc: &Cell<Doc>, origin, text: &str| {
+//!     let mut doc = doc.acquire_mut();
+//!     let mut txn = doc.transact_mut_with(origin);
+//!     txn.node_mut("article").unwrap().push_text(text);
+//! };
+//! let read_text = |doc: &Cell<Doc>| doc.acquire().transact().node("article").unwrap().to_string();
+//!
 //! // perform changes locally
-//! text1.push(&mut local.acquire_mut().transact_mut_with(local_client_id), "hello ");
+//! push_text(&local, local_client_id, "hello ");
 //! mgr.reset(); // prevent previous and next operation to be treated by Undo manager as one batch
-//! text1.push(&mut local.acquire_mut().transact_mut_with(local_client_id), "world");
-//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello world");
+//! push_text(&local, local_client_id, "world");
+//! assert_eq!(read_text(&local), "hello world");
 //!
 //! // perform remote changes - these are not being tracked by mgr
-//! {
-//!     let mut g = remote.acquire_mut();
-//!     let mut remote_txn = g.transact_mut_with(remote_client_id);
-//!     text2.push(&mut remote_txn, "everyone");
-//!     assert_eq!(text2.get_string(&remote_txn), "everyone");
-//! }
+//! push_text(&remote, remote_client_id, "everyone");
+//! assert_eq!(read_text(&remote), "everyone");
 //!
 //! // sync changes from remote to local
 //! let update = remote.acquire().transact().encode_state_as_update_v1(&local.acquire().transact().state_vector());
-//! local.acquire_mut().transact_mut().apply_update(Update::decode_v1(&update).unwrap());
-//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello worldeveryone"); // remote changes synced
+//! local.acquire_mut().transact_mut().apply_update(Update::decode_v1(&update).unwrap()).unwrap();
+//! assert_eq!(read_text(&local), "hello worldeveryone"); // remote changes synced
 //!
 //! // undo last performed change on local
 //! mgr.undo_blocking();
-//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello everyone");
+//! assert_eq!(read_text(&local), "hello everyone");
 //!
 //! // redo change we undone
 //! mgr.redo_blocking();
-//! assert_eq!(text1.get_string(&local.acquire().transact()), "hello worldeveryone");
+//! assert_eq!(read_text(&local), "hello worldeveryone");
 //! ```
 //!
 //! > Keep in mind, that in order to serve its purpose, undo manager may need to implicitly create
@@ -379,31 +379,28 @@
 //! as well as show the differences between them:
 //!
 //! ```rust
-//! use yrs::{Doc, GetString, Options, Text, Update, XmlFragment, XmlTextPrelim};
-//! use yrs::types::Attrs;
-//! use yrs::types::text::{Diff, YChange};
-//! use yrs::updates::decoder::Decode;
-//! use yrs::updates::encoder::{Encoder, EncoderV1};
+//! use yrs::{Doc, Options, Update};
+//! use yrs::lib0::{Decode, Encoder, EncoderV1};
+//! use yrs::node::Attrs;
 //!
 //! let mut doc = Doc::with_options(Options {
 //!     skip_gc: true,  // in order to support revisions we cannot garbage collect deleted blocks
 //!     ..Options::default()
 //! });
 //! let mut txn = doc.transact_mut();
-//! let f = txn.get_or_insert_xml_fragment("article");
-//! let text = f.insert(&mut txn, 0, XmlTextPrelim::new(""));
 //!
 //! const INIT: &str = "hello world";
-//! text.push(&mut txn, INIT);
+//! txn.node_mut("article").unwrap().push_text(INIT);
 //!
 //! // save current state of the document: "hello world"
 //! let rev = txn.snapshot();
 //!
 //! // change document state
 //! let italic = Attrs::from([("i".into(), true.into())]);
-//! text.format(&mut txn, 6, 5, italic.clone());
-//! text.remove_range(&mut txn, 2, 3);
-//! assert_eq!(text.get_string(&txn), "he <i>world</i>");
+//! let mut text = txn.node_mut("article").unwrap();
+//! text.format(6, 5, &italic);
+//! text.remove(2, 3);
+//! assert_eq!(text.xml_string().to_string(), "he <i>world</i>");
 //!
 //! // encode past version of the document
 //! let mut encoder = EncoderV1::new();
@@ -413,11 +410,9 @@
 //! // restore the past state
 //! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
-//! let f = txn.get_or_insert_xml_fragment("article");
-//! txn.apply_update(Update::decode_v1(&update).unwrap());
-//! let text = f.get(&mut txn, 0).unwrap().into_xml_text().unwrap();
+//! txn.apply_update(Update::decode_v1(&update).unwrap()).unwrap();
 //!
-//! assert_eq!(text.get_string(&txn), INIT);
+//! assert_eq!(txn.node("article").unwrap().to_string(), INIT);
 //! ```
 //!
 //! Keep in mind that an update created from past snapshot via [TransactionMut::encode_state_from_snapshot]
@@ -476,36 +471,38 @@
 //! replicas living on other peers. This is possible via hooks:
 //!
 //! ```rust
-//! use yrs::{Array, ArrayRef, ClientID, Doc, Hook, MapPrelim, RootRef, SharedRef, Update};
-//! use yrs::types::ToJson;
-//! use yrs::updates::decoder::Decode;
+//! use yrs::{Delta, Doc, NodeID, Update};
+//! use yrs::lib0::Decode;
 //!
-//! // create a logical identifier to a root type
-//! let root = ArrayRef::root("root");
+//! // root nodes are identified by their name
+//! let root = NodeID::from("root");
 //!
 //! let mut local = Doc::with_client_id(1);
-//! let local_array = root.get_or_create(&mut local.transact_mut());
-//! assert_eq!(local_array.hook(), Hook::from(root.clone())); // another way to get hook for existing type
-//!
-//! let local_map = local_array.push_back(&mut local.transact_mut(), MapPrelim::from([("key", "old")]));
-//! let nested = local_map.hook(); // logical identifier to a nested shared type
+//! let nested = local
+//!     .transact_mut()
+//!     .node_mut(root)
+//!     .unwrap()
+//!     .push_back(Delta::new().insert_attr("key", "old"))
+//!     .node_id()
+//!     .unwrap(); // logical identifier of a nested node
 //!
 //! let mut remote = Doc::with_client_id(2);
-//! let remote_array = root.get_or_create(&mut local.transact_mut());
 //! // we haven't synchronized yet, so nested element doesn't exist on remote
-//! assert!(nested.get(&remote.transact()).is_none());
+//! assert!(remote.transact().node(nested.clone()).is_none());
 //!
 //! // synchronize the changes
 //! {
 //!     let mut txn = remote.transact_mut();
 //!     let update = local.transact().encode_state_as_update_v1(&txn.state_vector());
-//!     txn.apply_update(Update::decode_v1(&update).unwrap());
+//!     txn.apply_update(Update::decode_v1(&update).unwrap()).unwrap();
 //! }
 //!
-//! // after synchronizing, we can now instantiate instance of the same logical type
-//! let remote_map = nested.get(&remote.transact()).unwrap();
-//! assert_eq!(local_map.hook(), remote_map.hook());
-//! assert_eq!(local_map.to_json(&local.transact()), remote_map.to_json(&remote.transact()));
+//! // after synchronizing, we can now access the same logical node on the remote peer
+//! let (local_txn, remote_txn) = (local.transact(), remote.transact());
+//! let local_map = local_txn.node(nested.clone()).unwrap();
+//! let remote_map = remote_txn.node(nested).unwrap();
+//! assert_eq!(local_map.id(), remote_map.id());
+//! assert_eq!(local_map.to_json(), remote_map.to_json());
 //! ```
 //!
 //! Logical references are serializable. They also can help to avoid segfaults in cases when we hold
@@ -583,25 +580,21 @@
 //! the document state in a way similar to [JSONPath](https://en.wikipedia.org/wiki/JSONPath):
 //!
 //! ```rust
-//! use yrs::{any, Array, ArrayPrelim, Doc, In, JsonPath, JsonPathEval, Map, MapPrelim, Out};
+//! use yrs::{any, Delta, Doc, JsonPath, JsonPathEval, Out};
 //!
 //! let mut doc = Doc::new();
 //! let mut txn = doc.transact_mut();
-//! let users = txn.get_or_insert_array("users");
 //!
 //! // populate the document with some data to query
-//! users.insert(&mut txn, 0, MapPrelim::from([
-//!     ("name".to_string(), In::Any(any!("Alice"))),
-//!     ("surname".into(), In::Any(any!("Smith"))),
-//!     ("age".into(), In::Any(any!(25))),
-//!     (
-//!         "friends".into(),
-//!         In::from(ArrayPrelim::from([
-//!             any!({ "name": "Bob", "nick": "boreas" }),
-//!             any!({ "nick": "crocodile91" }),
-//!         ])),
-//!     ),
-//! ]));
+//! let friends = Delta::new()
+//!     .insert(any!({ "name": "Bob", "nick": "boreas" }))
+//!     .insert(any!({ "nick": "crocodile91" }));
+//! let alice = Delta::new()
+//!     .insert_attr("name", "Alice")
+//!     .insert_attr("surname", "Smith")
+//!     .insert_attr("age", 25)
+//!     .insert_attr("friends", friends);
+//! txn.node_mut("users").unwrap().insert(0, alice);
 //!
 //! let query = JsonPath::parse("$.users..friends.*.nick").unwrap();
 //! let values: Vec<Out> = txn.json_path(&query).collect();
