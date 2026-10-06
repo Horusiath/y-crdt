@@ -1430,11 +1430,6 @@ impl Item {
         if len == 0 {
             return None;
         }
-        let root_name = if let TypePtr::Named(root) = &parent {
-            Some(root.clone())
-        } else {
-            None
-        };
         let mut item = Box::new(Item {
             id,
             len,
@@ -1451,9 +1446,6 @@ impl Item {
         let item_ptr = ItemPtr::from(&mut item);
         if let ItemContent::Node(branch) = &mut item.content {
             branch.item = Some(item_ptr);
-            if branch.name.is_none() {
-                branch.name = root_name;
-            }
         }
         Some(item)
     }
@@ -1971,7 +1963,11 @@ impl ItemContent {
             )),
             BLOCK_ITEM_TYPE_REF_NUMBER => {
                 let type_ref = TypeRef::decode(decoder)?;
-                Ok(ItemContent::Node(Node::new(None, type_ref)))
+                let name = match &type_ref {
+                    TypeRef::XmlElement(name) => Some(name.clone()),
+                    _ => None,
+                };
+                Ok(ItemContent::Node(Node::new(name, type_ref)))
             }
             BLOCK_ITEM_ANY_REF_NUMBER => {
                 let len = decoder.read_len()? as usize;

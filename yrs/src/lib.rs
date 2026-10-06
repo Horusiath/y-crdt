@@ -400,7 +400,7 @@
 //! let mut text = txn.node_mut("article").unwrap();
 //! text.format(6, 5, &italic);
 //! text.remove(2, 3);
-//! assert_eq!(text.xml_string().to_string(), "he <i>world</i>");
+//! assert_eq!(text.format_xml().to_string(), "he <i>world</i>");
 //!
 //! // encode past version of the document
 //! let mut encoder = EncoderV1::new();
