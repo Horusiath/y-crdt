@@ -1479,7 +1479,7 @@ mod test {
                 .unwrap()
         });
 
-        let as_string = || node(&d1, xml1.clone(), |xml| xml.to_string());
+        let as_string = || node(&d1, xml1.clone(), |xml| xml.format_xml().to_string());
 
         assert_eq!(as_string(), "<undefined><p>content</p></undefined>");
         // format textchild and revert that change
@@ -1870,7 +1870,7 @@ mod test {
         mgr.redo_blocking();
         mgr.redo_blocking();
 
-        let str = node(&doc, "t", |f| f.to_string());
+        let str = node(&doc, "t", |f| f.format_xml().to_string());
         assert!(
             str == r#"<test-node a="180" b="50"></test-node>"#
                 || str == r#"<test-node b="50" a="180"></test-node>"#
