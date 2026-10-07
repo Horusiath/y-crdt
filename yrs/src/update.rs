@@ -6,7 +6,7 @@ use crate::block::{
 use crate::id_set::IdSet;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::{NodePtr, TypePtr, TypeRef};
-use crate::transaction::TransactionMut;
+use crate::transaction::TransactionState;
 use crate::utils::client_hasher::ClientHasher;
 use crate::{ID, StateVector};
 use smallvec::SmallVec;
@@ -321,25 +321,26 @@ impl Update {
     /// contained in this update.
     pub(crate) fn integrate(
         mut self,
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
+        state: &mut TransactionState,
     ) -> crate::Result<(Option<PendingUpdate>, Option<Update>)> {
         let remaining_blocks = if self.blocks.is_empty() {
             None
         } else {
             let mut picker = BlockPicker::new(&mut self.blocks);
             let mut next = picker.next();
-            let mut state = HashMap::new();
+            let mut clocks = HashMap::new();
             while let Some(mut stack_head) = next {
                 if !stack_head.is_skip() {
                     let id = stack_head.id();
                     let len = stack_head.len();
-                    let local_clock = state
+                    let local_clock = clocks
                         .entry(id.client)
-                        .or_insert_with(|| txn.doc.blocks.get_clock(&id.client));
+                        .or_insert_with(|| doc.blocks.get_clock(&id.client));
                     let offset = (*local_clock as i32) - (id.clock as i32);
 
-                    if let Some(missing) = Self::missing_dependency(&mut stack_head, txn.doc)? {
-                        next = picker.switch(stack_head, &missing, |c| txn.doc.blocks.get_clock(c));
+                    if let Some(missing) = Self::missing_dependency(&mut stack_head, doc)? {
+                        next = picker.switch(stack_head, &missing, |c| doc.blocks.get_clock(c));
                         continue;
                     } else {
                         // block has no missing dependencies, therefore we can integrate it right away
@@ -347,7 +348,8 @@ impl Update {
                             // Block was send out of order (previous blocks from the same client are
                             // missing), however since it has no dependency on them, it's still safe
                             // to integrate. For that we prepend the missing hole with a Skip block.
-                            txn.integrate_skip(
+                            state.integrate_skip(
+                                doc,
                                 BlockRange::new(
                                     ID::new(id.client, *local_clock),
                                     offset.abs() as u32,
@@ -355,7 +357,7 @@ impl Update {
                                 0,
                             );
                         }
-                        txn.integrate(stack_head, 0);
+                        state.integrate(doc, stack_head, 0);
                         *local_clock = (*local_clock).max(id.clock + len);
                     }
                 }
@@ -364,7 +366,7 @@ impl Update {
             picker.pending()
         };
 
-        let remaining_ds = txn.apply_delete(&self.delete_set).map(|ds| {
+        let remaining_ds = state.apply_delete(doc, &self.delete_set).map(|ds| {
             let mut update = Update::new();
             update.delete_set = ds;
             update

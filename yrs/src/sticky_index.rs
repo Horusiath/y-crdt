@@ -2,7 +2,7 @@ use crate::block::{ItemContent, ItemPtr};
 use crate::cursor::Cursor;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::NodePtr;
-use crate::{ClientID, Doc, ID, NodeID, NodeRef, Transaction};
+use crate::{ClientID, Doc, DocHandle, ID, NodeID, NodeRef, Transaction};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -137,7 +137,7 @@ impl StickyIndex {
     /// let off2 = pos.get_offset(&txn).unwrap();
     /// assert_ne!(off2.index, off.index); // offset index changed due to new insert above
     /// ```
-    pub fn get_offset<D: Deref<Target = Doc>>(&self, txn: &Transaction<D>) -> Option<Offset> {
+    pub fn get_offset<D: DocHandle>(&self, txn: &Transaction<D>) -> Option<Offset> {
         let mut branch = None;
         let mut index = 0;
 
@@ -213,7 +213,7 @@ impl StickyIndex {
         }
     }
 
-    pub fn at<D: Deref<Target = Doc>>(
+    pub fn at<D: DocHandle>(
         txn: &Transaction<D>,
         branch: NodePtr,
         mut index: u32,
@@ -562,7 +562,7 @@ impl Decode for Assoc {
 impl<T, D> NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     /// Returns a [StickyIndex] equivalent to a human-readable `index`.
     /// Returns `None` if `index` is beyond the length of current sequence.

@@ -6,6 +6,7 @@ use crate::iter::TxnIterator;
 use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
+use crate::transaction::DocHandle;
 use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction, TransactionState};
 use serde::Deserialize;
 use serde::de::value::{MapDeserializer, SeqDeserializer};
@@ -47,7 +48,7 @@ impl<T> NodeRef<T> {
 impl<T, D> NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     pub fn txn(&self) -> &Transaction<D> {
         &self.txn
@@ -251,7 +252,7 @@ where
 impl<T, D> Display for NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut curr = self.ptr.start;
@@ -271,12 +272,13 @@ where
 }
 
 // write operations
-impl<'doc, T> NodeRef<T>
+impl<T, D> NodeRef<T>
 where
-    T: DerefMut<Target = Transaction<&'doc mut Doc>>,
+    T: DerefMut<Target = Transaction<D>>,
+    D: DocHandle + DerefMut,
 {
-    pub fn txn_mut(&mut self) -> &mut Transaction<&'doc mut Doc> {
-        &mut *self.txn
+    pub fn txn_mut(&mut self) -> &mut Transaction<D> {
+        &mut self.txn
     }
 
     /// Inserts a single value at the given index.
@@ -286,7 +288,8 @@ where
     /// Panics if `index` is greater than the current length of this type's children.
     pub fn insert(&mut self, index: u32, value: impl Into<In>) -> Out {
         let mut cursor = self.seek(index).unwrap();
-        let item = cursor.insert(&mut self.txn, value.into(), None).unwrap();
+        let (doc, state) = self.txn.split_mut();
+        let item = cursor.insert(doc, state, value.into(), None).unwrap();
         item.content.get_last().unwrap()
     }
 
@@ -341,7 +344,8 @@ where
             return;
         }
         if let Some(mut cursor) = Cursor::at(self.ptr, self.txn.doc.offset_kind(), index) {
-            cursor.remove(&mut self.txn, len);
+            let (doc, state) = self.txn.split_mut();
+            cursor.remove(doc, state, len);
         }
     }
 
@@ -367,97 +371,111 @@ where
 
     /// Inserts or updates an attribute value.
     pub fn insert_attr(&mut self, name: impl Into<Arc<str>>, value: impl Into<In>) -> Out {
-        let item = self
-            .txn
-            .create_map_item(self.ptr, name.into(), value.into())
+        let (doc, state) = self.txn.split_mut();
+        let item = state
+            .create_map_item(doc, self.ptr, name.into(), value.into())
             .unwrap();
         item.content.get_last().unwrap()
     }
 
     /// Removes an attribute by name.
     pub fn remove_attr(&mut self, name: &str) -> Option<Out> {
-        let ptr = self.ptr;
-        ptr.remove(self.txn_mut(), name)
+        let (doc, state) = self.txn.split_mut();
+        self.ptr.remove(doc, state, name)
     }
 
     /// Removes all attributes.
     pub fn clear_attrs(&mut self) {
+        let (doc, state) = self.txn.split_mut();
         for &item in self.ptr.map.values() {
-            self.txn.delete(item);
+            state.delete(doc, item);
         }
     }
 
     /// Applies a sequence of delta operations to this type.
     pub fn apply_delta(&mut self, delta: Delta<In>) {
-        if self.ptr.item.map(|item| item.is_deleted()).unwrap_or(false) {
-            return; // current node is already deleted
-        }
+        let (doc, state) = self.txn.split_mut();
+        apply_delta(doc, state, self.ptr, delta)
+    }
+}
 
-        if !delta.children.is_empty() {
-            self.apply_ops(delta.children);
-        }
-
-        if !delta.attrs.is_empty() {
-            self.apply_attr_ops(delta.attrs)
-        }
+/// Applies a sequence of delta operations to a given `node`.
+pub(crate) fn apply_delta(
+    doc: &mut Doc,
+    state: &mut TransactionState,
+    node: NodePtr,
+    delta: Delta<In>,
+) {
+    if node.item.map(|item| item.is_deleted()).unwrap_or(false) {
+        return; // current node is already deleted
     }
 
-    fn apply_ops(&mut self, ops: Vec<Op<In>>) {
-        let mut cursor = Cursor::new(self.ptr, self.txn.doc.offset_kind());
-        for op in ops {
-            match op {
-                Op::Retain { len, format: None } => {
-                    let n = cursor.forward(len);
-                    assert_eq!(n, len)
-                }
-                Op::Retain {
-                    len,
-                    format: Some(attrs),
-                } => {
-                    let n = cursor.format(&mut self.txn, len, &attrs);
-                    assert_eq!(n, len)
-                }
-                Op::InsertText { text, format } => {
-                    cursor.insert_text(&mut self.txn, &text, format.as_deref());
-                }
-                Op::Insert { items, format } => {
-                    cursor.insert_range(&mut self.txn, items, format.as_deref());
-                }
-                Op::Remove { len, .. } => {
-                    let n = cursor.remove(&mut self.txn, len);
-                    assert_eq!(n, len)
-                }
-                Op::Modify { delta, format } => {
-                    cursor.skip_hidden();
-                    let item = cursor.right().unwrap();
-                    //assert_matches!(item.content, ItemContent::Node { .. });
-                    if item.is_deleted() { todo!() } else { todo!() }
-                }
+    if !delta.children.is_empty() {
+        apply_ops(doc, state, node, delta.children);
+    }
+
+    if !delta.attrs.is_empty() {
+        apply_attr_ops(doc, state, node, delta.attrs)
+    }
+}
+
+fn apply_ops(doc: &mut Doc, state: &mut TransactionState, node: NodePtr, ops: Vec<Op<In>>) {
+    let mut cursor = Cursor::new(node, doc.offset_kind());
+    for op in ops {
+        match op {
+            Op::Retain { len, format: None } => {
+                let n = cursor.forward(len);
+                assert_eq!(n, len)
+            }
+            Op::Retain {
+                len,
+                format: Some(attrs),
+            } => {
+                let n = cursor.format(doc, state, len, &attrs);
+                assert_eq!(n, len)
+            }
+            Op::InsertText { text, format } => {
+                cursor.insert_text(doc, state, &text, format.as_deref());
+            }
+            Op::Insert { items, format } => {
+                cursor.insert_range(doc, state, items, format.as_deref());
+            }
+            Op::Remove { len, .. } => {
+                let n = cursor.remove(doc, state, len);
+                assert_eq!(n, len)
+            }
+            Op::Modify { delta, format } => {
+                cursor.skip_hidden();
+                let item = cursor.right().unwrap();
+                //assert_matches!(item.content, ItemContent::Node { .. });
+                if item.is_deleted() { todo!() } else { todo!() }
             }
         }
     }
+}
 
-    fn apply_attr_ops(&mut self, attrs: HashMap<Arc<str>, AttrOp<In>>) {
-        for (key, op) in attrs {
-            match op {
-                AttrOp::Update { value, .. } => {
-                    self.txn.create_map_item(self.ptr, key, value).unwrap();
-                }
-                AttrOp::Remove { .. } => {
-                    self.ptr.remove(&mut self.txn, &key);
-                }
-                AttrOp::Modify { delta } => match self.ptr.map.get(&key).copied() {
-                    Some(item) => {
-                        let node = item.as_node().unwrap();
-                        NodeRef::new(node, self.txn.deref_mut()).apply_delta(*delta)
-                    }
-                    None => {
-                        self.txn
-                            .create_map_item(self.ptr, key, In::Node(delta))
-                            .unwrap();
-                    }
-                },
+fn apply_attr_ops(
+    doc: &mut Doc,
+    state: &mut TransactionState,
+    node: NodePtr,
+    attrs: HashMap<Arc<str>, AttrOp<In>>,
+) {
+    for (key, op) in attrs {
+        match op {
+            AttrOp::Update { value, .. } => {
+                state.create_map_item(doc, node, key, value).unwrap();
             }
+            AttrOp::Remove { .. } => {
+                node.remove(doc, state, &key);
+            }
+            AttrOp::Modify { delta } => match node.map.get(&key).copied() {
+                Some(item) => apply_delta(doc, state, item.as_node().unwrap(), *delta),
+                None => {
+                    state
+                        .create_map_item(doc, node, key, In::Node(delta))
+                        .unwrap();
+                }
+            },
         }
     }
 }
@@ -467,7 +485,7 @@ where
 impl<'de, T, D> Deserializer<'de> for NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     type Error = lib0::Error;
 
@@ -560,7 +578,7 @@ where
 impl<T, D> NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     /// Deserializer of node's children as a sequence.
     fn children_deserializer<'a>(
@@ -593,7 +611,7 @@ const NODE_FIELDS: [&str; 3] = ["name", "attrs", "children"];
 
 /// [MapAccess] over the default `{ name?, attrs?, children? }` representation of a node.
 /// Fields which are absent or empty are skipped.
-struct NodeAccess<'a, D> {
+struct NodeAccess<'a, D: DocHandle> {
     node: NodeRef<&'a Transaction<D>>,
     /// Index of the next [NODE_FIELDS] entry to visit.
     next: usize,
@@ -601,7 +619,7 @@ struct NodeAccess<'a, D> {
 
 impl<'de, 'a, D> MapAccess<'de> for NodeAccess<'a, D>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     type Error = lib0::Error;
 
@@ -641,14 +659,14 @@ where
 }
 
 /// Deserializer of node's child or attribute value. Nested nodes are resolved using `txn`.
-struct OutDeserializer<'a, D> {
+struct OutDeserializer<'a, D: DocHandle> {
     value: Out,
     txn: &'a Transaction<D>,
 }
 
 impl<'de, 'a, D> IntoDeserializer<'de, lib0::Error> for OutDeserializer<'a, D>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     type Deserializer = Self;
 
@@ -681,7 +699,7 @@ macro_rules! forward_out {
 
 impl<'de, 'a, D> Deserializer<'de> for OutDeserializer<'a, D>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     type Error = lib0::Error;
 
@@ -804,7 +822,7 @@ impl XmlFormat {
     fn new<T, D>(node: &NodeRef<T>) -> Self
     where
         T: Deref<Target = Transaction<D>>,
-        D: Deref<Target = Doc>,
+        D: DocHandle,
     {
         XmlFormat {
             delta: node.delta(&DeltaOptions {

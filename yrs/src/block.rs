@@ -4,7 +4,7 @@ use crate::gc::GCCollector;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::{Attrs, Node, NodePtr, TypePtr, TypeRef};
 use crate::slice::{BlockSlice, ItemSlice};
-use crate::transaction::{TransactionMut, ensure_state};
+use crate::transaction::TransactionState;
 use crate::undo::UndoStack;
 use crate::utils::OptionExt;
 use crate::{Any, Doc, IdSet, Options, Out, Uuid};
@@ -444,7 +444,8 @@ impl ItemPtr {
 
     pub(crate) fn redo<M>(
         &mut self,
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
+        state: &mut TransactionState,
         redo_items: &HashSet<ItemPtr>,
         items_to_delete: &IdSet,
         s1: &UndoStack<M>,
@@ -453,8 +454,8 @@ impl ItemPtr {
         let self_ptr = self.clone();
         let item = self.deref_mut();
         if let Some(redone) = item.redone.as_ref() {
-            let slice = txn.doc.blocks.get_item_clean_start(redone)?;
-            return Some(txn.doc.materialize(slice));
+            let slice = doc.blocks.get_item_clean_start(redone)?;
+            return Some(doc.materialize(slice));
         }
 
         let mut parent_block = item.parent.as_node().and_then(|b| b.item);
@@ -465,18 +466,17 @@ impl ItemPtr {
                 if parent.redone.is_none()
                     && (!redo_items.contains(&parent)
                         || parent
-                            .redo(txn, redo_items, items_to_delete, s1, s2)
+                            .redo(doc, state, redo_items, items_to_delete, s1, s2)
                             .is_none())
                 {
                     return None;
                 }
                 let mut redone = parent.redone;
                 while let Some(id) = redone.as_ref() {
-                    parent_block = txn
-                        .doc
+                    parent_block = doc
                         .blocks
                         .get_item_clean_start(id)
-                        .map(|slice| txn.doc.materialize(slice));
+                        .map(|slice| doc.materialize(slice));
                     redone = parent_block.and_then(|ptr| ptr.redone);
                 }
             }
@@ -499,7 +499,6 @@ impl ItemPtr {
                 // Iterate right while is in itemsToDelete
                 // If it is intended to delete right while item is redone,
                 // we can expect that item should replace right.
-                let tx_state = ensure_state(&mut txn.state);
                 while let Some(left_item) = left.as_deref() {
                     if let Some(left_right) = left_item.right {
                         let id = left_right.id();
@@ -512,11 +511,11 @@ impl ItemPtr {
                             left = Some(left_right);
                             while let Some(item) = left.as_deref() {
                                 if let Some(id) = item.redone.as_ref() {
-                                    left = match txn.doc.blocks.get_item_clean_start(id) {
+                                    left = match doc.blocks.get_item_clean_start(id) {
                                         None => break,
                                         Some(slice) => {
-                                            let ptr = txn.doc.materialize(slice);
-                                            tx_state.merge_blocks.push(ptr.id().clone());
+                                            let ptr = doc.materialize(slice);
+                                            state.merge_blocks.push(ptr.id().clone());
                                             Some(ptr)
                                         }
                                     };
@@ -551,8 +550,8 @@ impl ItemPtr {
                     let p = trace.parent.as_node().and_then(|p| p.item);
                     if parent_block != p {
                         left_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.doc.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.doc.materialize(s))
+                            let slice = doc.blocks.get_item_clean_start(redone);
+                            slice.map(|s| doc.materialize(s))
                         } else {
                             None
                         };
@@ -577,8 +576,8 @@ impl ItemPtr {
                     let p = trace.parent.as_node().and_then(|p| p.item);
                     if parent_block != p {
                         right_trace = if let Some(redone) = trace.redone.as_ref() {
-                            let slice = txn.doc.blocks.get_item_clean_start(redone);
-                            slice.map(|s| txn.doc.materialize(s))
+                            let slice = doc.blocks.get_item_clean_start(redone);
+                            slice.map(|s| doc.materialize(s))
                         } else {
                             None
                         };
@@ -597,8 +596,8 @@ impl ItemPtr {
             }
         }
 
-        let next_clock = txn.doc.get_local_state();
-        let next_id = ID::new(txn.doc.options.client_id, next_clock);
+        let next_clock = doc.get_local_state();
+        let next_id = ID::new(doc.options.client_id, next_clock);
         let mut redone_item = Item::new(
             next_id,
             left,
@@ -611,7 +610,7 @@ impl ItemPtr {
         )?;
         item.redone = Some(*redone_item.id());
         redone_item.info.set_keep();
-        txn.integrate_item(redone_item, 0)
+        state.integrate_item(doc, redone_item, 0)
     }
 
     pub(crate) fn keep(&self, keep: bool) {
@@ -630,8 +629,13 @@ impl ItemPtr {
         }
     }
 
-    pub(crate) fn delete_as_cleanup(&self, txn: &mut TransactionMut, is_local: bool) {
-        txn.delete(*self);
+    pub(crate) fn delete_as_cleanup(
+        &self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        is_local: bool,
+    ) {
+        state.delete(doc, *self);
     }
 
     pub(crate) fn splice(&mut self, offset: u32, encoding: OffsetKind) -> Option<Box<Item>> {
@@ -855,28 +859,25 @@ impl Item {
         self.parent_sub.is_some() && self.right.is_some()
     }
 
-    fn integrate_content(&mut self, txn: &mut TransactionMut) {
+    fn integrate_content(&mut self, doc: &mut Doc, state: &mut TransactionState) {
         let self_ptr = ItemPtr::from(&*self);
         match &mut self.content {
             ItemContent::Deleted(len) => {
-                ensure_state(&mut txn.state)
-                    .delete_set
-                    .insert(self.id, *len);
+                state.delete_set.insert(self.id, *len);
                 self.mark_as_deleted();
             }
             ItemContent::Doc(parent_doc, options) => {
-                *parent_doc = Some(txn.doc().guid().clone());
+                *parent_doc = Some(doc.guid().clone());
                 let doc_guid = options.guid.clone();
                 let should_load = options.should_load;
                 // If the Doc isn't already in store.subdocs (e.g. from Prelim),
                 // create it now (e.g. from decoded Options).
-                let subdoc = txn
-                    .doc
+                let subdoc = doc
                     .subdocs
                     .entry(doc_guid.clone())
                     .or_insert_with(|| Doc::with_options(options.clone()));
                 subdoc.parent = Some(self_ptr);
-                let subdocs = ensure_state(&mut txn.state).subdocs.get_or_init();
+                let subdocs = state.subdocs.get_or_init();
                 subdocs.added.insert(doc_guid.clone());
                 if should_load {
                     subdocs.loaded.insert(doc_guid);
@@ -892,7 +893,7 @@ impl Item {
                 let ptr = NodePtr::from(branch);
                 #[cfg(feature = "weak")]
                 if let TypeRef::WeakLink(source) = &ptr.type_ref {
-                    source.materialize(txn, ptr);
+                    source.materialize(doc, ptr);
                 }
             }
             _ => {
@@ -902,10 +903,10 @@ impl Item {
     }
 
     #[cfg(feature = "weak")]
-    fn inherit_links(mut curr: ItemPtr, mut left: ItemPtr, txn: &mut TransactionMut) {
+    fn inherit_links(mut curr: ItemPtr, mut left: ItemPtr, doc: &mut Doc) {
         left.info.clear_linked();
         curr.info.set_linked();
-        let all_links = &mut txn.doc.linked_by;
+        let all_links = &mut doc.linked_by;
         if let Some(linked_by) = all_links.remove(&left) {
             all_links.insert(curr, linked_by);
         }
@@ -986,23 +987,33 @@ impl Item {
     }
 }
 
-impl<'doc> TransactionMut<'doc> {
-    pub(crate) fn integrate(&mut self, block: Block, offset: u32) -> Option<ItemPtr> {
+impl TransactionState {
+    pub(crate) fn integrate(
+        &mut self,
+        doc: &mut Doc,
+        block: Block,
+        offset: u32,
+    ) -> Option<ItemPtr> {
         match block {
-            Block::Item(item) => return self.integrate_item(item, offset),
-            Block::GC(gc) => self.integrate_gc(gc, offset),
-            Block::Skip(skip) => self.integrate_skip(skip, offset),
+            Block::Item(item) => return self.integrate_item(doc, item, offset),
+            Block::GC(gc) => self.integrate_gc(doc, gc, offset),
+            Block::Skip(skip) => self.integrate_skip(doc, skip, offset),
         }
         None
     }
 
     /// Integrates current block into block store.
     /// If it returns true, it means that the block should be deleted after being added to a block store.
-    pub(crate) fn integrate_item(&mut self, mut item: Box<Item>, offset: u32) -> Option<ItemPtr> {
+    pub(crate) fn integrate_item(
+        &mut self,
+        doc: &mut Doc,
+        mut item: Box<Item>,
+        offset: u32,
+    ) -> Option<ItemPtr> {
         let mut item_ptr = ItemPtr::from(&*item);
-        let encoding = self.doc.options.offset_kind;
+        let encoding = doc.options.offset_kind;
         if offset > 0 {
-            item.trim(offset, self.doc);
+            item.trim(offset, doc);
         }
 
         // always try to copy over parent_sub from neighbor - this way we can reuse Arc<str> instead
@@ -1016,26 +1027,24 @@ impl<'doc> TransactionMut<'doc> {
         let mut parent = match &item.parent {
             TypePtr::Node(branch) => *branch,
             TypePtr::Named(name) => {
-                let branch = self
-                    .doc
-                    .get_or_create_type(name.clone(), TypeRef::Undefined);
+                let branch = doc.get_or_create_type(name.clone(), TypeRef::Undefined);
                 item.parent = TypePtr::Node(branch);
                 branch
             }
             TypePtr::ID(id)
-                if let Some(branch) = self.doc.blocks.get_item(id).and_then(|i| i.as_node()) =>
+                if let Some(branch) = doc.blocks.get_item(id).and_then(|i| i.as_node()) =>
             {
                 item.parent = TypePtr::Node(branch);
                 branch
             }
             _ => {
-                self.integrate_gc(item.range(), offset);
+                self.integrate_gc(doc, item.range(), offset);
                 return None;
             }
         };
 
         if item.detect_conflict() {
-            item.resolve_conflict(&mut self.doc.blocks);
+            item.resolve_conflict(&mut doc.blocks);
         }
 
         // reconnect left/right + update parent map/start if necessary
@@ -1067,12 +1076,12 @@ impl<'doc> TransactionMut<'doc> {
                 #[cfg(feature = "weak")]
                 if left.info.is_linked() {
                     // inherit links from the block we're overriding
-                    Item::inherit_links(item_ptr, left, self);
+                    Item::inherit_links(item_ptr, left, doc);
                     // since left is being deleted, it will remove
                     // its links from store.linkedBy anyway
                 }
                 // this is the current attribute value of parent. delete right
-                self.delete(left);
+                self.delete(doc, left);
             }
         }
 
@@ -1085,53 +1094,50 @@ impl<'doc> TransactionMut<'doc> {
             #[cfg(feature = "weak")]
             if let (Some(l), Some(r)) = (item.left, item.right) {
                 if l.info.is_linked() || r.info.is_linked() {
-                    crate::weak::join_linked_range(item_ptr, self);
+                    crate::weak::join_linked_range(item_ptr, doc);
                 }
             }
         }
-        ensure_state(&mut self.state)
-            .insert_set
-            .insert(item.id, item.len);
-        self.doc.blocks.push(Block::Item(item));
+        self.insert_set.insert(item.id, item.len);
+        doc.blocks.push(Block::Item(item));
         let item = &mut *item_ptr;
 
-        item.integrate_content(self);
-        self.add_changed_type(parent, item.parent_sub.clone());
+        item.integrate_content(doc, self);
+        self.add_changed_type(doc, parent, item.parent_sub.clone());
 
         #[cfg(feature = "weak")]
         if item.info.is_linked() {
-            if let Some(links) = self.doc.linked_by.get(&ItemPtr::from(&*item)).cloned() {
+            if let Some(links) = doc.linked_by.get(&ItemPtr::from(&*item)).cloned() {
                 // notify links about changes
                 for link in links.iter() {
-                    self.add_changed_type(*link, item.parent_sub.clone());
+                    self.add_changed_type(doc, *link, item.parent_sub.clone());
                 }
             }
         }
 
         if item.needs_deletion(parent) {
-            self.delete(item_ptr);
+            self.delete(doc, item_ptr);
         }
 
         Some(item_ptr)
     }
 
-    pub(crate) fn integrate_gc(&mut self, mut gc: BlockRange, offset: u32) {
+    pub(crate) fn integrate_gc(&mut self, doc: &mut Doc, mut gc: BlockRange, offset: u32) {
         if offset > 0 {
             gc.clock += offset;
             gc.len -= offset;
         }
-        let state = ensure_state(&mut self.state);
-        state.delete_set.insert(gc.id(), gc.len);
-        state.insert_set.insert(gc.id(), gc.len);
-        self.doc.blocks.push(Block::GC(gc));
+        self.delete_set.insert(gc.id(), gc.len);
+        self.insert_set.insert(gc.id(), gc.len);
+        doc.blocks.push(Block::GC(gc));
     }
 
-    pub(crate) fn integrate_skip(&mut self, mut skip: BlockRange, offset: u32) {
+    pub(crate) fn integrate_skip(&mut self, doc: &mut Doc, mut skip: BlockRange, offset: u32) {
         if offset > 0 {
             skip.clock += offset;
             skip.len -= offset;
         }
-        let blocks = &mut self.doc.blocks;
+        let blocks = &mut doc.blocks;
         blocks.skips.insert(skip.id(), skip.len);
         blocks.push(Block::Skip(skip));
     }

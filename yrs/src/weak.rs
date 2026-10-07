@@ -14,7 +14,8 @@ use crate::iter::{
     Values,
 };
 use crate::node::{Node, NodePtr, TypeRef};
-use crate::{Assoc, Doc, ID, IndexScope, NodeRef, Out, StickyIndex, Transaction, TransactionMut};
+use crate::transaction::{DocHandle, TransactionState};
+use crate::{Assoc, Doc, ID, IndexScope, NodeRef, Out, StickyIndex, Transaction};
 
 impl<T> NodeRef<T> {
     /// Returns a [LinkSource] corresponding with current [WeakRef].
@@ -56,7 +57,7 @@ impl<T> NodeRef<T> {
 impl<T, D> NodeRef<T>
 where
     T: Deref<Target = Transaction<D>>,
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     /// Tries to dereference a value for linked Map entry. If element didn't exist, `None` will
     /// be returned.
@@ -157,20 +158,22 @@ impl LinkSource {
     }
 
     /// Remove reference to current weak link from all items it quotes.
-    pub(crate) fn unlink_all(&self, txn: &mut TransactionMut, branch_ptr: NodePtr) {
-        let item = self.start().get_item(txn.doc());
+    pub(crate) fn unlink_all(
+        &self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        branch_ptr: NodePtr,
+    ) {
+        let item = self.start().get_item(doc);
         let mut i = item.to_iter();
         while let Some(item) = Iterator::next(&mut i) {
             if item.info.is_linked() {
-                txn.unlink(item, branch_ptr);
+                state.unlink(doc, item, branch_ptr);
             }
         }
     }
 
-    pub(crate) fn unquote<'a, D: Deref<Target = Doc>>(
-        &self,
-        txn: &'a Transaction<D>,
-    ) -> Unquote<'a, D> {
+    pub(crate) fn unquote<'a, D: DocHandle>(&self, txn: &'a Transaction<D>) -> Unquote<'a, D> {
         let mut current = self.start().get_item(txn.doc());
         if let Some(ptr) = &mut current {
             if Self::try_right_most(ptr) {
@@ -198,8 +201,8 @@ impl LinkSource {
         false
     }
 
-    pub(crate) fn materialize(&self, txn: &mut TransactionMut, inner_ref: NodePtr) {
-        let curr = if let Some(ptr) = self.start().get_item(txn.doc()) {
+    pub(crate) fn materialize(&self, doc: &mut Doc, inner_ref: NodePtr) {
+        let curr = if let Some(ptr) = self.start().get_item(doc) {
             ptr
         } else {
             // referenced element has already been GCed
@@ -209,7 +212,7 @@ impl LinkSource {
             // for maps, advance to most recent item
             if let Some(mut last) = Some(curr).to_iter().last() {
                 last.info.set_linked();
-                let linked_by = txn.doc.linked_by.entry(last).or_default();
+                let linked_by = doc.linked_by.entry(last).or_default();
                 linked_by.insert(inner_ref);
             }
         } else {
@@ -219,7 +222,7 @@ impl LinkSource {
             let mut i = Some(curr).to_iter().within_range(from, to);
             while let Some(slice) = i.next() {
                 let mut item = if !slice.adjacent() {
-                    txn.doc.materialize(slice)
+                    doc.materialize(slice)
                 } else {
                     slice.ptr
                 };
@@ -227,13 +230,13 @@ impl LinkSource {
                     first = false;
                 }
                 item.info.set_linked();
-                let linked_by = txn.doc.linked_by.entry(item).or_default();
+                let linked_by = doc.linked_by.entry(item).or_default();
                 linked_by.insert(inner_ref);
             }
         }
     }
 
-    pub(crate) fn quoted_string<D: Deref<Target = Doc>>(
+    pub(crate) fn quoted_string<D: DocHandle>(
         &self,
         txn: &Transaction<D>,
         f: &mut Formatter<'_>,
@@ -265,9 +268,9 @@ impl LinkSource {
 }
 
 /// Iterator over non-deleted items, bounded by the given ID range.
-pub struct Unquote<'a, D>(Option<AsIter<'a, D, Values<RangeIter<BlockIter>>>>);
+pub struct Unquote<'a, D: DocHandle>(Option<AsIter<'a, D, Values<RangeIter<BlockIter>>>>);
 
-impl<'a, D: Deref<Target = Doc>> Unquote<'a, D> {
+impl<'a, D: DocHandle> Unquote<'a, D> {
     fn new(txn: &'a Transaction<D>, parent: NodePtr, from: StickyIndex, to: StickyIndex) -> Self {
         let iter = BlockIter::new(parent.start).within_range(from, to).values();
         Unquote(Some(AsIter::new(iter, txn)))
@@ -278,7 +281,7 @@ impl<'a, D: Deref<Target = Doc>> Unquote<'a, D> {
     }
 }
 
-impl<'a, D: Deref<Target = Doc>> Iterator for Unquote<'a, D> {
+impl<'a, D: DocHandle> Iterator for Unquote<'a, D> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -327,7 +330,7 @@ pub trait Quotable: AsRef<Node> + Sized {
     /// ```
     fn quote<D, R>(&self, txn: &Transaction<D>, range: R) -> Result<LinkSource, QuoteError>
     where
-        D: Deref<Target = Doc>,
+        D: DocHandle,
         R: RangeBounds<u32>,
     {
         quote_range(NodePtr::from(self.as_ref()), txn.doc(), range)
@@ -436,7 +439,7 @@ pub enum QuoteError {
     OutOfBounds,
 }
 
-pub(crate) fn join_linked_range(mut block: ItemPtr, txn: &mut TransactionMut) {
+pub(crate) fn join_linked_range(mut block: ItemPtr, doc: &mut Doc) {
     let block_copy = block.clone();
     let item = block.deref_mut();
     // this item may exists within a quoted range
@@ -444,7 +447,7 @@ pub(crate) fn join_linked_range(mut block: ItemPtr, txn: &mut TransactionMut) {
     // we checked if left and right exists before this method call
     let left = item.left.unwrap();
     let right = item.right.unwrap();
-    let all_links = &mut txn.doc.linked_by;
+    let all_links = &mut doc.linked_by;
     let left_links = all_links.get(&left);
     let right_links = all_links.get(&right);
     let mut common = HashSet::new();

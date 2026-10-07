@@ -688,6 +688,36 @@ impl Doc {
     }
 }
 
+impl crate::Cell<Doc> {
+    /// Creates a read-only transaction, which keeps this cell borrowed for as long as it's alive.
+    pub fn transact_owned(&self) -> Transaction<crate::OwnedRef<Doc>> {
+        Transaction {
+            doc: self.acquire_owned(),
+            state: None,
+        }
+    }
+
+    /// Creates a read-write transaction, which keeps this cell borrowed for as long as it's alive.
+    pub fn transact_owned_mut(&self) -> Transaction<crate::OwnedMut<Doc>> {
+        Transaction {
+            doc: self.acquire_owned_mut(),
+            state: None,
+        }
+    }
+
+    /// Creates a read-write transaction with an `origin` classifier attached, which keeps this
+    /// cell borrowed for as long as it's alive.
+    pub fn transact_owned_mut_with<T: Into<Origin>>(
+        &self,
+        origin: T,
+    ) -> Transaction<crate::OwnedMut<Doc>> {
+        Transaction {
+            doc: self.acquire_owned_mut(),
+            state: Some(Box::new(TransactionState::new(Some(origin.into())))),
+        }
+    }
+}
+
 impl PartialEq for Doc {
     fn eq(&self, other: &Self) -> bool {
         self.options.guid == other.options.guid
@@ -1096,7 +1126,8 @@ mod test {
 
         // decode an update incoming from A and integrate it at B
         let update = Update::decode_v1(binary.as_slice()).unwrap();
-        let pending = update.integrate(&mut t2).unwrap();
+        let (doc, state) = t2.split_mut();
+        let pending = update.integrate(doc, state).unwrap();
 
         assert!(pending.0.is_none());
         assert!(pending.1.is_none());

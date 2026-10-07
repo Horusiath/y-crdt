@@ -1,12 +1,11 @@
 use crate::any::AnyArrayIter;
 use crate::json_path::JsonPathToken;
 use crate::out::OutNode;
-use crate::{Any, Doc, JsonPath, JsonPathEval, NodeID, Out, Transaction};
-use std::ops::Deref;
+use crate::{Any, DocHandle, JsonPath, JsonPathEval, NodeID, Out, Transaction};
 
 impl<D> JsonPathEval for Transaction<D>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     type Iter<'a>
         = JsonPathIter<'a, D>
@@ -43,7 +42,7 @@ where
     }
 }
 
-fn slice_iter<'a, D: Deref<Target = Doc>>(
+fn slice_iter<'a, D: DocHandle>(
     txn: &'a Transaction<D>,
     value: Option<Out>,
     from: usize,
@@ -65,7 +64,7 @@ fn slice_iter<'a, D: Deref<Target = Doc>>(
     }
 }
 
-fn any_iter<'a, D: Deref<Target = Doc>>(
+fn any_iter<'a, D: DocHandle>(
     txn: &'a Transaction<D>,
     out: Option<Out>,
 ) -> Option<Box<dyn Iterator<Item = Out> + 'a>> {
@@ -94,7 +93,7 @@ fn any_iter<'a, D: Deref<Target = Doc>>(
     }
 }
 
-fn member_union_iter<'a, D: Deref<Target = Doc>>(
+fn member_union_iter<'a, D: DocHandle>(
     txn: &'a Transaction<D>,
     value: Option<Out>,
     members: &'a [&'a str],
@@ -119,7 +118,7 @@ fn member_union_iter<'a, D: Deref<Target = Doc>>(
     }
 }
 
-fn index_union_iter<'a, D: Deref<Target = Doc>>(
+fn index_union_iter<'a, D: DocHandle>(
     txn: &'a Transaction<D>,
     value: Option<Out>,
     indices: &'a [i32],
@@ -153,7 +152,7 @@ fn index_union_iter<'a, D: Deref<Target = Doc>>(
     }
 }
 
-pub struct JsonPathIter<'a, D> {
+pub struct JsonPathIter<'a, D: DocHandle> {
     txn: &'a Transaction<D>,
     pattern: &'a [JsonPathToken<'a>],
     frame: ExecutionFrame<'a>,
@@ -161,7 +160,7 @@ pub struct JsonPathIter<'a, D> {
 
 impl<'a, D> JsonPathIter<'a, D>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     fn new(txn: &'a Transaction<D>, path: &'a [JsonPathToken<'a>]) -> Self {
         Self {
@@ -174,7 +173,7 @@ where
 
 impl<'a, D> Iterator for JsonPathIter<'a, D>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
 {
     type Item = Out;
 
@@ -294,11 +293,7 @@ where
     }
 }
 
-fn get_member<D: Deref<Target = Doc>>(
-    txn: &Transaction<D>,
-    out: Option<&Out>,
-    key: &str,
-) -> Option<Out> {
+fn get_member<D: DocHandle>(txn: &Transaction<D>, out: Option<&Out>, key: &str) -> Option<Out> {
     match out {
         None => Some(Out::node(key)),
         Some(Out::Any(Any::Map(map))) => map.get(key).map(|any| Out::Any(any.clone())),
@@ -307,11 +302,7 @@ fn get_member<D: Deref<Target = Doc>>(
     }
 }
 
-fn get_index<D: Deref<Target = Doc>>(
-    txn: &Transaction<D>,
-    out: Option<&Out>,
-    idx: i32,
-) -> Option<Out> {
+fn get_index<D: DocHandle>(txn: &Transaction<D>, out: Option<&Out>, idx: i32) -> Option<Out> {
     match out {
         Some(Out::Any(Any::Array(array))) => {
             let idx = if idx < 0 {

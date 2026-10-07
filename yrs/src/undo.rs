@@ -6,7 +6,7 @@ use crate::node::{Node, NodePtr};
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{Cell, Doc, ID, IdSet, NodeID, Observer, Transaction, TransactionMut, Uuid};
+use crate::{Cell, Doc, ID, IdSet, NodeRef, Observer, OwnedMut, Transaction, TransactionMut, Uuid};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
@@ -164,47 +164,39 @@ where
         UndoManager { state }
     }
 
-    /// Extends a list of shared types tracked by current undo manager by a given `scope`.
-    /// Returns `true` if UndoManager scope was successfully extended.
-    /// Returns `false` if a given `scope` didn't exist within provided `doc`.
-    pub fn expand_scope(&mut self, doc: &Cell<Doc>, scope: NodeID) -> bool {
+    /// Extends a list of shared types tracked by current undo manager by a given `node`.
+    pub fn expand_scope<T>(&mut self, node: &mut NodeRef<T>)
+    where
+        T: DerefMut<Target = Transaction<OwnedMut<Doc>>>,
+    {
         let origin = Origin::from(Arc::as_ptr(&self.state) as usize);
         let inner_mut = Arc::get_mut(&mut self.state).unwrap();
         let ptr1 = AtomicPtr::new(inner_mut as *mut Inner<M>);
         let ptr2 = AtomicPtr::new(inner_mut as *mut Inner<M>);
-        let (node_ptr, guid) = {
-            let doc_ref = doc.acquire();
-            let ptr = match doc_ref.node(scope) {
-                Some(ptr) => ptr,
-                None => return false,
-            };
-            let guid = doc_ref.guid().clone();
-            (ptr, guid)
-        };
+        let node_ptr = NodePtr::from(node.as_ref());
+        let txn = node.txn_mut();
+        let guid = txn.doc().guid().clone();
 
         if !inner_mut.docs.contains_key(&guid) {
             inner_mut.options.tracked_origins.insert(origin.clone());
+            let cell = txn.doc.cell().clone();
+            // document is already borrowed by `txn`, register observers through it
+            let doc_mut = txn.doc_mut();
+            doc_mut.observe_destroy_with(origin.clone(), move |txn, _| {
+                let ptr = ptr1.load(Ordering::Acquire);
+                let inner = unsafe { ptr.as_mut().unwrap() };
+                Self::handle_destroy(txn, inner)
+            });
 
-            {
-                let mut doc_mut = doc.acquire_mut();
-                doc_mut.observe_destroy_with(origin.clone(), move |txn, _| {
-                    let ptr = ptr1.load(Ordering::Acquire);
-                    let inner = unsafe { ptr.as_mut().unwrap() };
-                    Self::handle_destroy(txn, inner)
-                });
+            doc_mut.observe_after_transaction_with(origin, move |txn| {
+                let ptr = ptr2.load(Ordering::Acquire);
+                let inner = unsafe { ptr.as_mut().unwrap() };
+                Self::handle_after_transaction(inner, txn);
+            });
 
-                doc_mut.observe_after_transaction_with(origin, move |txn| {
-                    let ptr = ptr2.load(Ordering::Acquire);
-                    let inner = unsafe { ptr.as_mut().unwrap() };
-                    Self::handle_after_transaction(inner, txn);
-                });
-            }
-
-            inner_mut.docs.insert(guid, doc.clone());
+            inner_mut.docs.insert(guid, cell);
         }
-        let inner = Arc::get_mut(&mut self.state).unwrap();
-        inner.scope.insert(node_ptr);
-        true
+        inner_mut.scope.insert(node_ptr);
     }
 
     pub fn docs(&self) -> impl Iterator<Item = &Cell<Doc>> {
@@ -494,18 +486,16 @@ where
     /// let read = |name: &str| doc.acquire().transact().node(name).unwrap().to_string();
     ///
     /// // without UndoManager::reset
-    /// doc.acquire_mut().transact_mut().node_mut("no-reset"); // create a root node
     /// let mut mgr = UndoManager::new();
-    /// mgr.expand_scope(&doc, "no-reset".into());
+    /// mgr.expand_scope(&mut doc.transact_owned_mut().node_mut("no-reset").unwrap());
     /// insert("no-reset", 0, "a");
     /// insert("no-reset", 1, "b");
     /// mgr.undo_blocking();
     /// assert_eq!(read("no-reset"), ""); // note that 'ab' was removed
     ///
     /// // with UndoManager::reset
-    /// doc.acquire_mut().transact_mut().node_mut("with-reset"); // create a root node
     /// let mut mgr = UndoManager::new();
-    /// mgr.expand_scope(&doc, "with-reset".into());
+    /// mgr.expand_scope(&mut doc.transact_owned_mut().node_mut("with-reset").unwrap());
     /// insert("with-reset", 0, "a");
     /// mgr.reset();
     /// insert("with-reset", 1, "b");
@@ -699,10 +689,11 @@ where
             }
         }
 
+        let (doc, state) = txn.split_mut();
         for &ptr in to_redo.iter() {
             let mut ptr = ptr;
             change_performed |= ptr
-                .redo(&mut txn, &to_redo, &item.insertions, stack, other)
+                .redo(doc, state, &to_redo, &item.insertions, stack, other)
                 .is_some();
         }
 
@@ -710,7 +701,7 @@ where
         // parents, so we have more information available when items are filtered.
         for &item in to_delete.iter().rev() {
             // if self.options.delete_filter(item) {
-            txn.delete(item);
+            state.delete(doc, item);
             change_performed = true;
         }
 
@@ -1010,8 +1001,8 @@ mod test {
     use crate::test_utils::exchange_updates;
     use crate::undo::{Options, StackItem};
     use crate::{
-        Any, Cell, Delta, DeltaOptions, Doc, In, NodeID, NodeRef, Origin, Out, StateVector,
-        TransactionMut, UndoManager, Update, any,
+        Any, Cell, Delta, DeltaOptions, Doc, In, NodeID, NodeRef, Origin, Out, OwnedMut,
+        StateVector, Transaction, UndoManager, Update, any,
     };
     use serde::Deserialize;
 
@@ -1026,7 +1017,7 @@ mod test {
                 .as_ref(),
         );
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, "test".into());
+        node(&d1, "test", |mut n| mgr.expand_scope(&mut n));
 
         let d2 = Cell::new(Doc::with_client_id(2));
 
@@ -1153,7 +1144,7 @@ mod test {
             .insert_text(0, "1221");
 
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc, "test".into());
+        node(&doc, "test", |mut n| mgr.expand_scope(&mut n));
         doc.acquire_mut()
             .transact_mut()
             .node_mut("test")
@@ -1189,7 +1180,7 @@ mod test {
             .unwrap()
             .insert_attr("a", 0);
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, "test".into());
+        node(&d1, "test", |mut n| mgr.expand_scope(&mut n));
         d1.acquire_mut()
             .transact_mut()
             .node_mut("test")
@@ -1253,10 +1244,9 @@ mod test {
 
     fn node<F, T>(cell: &Cell<Doc>, node: impl Into<NodeID>, f: F) -> T
     where
-        F: FnOnce(NodeRef<&mut TransactionMut<'_>>) -> T,
+        F: FnOnce(NodeRef<&mut Transaction<OwnedMut<Doc>>>) -> T,
     {
-        let mut doc = cell.acquire_mut();
-        let mut txn = doc.transact_mut();
+        let mut txn = cell.transact_owned_mut();
         let node = txn.node_mut(node.into()).unwrap();
         f(node)
     }
@@ -1269,10 +1259,9 @@ mod test {
         f: F,
     ) -> T
     where
-        F: FnOnce(NodeRef<&mut TransactionMut<'_>>) -> T,
+        F: FnOnce(NodeRef<&mut Transaction<OwnedMut<Doc>>>) -> T,
     {
-        let mut doc = cell.acquire_mut();
-        let mut txn = doc.transact_mut_with(origin);
+        let mut txn = cell.transact_owned_mut_with(origin);
         let node = txn.node_mut(node.into()).unwrap();
         f(node)
     }
@@ -1297,7 +1286,7 @@ mod test {
         let d2 = Cell::new(Doc::with_client_id(2));
 
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, array.clone());
+        node(&d1, array.clone(), |mut n| mgr.expand_scope(&mut n));
         node(&d1, "test", |mut array| array.insert_range(0, [1, 2, 3]));
         node(&d2, "test", |mut array| array.insert_range(0, [4, 5, 6]));
 
@@ -1468,7 +1457,7 @@ mod test {
         });
 
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, xml1.clone());
+        node(&d1, xml1.clone(), |mut n| mgr.expand_scope(&mut n));
         let child = node(&d1, xml1.clone(), |mut xml| {
             xml.insert(0, Delta::with_name("p")).node_id().unwrap()
         });
@@ -1521,7 +1510,7 @@ mod test {
                 .as_ref(),
         );
         let mut mgr: UndoManager<Metadata> = UndoManager::new();
-        mgr.expand_scope(&doc, "test".into());
+        node(&doc, "test", |mut n| mgr.expand_scope(&mut n));
 
         let result = Arc::new(AtomicUsize::new(0));
         let counter = AtomicUsize::new(1);
@@ -1565,7 +1554,7 @@ mod test {
                 ..crate::Options::default()
             }));
             let mut m1: UndoManager<Metadata> = UndoManager::new();
-            m1.expand_scope(&d1, "test".into());
+            node(&d1, "test", |mut n| m1.expand_scope(&mut n));
 
             let _sub1 = m1.observe_item_added(move |_, e| {
                 e.meta_mut().entry("test".to_string()).or_default();
@@ -1628,7 +1617,7 @@ mod test {
             .apply_update(Update::decode_v1(&state).unwrap())
             .unwrap();
         let mut m2: UndoManager<Metadata> = UndoManager::with_options(undo_options);
-        m2.expand_scope(&d2, "test".into());
+        node(&d2, "test", |mut n| m2.expand_scope(&mut n));
 
         m2.undo_blocking();
         assert_eq!(
@@ -1661,12 +1650,12 @@ mod test {
         exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
         let mut mgr1 = UndoManager::new();
-        mgr1.expand_scope(&d1, "array".into());
+        node(&d1, "array", |mut n| mgr1.expand_scope(&mut n));
         let d1_client_id = d1.acquire().client_id();
         mgr1.include_origin(d1_client_id);
 
         let mut mgr2 = UndoManager::new();
-        mgr2.expand_scope(&d2, "array".into());
+        node(&d2, "array", |mut n| mgr2.expand_scope(&mut n));
         let d2_client_id = d2.acquire().client_id();
         mgr2.include_origin(d2_client_id);
 
@@ -1734,7 +1723,7 @@ mod test {
             o.capture_timeout_millis = 0;
             o
         });
-        mgr.expand_scope(&doc, "map".into());
+        node(&doc, "map", |mut n| mgr.expand_scope(&mut n));
 
         let blocks = |text: &str| Delta::new().insert_attr("text", text.to_owned());
         let text = node(&doc, "map", |mut design| {
@@ -1776,7 +1765,7 @@ mod test {
         // https://github.com/yjs/yjs/issues/355
         let doc = Cell::new(Doc::with_client_id(1));
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc, "root".into());
+        node(&doc, "root", |mut n| mgr.expand_scope(&mut n));
 
         let point = node(&doc, "root", |mut root| {
             let content = Delta::new().insert_attr("x", 0).insert_attr("y", 0);
@@ -1840,7 +1829,7 @@ mod test {
             o.capture_timeout_millis = 0;
             o
         });
-        mgr.expand_scope(&doc, "t".into());
+        node(&doc, "t", |mut n| mgr.expand_scope(&mut n));
         mgr.include_origin(ORIGIN);
 
         // create element
@@ -1891,7 +1880,7 @@ mod test {
             o.capture_timeout_millis = 0;
             o
         });
-        mgr.expand_scope(&doc, "map".into());
+        node(&doc, "map", |mut n| mgr.expand_scope(&mut n));
 
         let blocks = |text: &str| Delta::new().insert_attr("text", text.to_owned());
         let text = node(&doc, "map", |mut design| {
@@ -1944,7 +1933,7 @@ mod test {
 
         send(&doc1, &doc2); // D2: 'Attack ships on fire off the shoulder of Orion.'
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc1, "test".into());
+        node(&doc1, "test", |mut n| mgr.expand_scope(&mut n));
 
         let attrs = Attrs::from([("bold".into(), true.into())]);
         doc1.acquire_mut()
@@ -1985,7 +1974,7 @@ mod test {
         const ORIGIN: &str = "undoable";
         let doc = Cell::new(Doc::with_client_id(1));
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&doc, "test".into());
+        node(&doc, "test", |mut n| mgr.expand_scope(&mut n));
         mgr.include_origin(ORIGIN);
 
         let e = node(&doc, "test", |mut f| {
@@ -2017,7 +2006,7 @@ mod test {
     fn undo_in_embed() {
         let d1 = Cell::new(Doc::with_client_id(1));
         let mut mgr = UndoManager::new();
-        mgr.expand_scope(&d1, "test".into());
+        node(&d1, "test", |mut n| mgr.expand_scope(&mut n));
 
         let d2 = Cell::new(Doc::with_client_id(2));
 
@@ -2065,7 +2054,7 @@ mod test {
         // https://github.com/y-crdt/y-crdt/issues/345
         let doc = Cell::new(Doc::new());
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&doc, "r".into());
+        node(&doc, "r", |mut n| mgr.expand_scope(&mut n));
         let client_id = doc.acquire().client_id();
         mgr.include_origin(client_id);
 
@@ -2139,7 +2128,7 @@ mod test {
         });
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&d, "r".into());
+        node(&d, "r", |mut n| mgr.expand_scope(&mut n));
         node(&d, s1.clone(), |mut s1| {
             s1.insert_attr("b1", Delta::new().insert_attr("f1", 11));
         });
@@ -2191,7 +2180,7 @@ mod test {
         node(&doc, el1.clone(), |mut el1| el1.insert_attr("f2", true)); // { s1: { b1: [{ f1: 8, f2: true }] } }
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&doc, "r".into());
+        node(&doc, "r", |mut n| mgr.expand_scope(&mut n));
         {
             let mut guard = doc.acquire_mut();
             let mut txn = guard.transact_mut();
@@ -2246,7 +2235,7 @@ mod test {
         node(&doc, s1.clone(), |mut s1| s1.insert_attr("f1", false)); // { s1: { f1: false, f2: AAA } }
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&doc, "r".into());
+        node(&doc, "r", |mut n| mgr.expand_scope(&mut n));
         node(&doc, s1.clone(), |mut s1| s1.remove_attr("f2")); // { s1: { f1: false } }
         mgr.reset();
 
@@ -2303,7 +2292,7 @@ mod test {
         node(&d, b2_arr_nest.clone(), |mut nest| nest.insert(1, -30)); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
 
         let mut mgr = UndoManager::with_options(Options::default());
-        mgr.expand_scope(&d, "r".into());
+        node(&d, "r", |mut n| mgr.expand_scope(&mut n));
 
         node(&d, b2_arr_nest, |mut nest| {
             nest.remove(1, 1); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
@@ -2361,8 +2350,8 @@ mod test {
         let mut um = UndoManager::new();
         let d1 = Cell::new(Doc::new());
         let d2 = Cell::new(Doc::new());
-        um.expand_scope(&d1, "text".into());
-        um.expand_scope(&d2, "text".into());
+        node(&d1, "text", |mut n| um.expand_scope(&mut n));
+        node(&d2, "text", |mut n| um.expand_scope(&mut n));
 
         d1.acquire_mut()
             .transact_mut()
@@ -2455,9 +2444,9 @@ mod test {
         });
         let d1 = Cell::new(Doc::new());
         let d2 = Cell::new(Doc::new());
-        um.expand_scope(&d1, "text".into());
-        um.expand_scope(&d2, "text".into());
-        um.expand_scope(&d1, "text".into()); // doing this twice for test-coverage
+        node(&d1, "text", |mut n| um.expand_scope(&mut n));
+        node(&d2, "text", |mut n| um.expand_scope(&mut n));
+        node(&d1, "text", |mut n| um.expand_scope(&mut n)); // doing this twice for test-coverage
 
         d1.acquire_mut()
             .transact_mut()

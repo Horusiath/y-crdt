@@ -1,9 +1,10 @@
 use crate::block::{Block, Item, ItemContent, ItemPtr};
 use crate::event::Event;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
+use crate::transaction::TransactionState;
 use crate::{
     Any, Assoc, ClientID, Doc, ID, In, IndexScope, Observer, Origin, Out, StickyIndex,
-    Subscription, Transaction, TransactionMut,
+    Subscription, Transaction,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
@@ -345,14 +346,19 @@ impl Node {
 
     /// Removes an entry under given `key` of a map component of a current root type, returning
     /// a materialized representation of value stored underneath if entry existed prior deletion.
-    pub(crate) fn remove(&self, txn: &mut TransactionMut, key: &str) -> Option<Out> {
+    pub(crate) fn remove(
+        &self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        key: &str,
+    ) -> Option<Out> {
         let item = *self.map.get(key)?;
         let prev = if !item.is_deleted() {
             item.content.get_last()
         } else {
             None
         };
-        txn.delete(item);
+        state.delete(doc, item);
         prev
     }
 
@@ -382,11 +388,11 @@ impl Node {
     /// If `index` is outside the range of an array component of current branch node, both tuple
     /// values will be `None`.
     fn index_to_ptr(
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
         mut ptr: Option<ItemPtr>,
         mut index: u32,
     ) -> (Option<ItemPtr>, Option<ItemPtr>) {
-        let encoding = txn.doc.options.offset_kind;
+        let encoding = doc.options.offset_kind;
         while let Some(item) = ptr {
             let content_len = item.content_len(encoding);
             if !item.is_deleted() && item.is_countable() {
@@ -400,7 +406,7 @@ impl Node {
                     } else {
                         index
                     };
-                    let right = txn.doc.blocks.split_block(item, index, encoding);
+                    let right = doc.blocks.split_block(item, index, encoding);
                     return (ptr, right);
                 }
                 index -= content_len;
@@ -411,17 +417,23 @@ impl Node {
     }
     /// Removes up to a `len` of countable elements from current branch sequence, starting at the
     /// given `index`. Returns number of removed elements.
-    pub(crate) fn remove_at(&self, txn: &mut TransactionMut, index: u32, len: u32) -> u32 {
+    pub(crate) fn remove_at(
+        &self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        index: u32,
+        len: u32,
+    ) -> u32 {
         let mut remaining = len;
         let start = { self.start };
         let (_, mut ptr) = if index == 0 {
             (None, start)
         } else {
-            Node::index_to_ptr(txn, start, index)
+            Node::index_to_ptr(doc, start, index)
         };
         while remaining > 0 {
             if let Some(item) = ptr {
-                let encoding = txn.doc().options.offset_kind;
+                let encoding = doc.options.offset_kind;
                 if !item.is_deleted() {
                     let content_len = item.content_len(encoding);
                     let (l, r) = if remaining < content_len {
@@ -431,13 +443,13 @@ impl Node {
                             remaining
                         };
                         remaining = 0;
-                        let new_right = txn.doc.blocks.split_block(item, offset, encoding);
+                        let new_right = doc.blocks.split_block(item, offset, encoding);
                         (item, new_right)
                     } else {
                         remaining -= content_len;
                         (item, item.right.clone())
                     };
-                    txn.delete(l);
+                    state.delete(doc, l);
                     ptr = r;
                 } else {
                     ptr = item.right.clone();

@@ -1,7 +1,8 @@
 use crate::block::Block;
 use crate::cell::{Acquire, AcquireMut};
-use async_lock::RwLock;
+use async_lock::{RwLock, RwLockReadGuardArc, RwLockWriteGuardArc};
 use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -38,6 +39,101 @@ impl<T> ArcCell<T> {
         Self {
             inner: Arc::from_raw(ptr as *mut RwLock<T>),
         }
+    }
+
+    /// Acquires a read lock, which keeps this cell alive for as long as it's held.
+    pub fn acquire_owned(&self) -> OwnedRef<T> {
+        OwnedRef {
+            guard: self.inner.read_arc_blocking(),
+            cell: self.clone(),
+        }
+    }
+
+    pub fn try_acquire_owned(&self) -> Option<OwnedRef<T>> {
+        Some(OwnedRef {
+            guard: self.inner.try_read_arc()?,
+            cell: self.clone(),
+        })
+    }
+
+    pub async fn acquire_owned_async(&self) -> OwnedRef<T> {
+        OwnedRef {
+            guard: self.inner.read_arc().await,
+            cell: self.clone(),
+        }
+    }
+
+    /// Acquires a write lock, which keeps this cell alive for as long as it's held.
+    pub fn acquire_owned_mut(&self) -> OwnedMut<T> {
+        OwnedMut {
+            guard: self.inner.write_arc_blocking(),
+            cell: self.clone(),
+        }
+    }
+
+    pub fn try_acquire_owned_mut(&self) -> Option<OwnedMut<T>> {
+        Some(OwnedMut {
+            guard: self.inner.try_write_arc()?,
+            cell: self.clone(),
+        })
+    }
+
+    pub async fn acquire_owned_mut_async(&self) -> OwnedMut<T> {
+        OwnedMut {
+            guard: self.inner.write_arc().await,
+            cell: self.clone(),
+        }
+    }
+}
+
+/// Read lock over an [ArcCell] contents, which owns a reference to that cell.
+pub struct OwnedRef<T> {
+    guard: RwLockReadGuardArc<T>,
+    cell: ArcCell<T>,
+}
+
+impl<T> OwnedRef<T> {
+    /// The cell, which contents are locked.
+    pub fn cell(&self) -> &ArcCell<T> {
+        &self.cell
+    }
+}
+
+impl<T> Deref for OwnedRef<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.guard
+    }
+}
+
+/// Write lock over an [ArcCell] contents, which owns a reference to that cell.
+pub struct OwnedMut<T> {
+    guard: RwLockWriteGuardArc<T>,
+    cell: ArcCell<T>,
+}
+
+impl<T> OwnedMut<T> {
+    /// The cell, which contents are locked.
+    pub fn cell(&self) -> &ArcCell<T> {
+        &self.cell
+    }
+}
+
+impl<T> Deref for OwnedMut<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.guard
+    }
+}
+
+impl<T> DerefMut for OwnedMut<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.guard
     }
 }
 

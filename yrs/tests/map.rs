@@ -7,8 +7,8 @@ use yrs::lib0::Decode;
 use yrs::node::{DeepObservable, Observable, Path, PathSegment};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Cell, Delta, Doc, In, NodeRef, Out, StateVector, Transaction, Update,
-    any,
+    Acquire, AcquireMut, Any, Cell, Delta, Doc, DocHandle, In, NodeRef, Out, StateVector,
+    Transaction, Update, any,
 };
 
 #[test]
@@ -40,7 +40,7 @@ fn map_basic() {
     //m1m.insert(&mut t1, "y-text".to_owned(), m1a);
 
     //TODO: YArray within YMap
-    fn compare_all<D: std::ops::Deref<Target = Doc>>(m: &NodeRef<&Transaction<D>>) {
+    fn compare_all<D: DocHandle>(m: &NodeRef<&Transaction<D>>) {
         assert_eq!(m.attr_len(), 5);
         assert_eq!(m.attr("number"), Some(Out::from(1f64)));
         assert_eq!(m.attr("boolean0"), Some(Out::from(false)));

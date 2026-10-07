@@ -312,10 +312,9 @@
 //! use yrs::undo::Options;
 //!
 //! let local = Cell::new(Doc::with_client_id(123));
-//! local.acquire_mut().transact_mut().node_mut("article"); // create a root node
 //! let local_client_id = local.acquire().client_id();
 //! let mut mgr = UndoManager::with_options(Options::default());
-//! mgr.expand_scope(&local, "article".into());
+//! mgr.expand_scope(&mut local.transact_owned_mut().node_mut("article").unwrap());
 //! mgr.include_origin(local_client_id); // only track changes originating from local peer
 //!
 //! let remote = Cell::new(Doc::with_client_id(321));
@@ -676,6 +675,7 @@ pub use crate::sticky_index::IndexScope;
 pub use crate::sticky_index::Offset;
 pub use crate::sticky_index::StickyIndex;
 pub use crate::transact::TransactionAcqError;
+pub use crate::transaction::DocHandle;
 pub use crate::transaction::Origin;
 pub use crate::transaction::RootRefs;
 pub use crate::transaction::Transaction;
@@ -690,9 +690,17 @@ pub use crate::cell::AcquireMut;
 
 #[cfg(not(feature = "sync"))]
 pub type Cell<T> = crate::cell::RcCell<T>;
+#[cfg(not(feature = "sync"))]
+pub type OwnedRef<T> = crate::cell::OwnedRef<T>;
+#[cfg(not(feature = "sync"))]
+pub type OwnedMut<T> = crate::cell::OwnedMut<T>;
 
 #[cfg(feature = "sync")]
 pub type Cell<T> = crate::cell::sync::ArcCell<T>;
+#[cfg(feature = "sync")]
+pub type OwnedRef<T> = crate::cell::sync::OwnedRef<T>;
+#[cfg(feature = "sync")]
+pub type OwnedMut<T> = crate::cell::sync::OwnedMut<T>;
 
 #[deprecated(since = "0.19.0", note = "Use `yrs::Out` instead")]
 pub type Value = Out;

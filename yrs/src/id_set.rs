@@ -4,14 +4,13 @@ use crate::ids::{BlockSliceIter, IdMapInner, IdRanges};
 use crate::iter::TxnIterator;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::slice::BlockSlice;
-use crate::{Doc, StateVector, Transaction};
+use crate::{Doc, DocHandle, StateVector, Transaction};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 use std::collections::btree_map::Entry;
 use std::fmt::Formatter;
 use std::hash::{Hash, Hasher};
-use std::ops::Deref;
 use std::ops::Range;
 
 impl Encode for Range<u32> {
@@ -535,7 +534,7 @@ impl<'ds> Blocks<'ds> {
 impl<'ds> TxnIterator for Blocks<'ds> {
     type Item = BlockSlice;
 
-    fn next<D: Deref<Target = Doc>>(&mut self, txn: &Transaction<D>) -> Option<Self::Item> {
+    fn next<D: DocHandle>(&mut self, txn: &Transaction<D>) -> Option<Self::Item> {
         if let Some(r) = self.current_range.clone() {
             let mut block = if let Some(idx) = self.current_index.as_mut() {
                 if let Some(block) = txn

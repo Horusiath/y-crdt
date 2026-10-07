@@ -1,8 +1,8 @@
 use crate::block::{ID, Item, ItemContent, ItemPtr};
 use crate::node::{Attrs, Node, NodePtr, TypePtr};
-use crate::transaction::TransactionMut;
+use crate::transaction::TransactionState;
 use crate::utils::OptionExt;
-use crate::{Any, In, NodeRef, OffsetKind, Out};
+use crate::{Any, Doc, In, OffsetKind, Out};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -193,11 +193,11 @@ impl Cursor {
 
     /// Splits the `right` item if the cursor is placed inside of it, so that the cursor
     /// falls on a block boundary.
-    pub fn split(&mut self, txn: &mut TransactionMut) {
+    pub fn split(&mut self, doc: &mut Doc) {
         if self.offset > 0
             && let Some(right) = self.right
         {
-            self.right = split_item(txn, right, self.offset, self.encoding);
+            self.right = split_item(doc, right, self.offset, self.encoding);
             self.left = Some(right);
             self.offset = 0;
         }
@@ -206,40 +206,49 @@ impl Cursor {
     /// Inserts a string of `text` at the cursor position, moving the cursor after it.
     pub fn insert_text(
         &mut self,
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
+        state: &mut TransactionState,
         text: &str,
         attrs: Option<&Attrs>,
     ) -> Option<ItemPtr> {
         if text.is_empty() {
             return None;
         }
-        self.insert_content(txn, ItemContent::String(text.into()), attrs, None)
+        self.insert_content(doc, state, ItemContent::String(text.into()), attrs, None)
     }
 
     /// Inserts a single `value` at the cursor position, moving the cursor after it.
     pub fn insert(
         &mut self,
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
+        state: &mut TransactionState,
         value: In,
         attrs: Option<&Attrs>,
     ) -> Option<ItemPtr> {
         match value {
-            In::Any(any) => self.insert_content(txn, ItemContent::Any(vec![any]), attrs, None),
+            In::Any(any) => {
+                self.insert_content(doc, state, ItemContent::Any(vec![any]), attrs, None)
+            }
             In::Node(delta) => {
                 let (node, remainder) = Node::from_delta(*delta);
-                self.insert_content(txn, ItemContent::Node(node), attrs, remainder)
+                self.insert_content(doc, state, ItemContent::Node(node), attrs, remainder)
             }
-            In::Doc(doc) => {
-                let content = ItemContent::Doc(None, doc.options.clone());
-                self.insert_content(txn, content, attrs, None)
+            In::Doc(subdoc) => {
+                let content = ItemContent::Doc(None, subdoc.options.clone());
+                self.insert_content(doc, state, content, attrs, None)
             }
         }
     }
 
     /// Inserts `values` at the cursor position, moving the cursor after them.
     /// Consecutive [In::Any] values are packed into a single block.
-    pub fn insert_range<I>(&mut self, txn: &mut TransactionMut, values: I, attrs: Option<&Attrs>)
-    where
+    pub fn insert_range<I>(
+        &mut self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        values: I,
+        attrs: Option<&Attrs>,
+    ) where
         I: IntoIterator<Item = In>,
     {
         let mut pending = Vec::new();
@@ -249,26 +258,27 @@ impl Cursor {
                 other => {
                     if !pending.is_empty() {
                         let content = ItemContent::Any(std::mem::take(&mut pending));
-                        self.insert_content(txn, content, attrs, None);
+                        self.insert_content(doc, state, content, attrs, None);
                     }
-                    self.insert(txn, other, attrs);
+                    self.insert(doc, state, other, attrs);
                 }
             }
         }
         if !pending.is_empty() {
-            self.insert_content(txn, ItemContent::Any(pending), attrs, None);
+            self.insert_content(doc, state, ItemContent::Any(pending), attrs, None);
         }
     }
 
     /// Port of Yjs `insertContent`. `children` are applied to a node `content` once it's integrated.
     fn insert_content(
         &mut self,
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
+        state: &mut TransactionState,
         content: ItemContent,
         attrs: Option<&Attrs>,
         children: Option<crate::Delta<In>>,
     ) -> Option<ItemPtr> {
-        self.split(txn);
+        self.split(doc);
         let mut attrs = attrs.cloned().unwrap_or_default();
         if let Some(current) = self.attrs.as_deref() {
             // attributes active at the cursor position, but not requested, must be unset
@@ -277,26 +287,32 @@ impl Cursor {
             }
         }
         self.minimize_format_changes(&attrs);
-        let negated = self.insert_formats(txn, &attrs);
-        let item = self.integrate(txn, content)?;
+        let negated = self.insert_formats(doc, state, &attrs);
+        let item = self.integrate(doc, state, content)?;
         if let Some(children) = children
             && let Some(node) = item.content.as_node()
         {
-            NodeRef::new(node, &mut *txn).apply_delta(children);
+            crate::node_ref::apply_delta(doc, state, node, children);
         }
         self.right = Some(item);
         self.next_item();
-        self.insert_negated_formats(txn, negated);
+        self.insert_negated_formats(doc, state, negated);
         Some(item)
     }
 
     /// Port of Yjs `formatText`: applies `attrs` to `len` elements following the cursor, moving
     /// the cursor after them. Returns the number of elements formatted.
-    pub fn format(&mut self, txn: &mut TransactionMut, mut len: u32, attrs: &Attrs) -> u32 {
+    pub fn format(
+        &mut self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        mut len: u32,
+        attrs: &Attrs,
+    ) -> u32 {
         let start_len = len;
-        self.split(txn);
+        self.split(doc);
         self.minimize_format_changes(attrs);
-        let mut negated = self.insert_formats(txn, attrs);
+        let mut negated = self.insert_formats(doc, state, attrs);
         // iterate until first non-format or null is found
         // delete all formats with attrs[format.key] != null
         // also check the attributes after the first non-format as we do not want to insert redundant
@@ -319,7 +335,7 @@ impl Cursor {
                                 }
                                 negated.insert(key.clone(), *value.clone());
                             }
-                            txn.delete(right);
+                            state.delete(doc, right);
                         } else {
                             update_attrs(self.attrs.get_or_init(), key, value);
                         }
@@ -328,7 +344,7 @@ impl Cursor {
                 _ => {
                     let right_len = right.visible_len(self.encoding);
                     if len < right_len {
-                        split_item(txn, right, len, self.encoding);
+                        split_item(doc, right, len, self.encoding);
                         len = 0;
                     } else {
                         len -= right_len;
@@ -337,14 +353,14 @@ impl Cursor {
             }
             self.next_item();
         }
-        self.insert_negated_formats(txn, negated);
+        self.insert_negated_formats(doc, state, negated);
         start_len - len
     }
 
     /// Port of Yjs `deleteText`: removes `len` elements following the cursor.
     /// Returns the number of elements removed.
-    pub fn remove(&mut self, txn: &mut TransactionMut, len: u32) -> u32 {
-        self.split(txn);
+    pub fn remove(&mut self, doc: &mut Doc, state: &mut TransactionState, len: u32) -> u32 {
+        self.split(doc);
         let start = self.right;
         let start_attrs = self.attrs.clone();
         let mut remaining = len;
@@ -353,22 +369,27 @@ impl Cursor {
         {
             if !item.is_deleted() && item.is_countable() {
                 if remaining < item.content_len(self.encoding) {
-                    split_item(txn, item, remaining, self.encoding);
+                    split_item(doc, item, remaining, self.encoding);
                 }
                 remaining = remaining.saturating_sub(item.content_len(self.encoding));
-                txn.delete(item);
+                state.delete(doc, item);
             }
             self.next_item();
         }
         if start.is_some() {
-            self.clean_format_gap(txn, start, start_attrs.as_deref());
+            self.clean_format_gap(doc, state, start, start_attrs.as_deref());
         }
         len - remaining
     }
 
     /// Integrates a new item with a given `content` between `left` and `right` neighbors.
-    fn integrate(&self, txn: &mut TransactionMut, content: ItemContent) -> Option<ItemPtr> {
-        let id = ID::new(txn.doc.options.client_id, txn.doc.get_local_state());
+    fn integrate(
+        &self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        content: ItemContent,
+    ) -> Option<ItemPtr> {
+        let id = ID::new(doc.options.client_id, doc.get_local_state());
         let item = Item::new(
             id,
             self.left,
@@ -379,7 +400,7 @@ impl Cursor {
             None,
             content,
         )?;
-        txn.integrate_item(item, 0)
+        state.integrate_item(doc, item, 0)
     }
 
     /// Moves the cursor over deleted items and formatting markers which already match `attrs`.
@@ -401,7 +422,12 @@ impl Cursor {
 
     /// Inserts formatting markers for `attrs` differing from the ones active at the cursor
     /// position. Returns attributes that need to be restored once the formatted content ends.
-    fn insert_formats(&mut self, txn: &mut TransactionMut, attrs: &Attrs) -> Attrs {
+    fn insert_formats(
+        &mut self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        attrs: &Attrs,
+    ) -> Attrs {
         let mut negated = Attrs::new();
         for (key, value) in attrs {
             let current = self
@@ -412,7 +438,7 @@ impl Cursor {
             if value != current {
                 negated.insert(key.clone(), current.clone());
                 let content = ItemContent::Format(key.clone(), Box::new(value.clone()));
-                self.right = self.integrate(txn, content);
+                self.right = self.integrate(doc, state, content);
                 self.next_item();
             }
         }
@@ -421,7 +447,12 @@ impl Cursor {
 
     /// Inserts formatting markers restoring `negated` attributes, unless they're already
     /// restored by the markers following the cursor.
-    fn insert_negated_formats(&mut self, txn: &mut TransactionMut, mut negated: Attrs) {
+    fn insert_negated_formats(
+        &mut self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        mut negated: Attrs,
+    ) {
         while let Some(right) = self.right {
             let skip = if right.is_deleted() {
                 true
@@ -442,7 +473,7 @@ impl Cursor {
         }
         for (key, value) in negated {
             let content = ItemContent::Format(key, Box::new(value));
-            self.right = self.integrate(txn, content);
+            self.right = self.integrate(doc, state, content);
             self.next_item();
         }
     }
@@ -450,7 +481,8 @@ impl Cursor {
     /// Removes formatting markers made redundant by removal of the content starting at `start`.
     fn clean_format_gap(
         &mut self,
-        txn: &mut TransactionMut,
+        doc: &mut Doc,
+        state: &mut TransactionState,
         mut start: Option<ItemPtr>,
         start_attrs: Option<&Attrs>,
     ) -> u32 {
@@ -484,7 +516,7 @@ impl Cursor {
                 if end_formats.get(key) != Some(&item) || start_value == value {
                     // either this format is overwritten or it's not necessary because
                     // the format already existed
-                    txn.delete(item);
+                    state.delete(doc, item);
                     cleanups += 1;
                     let attrs = self.attrs.get_or_init();
                     if !reached_curr
@@ -574,14 +606,9 @@ fn char_boundary(s: &str, offset: u32, encoding: OffsetKind) -> (usize, u32) {
 }
 
 /// Splits an `item` at a given `offset` (in `lib0` units), returning the right half.
-fn split_item(
-    txn: &mut TransactionMut,
-    item: ItemPtr,
-    offset: u32,
-    encoding: OffsetKind,
-) -> Option<ItemPtr> {
+fn split_item(doc: &mut Doc, item: ItemPtr, offset: u32, encoding: OffsetKind) -> Option<ItemPtr> {
     let offset = clock_offset(item, offset, encoding);
-    txn.doc.blocks.split_block(item, offset, OffsetKind::Utf16)
+    doc.blocks.split_block(item, offset, OffsetKind::Utf16)
 }
 
 /// Reads elements of an `item` starting at `offset` into `buf`. Returns the number of elements
@@ -612,14 +639,12 @@ fn read_item(item: ItemPtr, offset: u32, buf: &mut [Out], encoding: OffsetKind) 
 #[cfg(test)]
 mod test {
     use super::Cursor;
-    use crate::node::{Attrs, NodePtr};
-    use crate::transaction::TransactionMut;
+    use crate::node::{Attrs, TypeRef};
     use crate::{Any, Delta, DeltaOptions, Doc, In, OffsetKind, Options, Out};
 
-    fn cursor(txn: &mut TransactionMut, index: u32) -> Cursor {
-        let id = txn.node_mut("test").unwrap().id();
-        let node: NodePtr = txn.doc.node(id).unwrap();
-        Cursor::at(node, txn.doc.options.offset_kind, index).unwrap()
+    fn cursor(doc: &mut Doc, index: u32) -> Cursor {
+        let node = doc.get_or_create_type("test", TypeRef::Undefined);
+        Cursor::at(node, doc.options.offset_kind, index).unwrap()
     }
 
     fn bold() -> Attrs {
@@ -630,8 +655,9 @@ mod test {
     fn insert_inside_block() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "abcd", None);
-        cursor(&mut txn, 2).insert_text(&mut txn, "XY", None);
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "abcd", None);
+        cursor(doc, 2).insert_text(doc, state, "XY", None);
         assert_eq!(txn.node("test").unwrap().to_string(), "abXYcd");
     }
 
@@ -639,8 +665,9 @@ mod test {
     fn remove_inside_block() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "abcdef", None);
-        let removed = cursor(&mut txn, 1).remove(&mut txn, 3);
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "abcdef", None);
+        let removed = cursor(doc, 1).remove(doc, state, 3);
         assert_eq!(removed, 3);
         assert_eq!(txn.node("test").unwrap().to_string(), "aef");
     }
@@ -649,8 +676,9 @@ mod test {
     fn format_range() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "abcd", None);
-        cursor(&mut txn, 1).format(&mut txn, 2, &bold());
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "abcd", None);
+        cursor(doc, 1).format(doc, state, 2, &bold());
         let actual = txn.node("test").unwrap().delta(&DeltaOptions::default());
         let expected = Delta::<Out>::default()
             .insert_text("a")
@@ -663,10 +691,11 @@ mod test {
     fn insert_inherits_active_attrs() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "ab", Some(&bold()));
-        let mut c = cursor(&mut txn, 1);
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "ab", Some(&bold()));
+        let mut c = cursor(doc, 1);
         assert_eq!(c.attrs(), Some(&bold()));
-        c.insert_text(&mut txn, "X", Some(&bold()));
+        c.insert_text(doc, state, "X", Some(&bold()));
         let actual = txn.node("test").unwrap().delta(&DeltaOptions::default());
         assert_eq!(
             actual,
@@ -678,9 +707,10 @@ mod test {
     fn remove_cleans_format_gap() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "abc", None);
-        cursor(&mut txn, 1).format(&mut txn, 1, &bold());
-        cursor(&mut txn, 1).remove(&mut txn, 1);
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "abc", None);
+        cursor(doc, 1).format(doc, state, 1, &bold());
+        cursor(doc, 1).remove(doc, state, 1);
         let actual = txn.node("test").unwrap().delta(&DeltaOptions::default());
         assert_eq!(actual, Delta::<Out>::default().insert_text("ac"));
     }
@@ -689,9 +719,10 @@ mod test {
     fn iterate_values() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
+        let (doc, state) = txn.split_mut();
         let values = [In::from(1), In::from(2), In::from(3)];
-        cursor(&mut txn, 0).insert_range(&mut txn, values, None);
-        let actual: Vec<Out> = cursor(&mut txn, 1).collect();
+        cursor(doc, 0).insert_range(doc, state, values, None);
+        let actual: Vec<Out> = cursor(doc, 1).collect();
         assert_eq!(actual, vec![Out::from(2), Out::from(3)]);
     }
 
@@ -699,8 +730,9 @@ mod test {
     fn iterate_multibyte_text() {
         let mut doc = Doc::new();
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "a😀b", None);
-        let actual: Vec<Out> = cursor(&mut txn, 1).collect();
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "a😀b", None);
+        let actual: Vec<Out> = cursor(doc, 1).collect();
         assert_eq!(actual, vec![Out::from("😀"), Out::from("b")]);
     }
 
@@ -712,8 +744,9 @@ mod test {
             ..Options::default()
         });
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "a😀b", None);
-        let mut c = cursor(&mut txn, 2);
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "a😀b", None);
+        let mut c = cursor(doc, 2);
         assert_eq!(c.index(), 3);
         assert_eq!(c.next(), Some(Out::from("b")));
         assert_eq!(c.next(), None);
@@ -727,8 +760,9 @@ mod test {
             ..Options::default()
         });
         let mut txn = doc.transact_mut();
-        cursor(&mut txn, 0).insert_text(&mut txn, "a😀b", None);
-        cursor(&mut txn, 2).insert_text(&mut txn, "X", None);
+        let (doc, state) = txn.split_mut();
+        cursor(doc, 0).insert_text(doc, state, "a😀b", None);
+        cursor(doc, 2).insert_text(doc, state, "X", None);
         assert_eq!(txn.node("test").unwrap().to_string(), "a😀Xb");
     }
 }

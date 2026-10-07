@@ -1,15 +1,15 @@
 use std::collections::Bound;
-use std::ops::{Deref, RangeBounds};
+use std::ops::RangeBounds;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwapOption;
 use serde::Deserialize;
 use yrs::node::{Attrs, DeepObservable, Observable};
 use yrs::test_utils::exchange_updates;
-use yrs::{AcquireMut, AttrOp, Cell, Delta, Doc, NodeID, NodeRef, Out, Transaction};
+use yrs::{AcquireMut, AttrOp, Cell, Delta, Doc, DocHandle, NodeID, NodeRef, Out, Transaction};
 
 /// Renders `value`, resolving nested nodes through `txn`.
-fn stringify<D: Deref<Target = Doc>>(txn: &Transaction<D>, value: &Out) -> String {
+fn stringify<D: DocHandle>(txn: &Transaction<D>, value: &Out) -> String {
     match value {
         Out::Node(n) => txn.node(n.id.clone()).unwrap().to_string(),
         Out::Any(any) => any.to_string(),

@@ -1,6 +1,6 @@
 use crate::block::ItemPtr;
 use crate::slice::ItemSlice;
-use crate::{Assoc, Doc, Out, StickyIndex, Transaction};
+use crate::{Assoc, DocHandle, Out, StickyIndex, Transaction};
 use std::ops::Deref;
 
 pub(crate) trait BlockIterator: Iterator<Item = ItemPtr> + Sized {
@@ -80,11 +80,11 @@ impl IntoIterator for ItemPtr {
 /// Iterator equivalent that can be supplied with transaction when iteration step may need it.
 pub trait TxnIterator {
     type Item;
-    fn next<D: Deref<Target = Doc>>(&mut self, txn: &Transaction<D>) -> Option<Self::Item>;
+    fn next<D: DocHandle>(&mut self, txn: &Transaction<D>) -> Option<Self::Item>;
 
     fn collect<D, B>(&mut self, txn: &Transaction<D>) -> B
     where
-        D: Deref<Target = Doc>,
+        D: DocHandle,
         B: Default + Extend<Self::Item>,
     {
         let mut buf = B::default();
@@ -97,7 +97,7 @@ pub trait TxnIterator {
 
 /// DoubleEndedIterator equivalent that can be supplied with transaction when iteration step may need it.
 pub trait TxnDoubleEndedIterator: TxnIterator {
-    fn next_back<D: Deref<Target = Doc>>(&mut self, txn: &Transaction<D>) -> Option<Self::Item>;
+    fn next_back<D: DocHandle>(&mut self, txn: &Transaction<D>) -> Option<Self::Item>;
 }
 
 /// Iterator over a slice of a continuous sequence of blocks.
@@ -281,14 +281,14 @@ where
     }
 }
 
-pub struct AsIter<'a, D, I> {
+pub struct AsIter<'a, D: DocHandle, I> {
     txn: &'a Transaction<D>,
     iter: I,
 }
 
 impl<'a, D, I> AsIter<'a, D, I>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
     I: Iterator,
 {
     pub fn new(iter: I, txn: &'a Transaction<D>) -> Self {
@@ -298,7 +298,7 @@ where
 
 impl<'a, D, I> Iterator for AsIter<'a, D, I>
 where
-    D: Deref<Target = Doc>,
+    D: DocHandle,
     I: Iterator,
 {
     type Item = I::Item;
