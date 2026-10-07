@@ -124,11 +124,6 @@ fn map_len_remove() {
     m1.insert_attr(key2, "c1");
     assert_eq!(m1.attr_len(), 2);
 
-    // TODO(unified-api): `remove_attr` doesn't return the removed value
-    assert_eq!(m1.remove_attr(&key1), Some(Out::from("c0")));
-    assert_eq!(m1.remove_attr(&key1), None);
-    assert_eq!(m1.remove_attr(&key2), Some(Out::from("c1")));
-
     // remove 'stuff'
     assert_eq!(m1.remove_attr(key1), Some(Out::from("c0")));
     assert_eq!(m1.attr_len(), 1);
