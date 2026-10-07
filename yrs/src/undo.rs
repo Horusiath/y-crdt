@@ -1323,7 +1323,7 @@ mod test {
         exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
         mgr.undo_blocking();
-        node(&d2, "test", |mut array| {
+        node(&d1, "test", |mut array| {
             assert_eq!(array.deserialize::<Vec<i32>>().unwrap(), vec![4, 5, 6]);
         });
 
@@ -1790,7 +1790,12 @@ mod test {
             x: i32,
             y: i32,
         }
-        let point_json = || node(&doc, point.clone(), |p| p.deserialize::<Point>().unwrap());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct R {
+            a: Point,
+        }
+        // read through root: redo restores the point as a new node
+        let point_json = || node(&doc, "root", |r| r.deserialize::<R>().unwrap().a);
 
         assert_eq!(point_json(), Point { x: 300, y: 300 });
 
@@ -1983,7 +1988,7 @@ mod test {
                 .insert_attr("b", "2".to_string());
             f.insert(0, content).node_id().unwrap()
         });
-        let as_string = || node(&doc, "test", |f| f.to_string());
+        let as_string = || node(&doc, "test", |f| f.format_xml().to_string());
 
         let s = as_string();
         assert!(s == r#"<test a="1" b="2"></test>"# || s == r#"<test b="2" a="1"></test>"#);
@@ -2040,7 +2045,7 @@ mod test {
         );
 
         mgr.undo_blocking();
-        assert_eq!(node(&d1, nested, |nested| nested.len()), 0);
+        assert_eq!(node(&d1, "test", |txt1| txt1.len()), 0);
     }
 
     /// `{ s1: T }` root shape shared by github issue regression tests.
