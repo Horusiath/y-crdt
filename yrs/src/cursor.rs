@@ -1,5 +1,5 @@
 use crate::block::{ID, Item, ItemContent, ItemPtr};
-use crate::node::{Attrs, Node, NodePtr, TypePtr, TypeRef};
+use crate::node::{Attrs, Node, NodePtr, TypePtr};
 use crate::transaction::TransactionMut;
 use crate::utils::OptionExt;
 use crate::{Any, In, NodeRef, OffsetKind, Out};
@@ -226,12 +226,8 @@ impl Cursor {
         match value {
             In::Any(any) => self.insert_content(txn, ItemContent::Any(vec![any]), attrs, None),
             In::Node(delta) => {
-                let type_ref = match &delta.name {
-                    Some(name) => TypeRef::XmlElement(name.clone()),
-                    None => TypeRef::Undefined,
-                };
-                let node = Node::new(delta.name.clone(), type_ref);
-                self.insert_content(txn, ItemContent::Node(node), attrs, Some(*delta))
+                let (node, remainder) = Node::from_delta(*delta);
+                self.insert_content(txn, ItemContent::Node(node), attrs, remainder)
             }
             In::Doc(doc) => {
                 let content = ItemContent::Doc(None, doc.options.clone());

@@ -3,6 +3,7 @@ use std::ops::{Deref, RangeBounds};
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwapOption;
+use serde::Deserialize;
 use yrs::node::{Attrs, DeepObservable, Observable};
 use yrs::test_utils::exchange_updates;
 use yrs::{AcquireMut, AttrOp, Cell, Delta, Doc, NodeID, NodeRef, Out, Transaction};
@@ -108,6 +109,12 @@ fn basic_array_link() {
     assert_eq!(actual, vec![2.into()]);
 }
 
+/// Attributes of a nested map node quoted by a link.
+#[derive(Debug, PartialEq, Deserialize)]
+struct Entry {
+    key: String,
+}
+
 #[test]
 fn array_quote_multi_elements() {
     let mut d1 = Doc::with_client_id(1);
@@ -149,22 +156,25 @@ fn array_quote_multi_elements() {
         let a2 = t2.node("array").unwrap();
         let l2 = a2.get(0).unwrap().node_id().unwrap();
         let link = t2.node(l2.clone()).unwrap();
-        let unquoted: Vec<_> = link.unquote().map(|v| stringify(&t2, &v)).collect();
         assert_eq!(
-            unquoted,
-            vec![
-                "2".to_string(),
-                r#"{key: value}"#.to_string(),
-                "3".to_string()
-            ]
+            link.unquote().collect::<Vec<Out>>(),
+            vec![2.into(), nested.clone(), 3.into()]
         );
         assert_eq!(a2.get(1), Some(1.into()));
         assert_eq!(a2.get(2), Some(2.into()));
-        assert_eq!(
-            a2.get(3).map(|v| stringify(&t2, &v)),
-            Some(r#"{key: value}"#.to_string())
-        );
+        assert_eq!(a2.get(3), Some(nested.clone()));
         assert_eq!(a2.get(4), Some(3.into()));
+        let entry: Entry = t2
+            .node(nested.clone().node_id().unwrap())
+            .unwrap()
+            .deserialize()
+            .unwrap();
+        assert_eq!(
+            entry,
+            Entry {
+                key: "value".into()
+            }
+        );
         l2
     };
 
@@ -176,16 +186,9 @@ fn array_quote_multi_elements() {
     {
         let t2 = d2.transact();
         let link = t2.node(l2).unwrap();
-        let unquoted: Vec<_> = link.unquote().map(|v| stringify(&t2, &v)).collect();
         assert_eq!(
-            unquoted,
-            vec![
-                "2".to_string(),
-                "A".to_string(),
-                "B".to_string(),
-                r#"{key: value}"#.to_string(),
-                "3".to_string()
-            ]
+            link.unquote().collect::<Vec<Out>>(),
+            vec![2.into(), "A".into(), "B".into(), nested.clone(), 3.into()]
         );
     }
 
@@ -955,7 +958,7 @@ fn deep_observe_recursive() {
     };
     assert_eq!(
         actual,
-        vec![(m1.clone(), Delta::out().insert_attr("test-key1", "value"))]
+        vec![(m1.clone(), Delta::out().insert_attr("test-key1", "value1"))]
     );
 
     doc.transact_mut()

@@ -723,12 +723,8 @@ impl<'doc> Transaction<&'doc mut Doc> {
         let mut content = match value {
             In::Any(value) => ItemContent::Any(vec![value]),
             In::Node(node) => {
-                let type_ref = match &node.name {
-                    Some(name) => TypeRef::XmlElement(name.clone()),
-                    None => TypeRef::Undefined,
-                };
-                let inner = Node::new(node.name.clone(), type_ref);
-                delta = Some(node);
+                let (inner, remainder) = Node::from_delta(*node);
+                delta = remainder;
                 ItemContent::Node(inner)
             }
             In::Doc(doc) => {
@@ -757,7 +753,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
         if let Some(remainder) = delta {
             let mut node = NodeRef::new(inner_ref.unwrap(), &mut *self);
-            node.apply_delta(*remainder);
+            node.apply_delta(remainder);
         }
 
         block_ptr

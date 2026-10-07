@@ -248,6 +248,19 @@ impl Node {
         })
     }
 
+    pub(crate) fn from_delta(mut delta: crate::Delta<In>) -> (Box<Self>, Option<crate::Delta<In>>) {
+        #[cfg(feature = "weak")]
+        if let Some(link) = delta.link.take() {
+            // weak links don't carry any content of their own
+            return (Self::new(None, TypeRef::WeakLink(link)), None);
+        }
+        let type_ref = match &delta.name {
+            Some(name) => TypeRef::XmlElement(name.clone()),
+            None => TypeRef::Undefined,
+        };
+        (Self::new(delta.name.clone(), type_ref), Some(delta))
+    }
+
     pub fn is_deleted(&self) -> bool {
         match self.item {
             Some(ptr) => ptr.is_deleted(),

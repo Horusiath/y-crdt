@@ -921,7 +921,7 @@ impl<'a> NodeFormatter<'a> {
         let mut delta = match &node.type_ref {
             TypeRef::XmlElement(name) => Delta::with_name(name.clone()),
             #[cfg(feature = "weak")]
-            TypeRef::WeakLink(source) if self.link_depth == 0 => Delta {
+            TypeRef::WeakLink(source) if self.link_depth == 0 && self.is_inserted(node) => Delta {
                 link: Some(source.clone()),
                 ..Delta::default()
             },
@@ -1003,6 +1003,15 @@ impl<'a> NodeFormatter<'a> {
             Out::node(node.id()) // there's nothing to render within a child node
         } else {
             Out::node_with_delta(node.id(), delta)
+        }
+    }
+
+    #[cfg(feature = "weak")]
+    fn is_inserted(&self, node: NodePtr) -> bool {
+        match (&self.items, node.item) {
+            (None, _) => true,                                     // full render
+            (Some(items), Some(item)) => items.contains(&item.id), // change render (ex. event delta)
+            (Some(_), None) => false, // root type (they are never explicitly inserted)
         }
     }
 
