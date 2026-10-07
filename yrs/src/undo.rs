@@ -1013,6 +1013,7 @@ mod test {
         Any, Cell, Delta, DeltaOptions, Doc, In, NodeID, NodeRef, Origin, Out, StateVector,
         TransactionMut, UndoManager, Update, any,
     };
+    use serde::Deserialize;
 
     #[test]
     fn undo_text() {
@@ -1279,6 +1280,17 @@ mod test {
     #[test]
     // TODO(unified-api): nested MapPrelim/ArrayPrelim + Array::insert_range + Out::cast have no NodeRef equivalent yet
     fn undo_array() {
+        #[derive(Debug, Default, Deserialize, PartialEq)]
+        struct Entry {
+            a: Option<i32>,
+            b: Option<i32>,
+        }
+        impl Entry {
+            fn new(a: Option<i32>, b: Option<i32>) -> Self {
+                Entry { a, b }
+            }
+        }
+
         let array = NodeID::root("test");
         let d1 = Cell::new(Doc::with_client_id(1));
 
@@ -1292,19 +1304,25 @@ mod test {
         exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
         node(&d1, "test", |mut array| {
-            assert_eq!(array.to_json(), vec![1, 2, 3, 4, 5, 6].into())
+            assert_eq!(
+                array.deserialize::<Vec<i32>>().unwrap(),
+                vec![1, 2, 3, 4, 5, 6]
+            )
         });
 
         mgr.undo_blocking();
 
         node(&d1, "test", |mut array| {
-            assert_eq!(array.to_json(), vec![4, 5, 6].into())
+            assert_eq!(array.deserialize::<Vec<i32>>().unwrap(), vec![4, 5, 6])
         });
 
         mgr.redo_blocking();
 
         node(&d1, "test", |mut array| {
-            assert_eq!(array.to_json(), vec![1, 2, 3, 4, 5, 6].into())
+            assert_eq!(
+                array.deserialize::<Vec<i32>>().unwrap(),
+                vec![1, 2, 3, 4, 5, 6]
+            )
         });
 
         exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
@@ -1317,13 +1335,16 @@ mod test {
 
         mgr.undo_blocking();
         node(&d2, "test", |mut array| {
-            assert_eq!(array.to_json(), vec![4, 5, 6].into());
+            assert_eq!(array.deserialize::<Vec<i32>>().unwrap(), vec![4, 5, 6]);
         });
 
         mgr.redo_blocking();
 
         node(&d1, "test", |mut array| {
-            assert_eq!(array.to_json(), vec![2, 3, 4, 5, 6].into());
+            assert_eq!(
+                array.deserialize::<Vec<i32>>().unwrap(),
+                vec![2, 3, 4, 5, 6]
+            );
             array.remove(0, 5);
         });
 
@@ -1332,7 +1353,10 @@ mod test {
             let Out::Node(map) = array.insert(0, Delta::new()) else {
                 unreachable!()
             };
-            assert_eq!(array.to_json(), Any::from_json(r#"[{}]"#).unwrap());
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(None, None)]
+            );
             map
         });
 
@@ -1342,36 +1366,45 @@ mod test {
             map.insert_attr("a", 1);
         });
         node(&d1, "test", |mut array| {
-            assert_eq!(array.to_json(), Any::from_json(r#"[{"a":1}]"#).unwrap());
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(Some(1), None)]
+            );
         });
 
         mgr.undo_blocking();
 
         node(&d1, "test", |mut array| {
-            let actual = array.to_json();
-            let expected = Any::from_json(r#"[{}]"#).unwrap();
-            assert_eq!(actual, expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(None, None)]
+            );
         });
 
         mgr.undo_blocking();
 
         node(&d1, "test", |mut array| {
-            assert_eq!(array.to_json(), vec![2, 3, 4, 5, 6].into());
+            assert_eq!(
+                array.deserialize::<Vec<i32>>().unwrap(),
+                vec![2, 3, 4, 5, 6]
+            );
         });
 
         mgr.redo_blocking();
 
         node(&d1, "test", |mut array| {
-            let actual = array.to_json();
-            let expected = Any::from_json(r#"[{}]"#).unwrap();
-            assert_eq!(actual, expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(None, None)]
+            );
         });
 
         mgr.redo_blocking();
         node(&d1, "test", |array| {
-            let actual = array.to_json();
-            let expected = Any::from_json(r#"[{"a":1}]"#).unwrap();
-            assert_eq!(actual, expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(Some(1), None)]
+            );
         });
 
         exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
@@ -1386,31 +1419,42 @@ mod test {
         exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
 
         node(&d1, "test", |array| {
-            let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
-            assert_eq!(array.to_json(), expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(Some(1), Some(2))]
+            );
         });
 
         mgr.undo_blocking();
         node(&d1, "test", |array| {
-            let expected = Any::from_json(r#"[{"b":2}]"#).unwrap();
-            assert_eq!(array.to_json(), expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(None, Some(2))]
+            );
         });
 
         mgr.undo_blocking();
         node(&d1, "test", |array| {
-            assert_eq!(array.to_json(), vec![2, 3, 4, 5, 6].into());
+            assert_eq!(
+                array.deserialize::<Vec<i32>>().unwrap(),
+                vec![2, 3, 4, 5, 6]
+            );
         });
 
         mgr.redo_blocking();
         node(&d1, "test", |array| {
-            let expected = Any::from_json(r#"[{"b":2}]"#).unwrap();
-            assert_eq!(array.to_json(), expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(None, Some(2))]
+            );
         });
 
         mgr.redo_blocking();
         node(&d1, "test", |array| {
-            let expected = Any::from_json(r#"[{"a":1,"b":2}]"#).unwrap();
-            assert_eq!(array.to_json(), expected);
+            assert_eq!(
+                array.deserialize::<Vec<Entry>>().unwrap(),
+                vec![Entry::new(Some(1), Some(2))]
+            );
         });
     }
 
@@ -1653,6 +1697,30 @@ mod test {
         });
     }
 
+    /// `{ text?: { blocks: { text } } }` shape used by [nested_undo] and [undo_block_bug].
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Design {
+        text: Option<DesignText>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct DesignText {
+        blocks: Block,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Block {
+        text: String,
+    }
+
+    fn design(text: &str) -> Design {
+        Design {
+            text: Some(DesignText {
+                blocks: Block { text: text.into() },
+            }),
+        }
+    }
+
     #[test]
     fn nested_undo() {
         // This issue has been reported in https://github.com/yjs/yjs/issues/317
@@ -1682,39 +1750,25 @@ mod test {
             text.insert_attr("blocks", blocks("Something else"));
         });
 
-        let design_json = || node(&doc, "map", |design| design.to_json());
+        let design_json = || {
+            node(&doc, "map", |design| {
+                design.deserialize::<Design>().unwrap()
+            })
+        };
 
-        assert_eq!(
-            design_json(),
-            Any::from_json(r#"{ "text": { "blocks": { "text": "Something else" } } }"#).unwrap()
-        );
+        assert_eq!(design_json(), design("Something else"));
         mgr.undo_blocking();
-        assert_eq!(
-            design_json(),
-            Any::from_json(r#"{ "text": { "blocks": { "text": "Something" } } }"#).unwrap()
-        );
+        assert_eq!(design_json(), design("Something"));
         mgr.undo_blocking();
-        assert_eq!(
-            design_json(),
-            Any::from_json(r#"{ "text": { "blocks": { "text": "Type something" } } }"#).unwrap()
-        );
+        assert_eq!(design_json(), design("Type something"));
         mgr.undo_blocking();
-        assert_eq!(design_json(), Any::from_json(r#"{}"#).unwrap());
+        assert_eq!(design_json(), Design { text: None });
         mgr.redo_blocking();
-        assert_eq!(
-            design_json(),
-            Any::from_json(r#"{ "text": { "blocks": { "text": "Type something" } } }"#).unwrap()
-        );
+        assert_eq!(design_json(), design("Type something"));
         mgr.redo_blocking();
-        assert_eq!(
-            design_json(),
-            Any::from_json(r#"{ "text": { "blocks": { "text": "Something" } } }"#).unwrap()
-        );
+        assert_eq!(design_json(), design("Something"));
         mgr.redo_blocking();
-        assert_eq!(
-            design_json(),
-            Any::from_json(r#"{ "text": { "blocks": { "text": "Something else" } } }"#).unwrap()
-        );
+        assert_eq!(design_json(), design("Something else"));
     }
 
     #[test]
@@ -1742,51 +1796,38 @@ mod test {
         set_point(300, 300);
         mgr.reset();
 
-        let point_json = || node(&doc, point.clone(), |point| point.to_json());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+        let point_json = || node(&doc, point.clone(), |p| p.deserialize::<Point>().unwrap());
 
-        assert_eq!(
-            point_json(),
-            Any::from_json(r#"{"x":300,"y":300}"#).unwrap()
-        );
+        assert_eq!(point_json(), Point { x: 300, y: 300 });
 
         mgr.undo_blocking(); // x=200, y=200
-        assert_eq!(
-            point_json(),
-            Any::from_json(r#"{"x":200,"y":200}"#).unwrap()
-        );
+        assert_eq!(point_json(), Point { x: 200, y: 200 });
 
         mgr.undo_blocking(); // x=100, y=100
-        assert_eq!(
-            point_json(),
-            Any::from_json(r#"{"x":100,"y":100}"#).unwrap()
-        );
+        assert_eq!(point_json(), Point { x: 100, y: 100 });
 
         mgr.undo_blocking(); // x=0, y=0
-        assert_eq!(point_json(), Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
+        assert_eq!(point_json(), Point { x: 0, y: 0 });
 
         mgr.undo_blocking(); // null
         node(&doc, "root", |root| assert_eq!(root.attr("a"), None));
 
         mgr.redo_blocking(); // x=0, y=0
-        assert_eq!(point_json(), Any::from_json(r#"{"x":0,"y":0}"#).unwrap());
+        assert_eq!(point_json(), Point { x: 0, y: 0 });
 
         mgr.redo_blocking(); // x=100, y=100
-        assert_eq!(
-            point_json(),
-            Any::from_json(r#"{"x":100,"y":100}"#).unwrap()
-        );
+        assert_eq!(point_json(), Point { x: 100, y: 100 });
 
         mgr.redo_blocking(); // x=200, y=200
-        assert_eq!(
-            point_json(),
-            Any::from_json(r#"{"x":200,"y":200}"#).unwrap()
-        );
+        assert_eq!(point_json(), Point { x: 200, y: 200 });
 
         mgr.redo_blocking(); // x=300, y=300
-        assert_eq!(
-            point_json(),
-            Any::from_json(r#"{"x":300,"y":300}"#).unwrap()
-        );
+        assert_eq!(point_json(), Point { x: 300, y: 300 });
     }
 
     #[test]
@@ -1871,11 +1912,10 @@ mod test {
         mgr.redo_blocking(); // {"text":{"blocks":{"text":"2"}}}
         mgr.redo_blocking(); // {"text":{"blocks":{"text":"3"}}}
         mgr.redo_blocking(); // {"text":{}}
-        let actual = node(&doc, "map", |design| design.to_json());
-        assert_eq!(
-            actual,
-            Any::from_json(r#"{"text":{"blocks":{"text":"4"}}}"#).unwrap()
-        );
+        let actual = node(&doc, "map", |design| {
+            design.deserialize::<Design>().unwrap()
+        });
+        assert_eq!(actual, design("4"));
     }
 
     #[test]
@@ -2014,6 +2054,12 @@ mod test {
         assert_eq!(node(&d1, nested, |nested| nested.len()), 0);
     }
 
+    /// `{ s1: T }` root shape shared by github issue regression tests.
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Root<T> {
+        s1: T,
+    }
+
     #[test]
     fn github_issue_345() {
         // https://github.com/y-crdt/y-crdt/issues/345
@@ -2052,39 +2098,36 @@ mod test {
             mgr.reset();
         }
 
-        let map_json = || node(&doc, "r", |map| map.to_json());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct S1 {
+            a: Vec<String>,
+            b: Vec<String>,
+        }
+        let s1 = |a: &[&str], b: &[&str]| S1 {
+            a: a.iter().map(|s| s.to_string()).collect(),
+            b: b.iter().map(|s| s.to_string()).collect(),
+        };
+        let map_json = || node(&doc, "r", |map| map.deserialize::<Root<S1>>().unwrap().s1);
 
-        assert_eq!(
-            map_json(),
-            any!({"s1": {"a": ["a1", "a3", "a4", "a5"], "b": ["b1", "b2"]}})
-        );
+        assert_eq!(map_json(), s1(&["a1", "a3", "a4", "a5"], &["b1", "b2"]));
 
         mgr.undo_blocking(); // {"s1": {"a": ["a1", "a3", "a4"], "b": ["b1", "b2"]}}
         mgr.undo_blocking(); // {"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}}
         mgr.undo_blocking(); // {"s1": {"a": ["a1"], "b": ["b1", "b2"]}}
         mgr.undo_blocking(); // {"s1": {"a": ["a1"], "b": ["b1"]}}
-        assert_eq!(map_json(), any!({"s1": {"a": ["a1"], "b": ["b1"]}}));
+        assert_eq!(map_json(), s1(&["a1"], &["b1"]));
 
         mgr.redo_blocking();
-        assert_eq!(map_json(), any!({"s1": {"b": ["b1", "b2"], "a": ["a1"]}}));
+        assert_eq!(map_json(), s1(&["a1"], &["b1", "b2"]));
 
         mgr.redo_blocking();
-        assert_eq!(
-            map_json(),
-            any!({"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}})
-        );
+        assert_eq!(map_json(), s1(&["a1", "a3"], &["b1", "b2"]));
 
         mgr.redo_blocking();
-        assert_eq!(
-            map_json(),
-            any!({"s1": {"a": ["a1", "a3", "a4"], "b": ["b1", "b2"]}})
-        );
+        assert_eq!(map_json(), s1(&["a1", "a3", "a4"], &["b1", "b2"]));
 
         mgr.redo_blocking();
-        assert_eq!(
-            map_json(),
-            any!({"s1": {"a": ["a1", "a3", "a4", "a5"], "b": ["b1", "b2"]}})
-        );
+        assert_eq!(map_json(), s1(&["a1", "a3", "a4", "a5"], &["b1", "b2"]));
     }
 
     #[test]
@@ -2110,16 +2153,24 @@ mod test {
         });
         mgr.reset();
 
-        let r_json = || node(&d, "r", |r| r.to_json());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct S1 {
+            b1: Option<B1>,
+        }
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct B1 {
+            f1: i32,
+        }
+        let r_json = || node(&d, "r", |r| r.deserialize::<Root<S1>>().unwrap().s1.b1);
 
-        assert_eq!(r_json(), any!({"s1": {"b1": {"f1": 20}}}));
+        assert_eq!(r_json(), Some(B1 { f1: 20 }));
 
         mgr.undo_blocking();
-        assert_eq!(r_json(), any!({"s1": {}}));
+        assert_eq!(r_json(), None);
         assert!(mgr.can_undo(), "should be able to undo");
 
         mgr.undo_blocking();
-        assert_eq!(r_json(), any!({"s1": {"b1": {"f1": 11}}}));
+        assert_eq!(r_json(), Some(B1 { f1: 11 }));
         assert!(mgr.can_undo(), "should be able to undo to the init state");
     }
 
@@ -2162,23 +2213,24 @@ mod test {
         node(&doc, el1, |mut el1| el1.insert_attr("f2", true));
         mgr.reset();
 
-        let r_json = || node(&doc, "r", |r| r.to_json());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct S1 {
+            b1: Vec<El>,
+        }
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct El {
+            f1: i32,
+            f2: Option<bool>,
+        }
+        let el = |f1, f2| El { f1, f2 };
+        let r_json = || node(&doc, "r", |r| r.deserialize::<Root<S1>>().unwrap().s1.b1);
 
         mgr.undo_blocking(); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
-        assert_eq!(
-            r_json(),
-            any!({ "s1": { "b1": [{ "f1": 8, "f2": false }, { "f1": 13, "f2": false }] } })
-        );
+        assert_eq!(r_json(), [el(8, Some(false)), el(13, Some(false))]);
         mgr.undo_blocking(); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13 }] } }
-        assert_eq!(
-            r_json(),
-            any!({ "s1": { "b1": [{ "f1": 8, "f2": false }, { "f1": 13 }] } })
-        );
+        assert_eq!(r_json(), [el(8, Some(false)), el(13, None)]);
         mgr.undo_blocking(); // { s1: { b1: [{ f1: 8, f2: true }] } }
-        assert_eq!(
-            r_json(),
-            any!({ "s1": { "b1": [{ "f1": 8, "f2": true }] } })
-        );
+        assert_eq!(r_json(), [el(8, Some(true))]);
         assert!(!mgr.undo_blocking()); // no more changes tracked by undo manager
     }
 
@@ -2206,14 +2258,23 @@ mod test {
         node(&doc, s1, |mut s1| s1.insert_attr("f2", "C2".to_string())); // { s1: { f1: false, f2: C2 } }
         mgr.reset();
 
-        let r_json = || node(&doc, "r", |r| r.to_json());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct S1 {
+            f1: bool,
+            f2: Option<String>,
+        }
+        let s1 = |f2: Option<&str>| S1 {
+            f1: false,
+            f2: f2.map(String::from),
+        };
+        let r_json = || node(&doc, "r", |r| r.deserialize::<Root<S1>>().unwrap().s1);
 
         mgr.undo_blocking(); // { s1: { f1: false, f2: C1 } }
-        assert_eq!(r_json(), any!({ "s1": { "f1": false, "f2": "C1" } }));
+        assert_eq!(r_json(), s1(Some("C1")));
         mgr.undo_blocking(); // { s1: { f1: false } }
-        assert_eq!(r_json(), any!({ "s1": { "f1": false } }));
+        assert_eq!(r_json(), s1(None));
         mgr.undo_blocking(); // { s1: { f1: false, f2: AAA } }
-        assert_eq!(r_json(), any!({ "s1": { "f1": false, "f2": "AAA" } }));
+        assert_eq!(r_json(), s1(Some("AAA")));
         assert!(!mgr.undo_blocking()); // no more changes tracked by undo manager
     }
 
@@ -2267,18 +2328,32 @@ mod test {
         }
         mgr.reset();
 
-        let r_json = || node(&d, "r", |r| r.to_json());
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct S1 {
+            b1: Vec<El>,
+        }
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct El {
+            b2: Option<Vec<Vec<i64>>>,
+            f2: Option<String>,
+        }
+        let b2 = |n| El {
+            b2: Some(vec![vec![232291652, n]]),
+            f2: None,
+        };
+        let f2 = |s: &str| El {
+            b2: None,
+            f2: Some(s.into()),
+        };
+        let r_json = || node(&d, "r", |r| r.deserialize::<Root<S1>>().unwrap().s1.b1);
 
-        assert_eq!(
-            r_json(),
-            any!({"s1":{"b1":[{"b2":[[232291652, -6]]}, {"f2":"C1"}]}})
-        );
+        assert_eq!(r_json(), [b2(-6), f2("C1")]);
 
         mgr.undo_blocking(); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
-        assert_eq!(r_json(), any!({"s1":{"b1":[{"b2":[[232291652, -5]]}]}}));
+        assert_eq!(r_json(), [b2(-5)]);
 
         mgr.undo_blocking(); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
-        assert_eq!(r_json(), any!({"s1":{"b1":[{"b2":[[232291652, -30]]}]}}));
+        assert_eq!(r_json(), [b2(-30)]);
     }
 
     #[test]
