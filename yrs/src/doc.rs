@@ -1444,16 +1444,18 @@ mod test {
         let actual = doc.transact().node("root").unwrap().to_json();
         let expected = Any::from_json(
             r#"{
-              "string": "world",
-              "a_list": [{"b": "a", "a": 1}],
-              "i32_map": {"1": 2},
-              "a_map": {
-                "1": {"a": 2, "b": "b"}
-              },
-              "string_list": ["a"],
-              "i32": 2,
-              "string_map": {"1": "b"},
-              "i32_list": [1]
+              "attrs": {
+                "string": "world",
+                "a_list": { "children": [{"b": "a", "a": 1}] },
+                "i32_map": { "attrs": {"1": 2} },
+                "a_map": {"attrs":{
+                  "1": {"a": 2, "b": "b"}
+                }},
+                "string_list": { "children": ["a"] },
+                "i32": 2,
+                "string_map": { "attrs": {"1": "b"} },
+                "i32_list": { "children": [1] }
+              }
             }"#,
         )
         .unwrap();
@@ -2373,18 +2375,16 @@ mod test {
         data: [&str; N],
     ) -> NodeRef<&'tx mut TransactionMut<'doc>> {
         let mut map = txn.node_mut("map").unwrap();
-        let mut delta = Delta::new();
-        for chunk in data {
-            delta = delta.insert_text(chunk);
-        }
-        if let Out::Node(txt) = map.insert_attr("text", In::Node(Box::new(delta))) {
-            txn.node_mut(txt.id).unwrap()
-        } else {
+        let Out::Node(txt) = map.insert_attr("text", In::Node(Box::new(Delta::new()))) else {
             unreachable!()
+        };
+        let mut txt = txn.node_mut(txt.id).unwrap();
+        for chunk in data {
+            txt.insert_text(0, chunk);
         }
+        txt
     }
 
-    // TODO(unified-api): depends on init_test_data (nested TextPrelim) not yet in new API
     #[test]
     fn force_gc() {
         let mut doc = Doc::with_options(Options {
@@ -2436,7 +2436,6 @@ mod test {
         assert_matches!(&block, &Block::GC(_));
     }
 
-    // TODO(unified-api): depends on init_test_data (nested TextPrelim) + cast::<TextRef> not yet in new API
     #[test]
     fn force_gc_with_delete_set() {
         let mut doc = Doc::with_options(Options {

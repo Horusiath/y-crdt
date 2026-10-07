@@ -337,6 +337,9 @@ where
 
     /// Removes `len` elements starting at `index`.
     pub fn remove(&mut self, index: u32, len: u32) {
+        if len == 0 {
+            return;
+        }
         if let Some(mut cursor) = Cursor::at(self.ptr, self.txn.doc.offset_kind(), index) {
             cursor.remove(&mut self.txn, len);
         }

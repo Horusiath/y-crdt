@@ -319,7 +319,7 @@ fn iter_array_containing_types() {
         match value {
             Out::Node(n) => {
                 let actual = txn.node(n.id).unwrap().to_json();
-                assert_eq!(actual, any!({"value": (i as f64) }))
+                assert_eq!(actual, any!({"attrs": {"value": (i as f64) }}))
             }
             _ => panic!("Value of array at index {} was no YMap", i),
         }
@@ -479,19 +479,15 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let mut txn = doc.transact_mut();
         let mut yarray = txn.node_mut("array").unwrap();
         let mut pos = rng.between(0, yarray.len()) as usize;
-        if let Any::Array(expected) = yarray.to_json() {
-            let mut expected = Vec::from(expected.as_ref());
-            yarray.insert_range(pos as u32, content.clone());
+        let mut expected: Vec<Out> = yarray.iter().collect();
+        yarray.insert_range(pos as u32, content.clone());
 
-            for any in content {
-                expected.insert(pos, any);
-                pos += 1;
-            }
-            let actual = yarray.to_json();
-            assert_eq!(actual, Any::from(expected))
-        } else {
-            panic!("should not happen")
+        for any in content {
+            expected.insert(pos, Out::Any(any));
+            pos += 1;
         }
+        let actual: Vec<Out> = yarray.iter().collect();
+        assert_eq!(actual, expected);
     }
 
     fn insert_type_array(doc: &mut Doc, rng: &mut Rng) {
@@ -502,8 +498,9 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let Out::Node(array2) = yarray.insert(pos, In::Node(nested.into())) else {
             panic!("expected a nested node")
         };
-        let expected: Arc<[Any]> = (1..=4).map(|i| Any::Number(i as f64)).collect();
-        assert_eq!(txn.node(array2.id).unwrap().to_json(), Any::Array(expected));
+        let expected: Vec<Out> = (1..=4).map(|i| Out::Any(Any::Number(i as f64))).collect();
+        let actual: Vec<Out> = txn.node(array2.id).unwrap().iter().collect();
+        assert_eq!(actual, expected);
     }
 
     fn insert_type_map(doc: &mut Doc, rng: &mut Rng) {
@@ -536,14 +533,11 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
                     }
                 }
             } else {
-                if let Any::Array(old_content) = yarray.to_json() {
-                    let mut old_content = Vec::from(old_content.as_ref());
-                    yarray.remove(pos, del_len);
-                    old_content.drain(pos as usize..(pos + del_len) as usize);
-                    assert_eq!(yarray.to_json(), Any::from(old_content));
-                } else {
-                    panic!("should not happen")
-                }
+                let mut old_content: Vec<Out> = yarray.iter().collect();
+                yarray.remove(pos, del_len);
+                old_content.drain(pos as usize..(pos + del_len) as usize);
+                let actual: Vec<Out> = yarray.iter().collect();
+                assert_eq!(actual, old_content);
             }
         }
     }
