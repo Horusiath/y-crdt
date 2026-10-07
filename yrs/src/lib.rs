@@ -125,13 +125,13 @@
 //! text.insert_text_fmt(6, "world", &italic);
 //! text.format(0, 5, &bold);
 //!
-//! assert_eq!(text.xml_string().to_string(), "<b>hello</b> <i>world</i>");
+//! assert_eq!(text.format_xml().to_string(), "<b>hello</b> <i>world</i>");
 //!
 //! // remove formatting
 //! let remove_italic = Attrs::from([("i".into(), Any::Null)]);
 //! text.format(6, 5, &remove_italic);
 //!
-//! assert_eq!(text.xml_string().to_string(), "<b>hello</b> world");
+//! assert_eq!(text.format_xml().to_string(), "<b>hello</b> world");
 //!
 //! // insert binary payload eg. images
 //! let image = b"deadbeaf".to_vec();

@@ -458,19 +458,19 @@ fn test_data_set<P: AsRef<std::path::Path>>(path: P) {
             let update = Update::decode_v1(decoder.read_buf().unwrap()).unwrap();
             doc.transact_mut().apply_update(update).unwrap();
         }
-        let txn = doc.transact();
-        let txt = txn.node("text").unwrap();
-        let map = txn.node("map").unwrap();
-        let arr = txn.node("array").unwrap();
+        let mut txn = doc.transact_mut();
 
+        let txt = txn.node_mut("text").unwrap();
         let expected = decoder.read_string().unwrap();
         let actual = txt.to_string();
         assert_eq!(actual, expected, "failed at {} run", test_num);
 
+        let map = txn.node_mut("map").unwrap();
         let expected = decoder.read_any().unwrap();
         let actual = map.to_json();
         assert_eq!(actual, expected, "failed at {} run", test_num);
 
+        let arr = txn.node_mut("array").unwrap();
         let expected = decoder.read_any().unwrap();
         assert_eq!(arr.to_json(), expected, "failed at {} run", test_num);
     }
