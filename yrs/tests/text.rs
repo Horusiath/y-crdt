@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use yrs::lib0::{Decode, Encode};
 use yrs::node::{Attrs, Observable};
-use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
+use yrs::test_utils::{RngExt, attribute_all, exchange_updates, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Cell, ClientID, Delta, DeltaOptions, Doc, IdSet, In, OffsetKind, Op,
-    Options, Out, Snapshot, StateVector, Update, any,
+    Acquire, AcquireMut, Any, Attribute, Attribution, AttributionsFormatter, Cell, ClientID,
+    ContentAttribute, ContentIds, ContentMap, Delta, DeltaOptions, Doc, IdMap, IdSet, In,
+    OffsetKind, Op, Options, Out, Snapshot, SnapshotFormatter, StateVector, Update, any,
 };
 
 #[test]
@@ -994,12 +995,9 @@ fn snapshots() {
     let txn = doc.transact();
     let text = txn.node("text").unwrap();
     let diff = text.delta(&DeltaOptions {
-        retain_inserts: true,
-        retain_deletes: false,
-        deep: false,
-        link_depth: 0,
         items_to_render: Some(IdSet::from(next.state_map).diff(&IdSet::from(prev.state_map))),
         deleted_items: Some(next.delete_set.diff(&prev.delete_set)),
+        ..Default::default()
     });
     assert_eq!(diff, Delta::out().retain(5).insert_text(" world"))
 }
@@ -1187,38 +1185,25 @@ fn delta_snapshots() {
     ); // axx^
     drop(txn);
 
-    let delta_opts = |to: &Snapshot, from: Option<&Snapshot>| {
-        let mut ins = IdSet::from(to.state_map.clone());
-        let mut del = to.delete_set.clone();
-        if let Some(from) = from {
-            ins = ins.diff(&IdSet::from(from.state_map.clone()));
-            del = del.diff(&from.delete_set);
-        }
-        DeltaOptions {
-            retain_inserts: false,
-            retain_deletes: false,
-            deep: true,
-            link_depth: 0,
-            items_to_render: Some(ins),
-            deleted_items: Some(del),
-        }
-    };
-
     let txn = doc.transact();
     let txt = txn.node("text").unwrap();
-    let state1 = txt.delta(&delta_opts(&snapshot1, None));
+    let state1 = txt
+        .formatted(&SnapshotFormatter::single(snapshot1.clone()))
+        .delta(&DeltaOptions::default());
     assert_eq!(state1, Delta::out().insert_text("abcd"));
-    let state2 = txt.delta(&delta_opts(&snapshot2, None));
+    let state2 = txt
+        .formatted(&SnapshotFormatter::single(snapshot2.clone()))
+        .delta(&DeltaOptions::default());
     assert_eq!(state2, Delta::out().insert_text("axcd"));
-    let state2_diff = txt.delta(&delta_opts(&snapshot1, Some(&snapshot2)));
-    assert_eq!(
-        state2_diff,
-        Delta::out()
-            .insert_text("a")
-            .insert_text("x") // added
-            .insert_text("b") // removed
-            .insert_text("cd"),
-    );
+    let state2_diff = txt
+        .formatted(&SnapshotFormatter::new(snapshot1, snapshot2))
+        .delta(&DeltaOptions::default());
+    let expected = Delta::out()
+        .insert_text("a")
+        .insert_text_attributed("x", None, Some(Attribution::insert::<Attribute>([])))
+        .insert_text_attributed("b", None, Some(Attribution::delete::<Attribute>([])))
+        .insert_text("cd");
+    assert_eq!(state2_diff, expected);
 }
 
 #[test]
@@ -1236,16 +1221,8 @@ fn snapshot_delete_after() {
     let mut text = txn.node_mut("text").unwrap();
     text.apply_delta(Delta::new().retain(4).insert_text("e"));
 
-    // TODO(unified-api): snapshot-scoped rendering (`Text::diff_range`) has no `DeltaOptions`
-    // equivalent yet - `items_to_render`/`deleted_items` take an `IdSet`, not a `Snapshot`.
-    let state1 = text.delta(&DeltaOptions {
-        retain_inserts: false,
-        retain_deletes: false,
-        deep: false,
-        link_depth: 0,
-        items_to_render: Some(IdSet::from(snapshot1.state_map)),
-        deleted_items: Some(snapshot1.delete_set),
-    });
+    let fmt = SnapshotFormatter::single(snapshot1);
+    let state1 = text.formatted(&fmt).delta(&DeltaOptions::default());
     assert_eq!(state1, Delta::out().insert_text("abcd"));
 }
 
@@ -1313,21 +1290,13 @@ fn assert_partial_history(total: usize, synced: usize) {
     let mut txn = local.transact_mut();
     let txt = txn.node_mut("text").unwrap();
 
-    // TODO(unified-api): snapshot-scoped rendering (`Text::diff_range`) has no `DeltaOptions`
-    // equivalent yet - `items_to_render`/`deleted_items` take an `IdSet`, not a `Snapshot`.
-    let diff = txt.delta(&DeltaOptions {
-        retain_inserts: false,
-        retain_deletes: false,
-        deep: false,
-        link_depth: 0,
-        items_to_render: Some(snapshot.state_map.into()),
-        deleted_items: Some(snapshot.delete_set),
-    });
+    let fmt = SnapshotFormatter::single(snapshot);
+    let diff = txt.formatted(&fmt).delta(&DeltaOptions::default());
     let text: String = diff
         .children
         .iter()
         .map(|op| match op {
-            Op::InsertText { text, format } => text.clone(),
+            Op::InsertText { text, .. } => text.clone(),
             _ => unreachable!(),
         })
         .collect();
@@ -1363,4 +1332,208 @@ fn apply_update_with_missing_predecessors() {
             .unwrap();
     }
     assert_eq!(local.transact().node("text").unwrap().to_string(), "aaaaaa");
+}
+
+fn italic(value: Any) -> Attrs {
+    Attrs::from([("italic".into(), value)])
+}
+
+#[test]
+fn attributed_content() {
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    doc.transact_mut()
+        .node_mut("text")
+        .unwrap()
+        .insert_text(0, "Hello World!");
+    let delta = Delta::new()
+        .retain_fmt(4, &italic(true.into()))
+        .retain(2)
+        .remove(5)
+        .insert_text("attributions");
+    let ids = {
+        let mut txn = doc.transact_mut();
+        txn.node_mut("text").unwrap().apply_delta(delta);
+        ContentIds::from_transaction(&txn)
+        // {<i>Hell</i>o attributions}
+    };
+    let fmt = attribute_all(&ids);
+    let actual = doc
+        .transact()
+        .node("text")
+        .unwrap()
+        .formatted(&fmt)
+        .delta(&DeltaOptions::default());
+    let expected = Delta::out()
+        .insert_text_attributed(
+            "Hell",
+            Some(&italic(true.into())),
+            Some(Attribution::format::<Attribute>("italic", [])),
+        )
+        .insert_text("o ")
+        .insert_text_attributed("World", None, Some(Attribution::delete::<Attribute>([])))
+        .insert_text_attributed(
+            "attributions",
+            None,
+            Some(Attribution::insert::<Attribute>([])),
+        )
+        .insert_text("!");
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn attributed_content_unformat() {
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    {
+        let mut txn = doc.transact_mut();
+        let mut text = txn.node_mut("text").unwrap();
+        text.insert_text(0, "Hello World!");
+        let delta = Delta::new()
+            .retain_fmt(4, &italic(true.into()))
+            .retain(2)
+            .remove(5)
+            .insert_text("attributions");
+        text.apply_delta(delta); // {<i>Hell</i>o attributions}
+    }
+    let unformat = Delta::new().retain_fmt(5, &italic(Any::Null));
+    let ids = {
+        let mut txn = doc.transact_mut();
+        txn.node_mut("text").unwrap().apply_delta(unformat);
+        ContentIds::from_transaction(&txn)
+        // {Hello attributions}
+    };
+    let fmt = attribute_all(&ids);
+    let actual = doc
+        .transact()
+        .node("text")
+        .unwrap()
+        .formatted(&fmt)
+        .delta(&DeltaOptions::default());
+    let expected = Delta::out()
+        .insert_text_attributed(
+            "Hell",
+            None,
+            Some(Attribution::format::<Attribute>("italic", [])),
+        )
+        .insert_text("o attributions!");
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn attributed_diffing() {
+    let mut v0 = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(0))
+    });
+    v0.transact_mut()
+        .node_mut("text")
+        .unwrap()
+        .insert_text(0, "Hello World!");
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    let update = v0
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&update).unwrap())
+        .unwrap();
+    let delta = Delta::new()
+        .retain_fmt(4, &italic(true.into()))
+        .retain(2)
+        .remove(5)
+        .insert_text("attributions");
+    doc.transact_mut()
+        .node_mut("text")
+        .unwrap()
+        .apply_delta(delta); // {<i>Hell</i>o attributions}
+    let diff = ContentIds::doc_diff(&v0, &doc);
+    let attributions = ContentMap::new(
+        IdMap::from_set(&diff.inserts, vec![ContentAttribute::insert("Bob")]),
+        IdMap::from_set(&diff.deletes, vec![ContentAttribute::delete("Bob")]),
+    );
+    let fmt = AttributionsFormatter::new(&attributions);
+    let actual = doc
+        .transact()
+        .node("text")
+        .unwrap()
+        .formatted(&fmt)
+        .delta(&DeltaOptions::default());
+    let expected = Delta::out()
+        .insert_text_attributed(
+            "Hell",
+            Some(&italic(true.into())),
+            Some(Attribution::format("italic", ["Bob"])),
+        )
+        .insert_text("o ")
+        .insert_text_attributed("World", None, Some(Attribution::delete(["Bob"])))
+        .insert_text_attributed("attributions", None, Some(Attribution::insert(["Bob"])))
+        .insert_text("!");
+    assert_eq!(actual, expected);
+}
+
+/// `Hello World!` with ` World` deleted, for `testAttributionsRendererRenderedContent`.
+fn hello_deleted_world() -> Doc {
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    let mut txn = doc.transact_mut();
+    let mut text = txn.node_mut("text").unwrap();
+    text.insert_text(0, "Hello World!");
+    text.remove(5, 6);
+    drop(txn);
+    doc
+}
+
+fn render_with(doc: &Doc, fmt: &AttributionsFormatter) -> Delta {
+    let txn = doc.transact();
+    let text = txn.node("text").unwrap();
+    text.formatted(fmt).delta(&DeltaOptions::default())
+}
+
+#[test]
+fn attributions_formatter_restores_rendered_content() {
+    let doc = hello_deleted_world();
+    let all = ContentIds::from_doc(&doc).inserts;
+    let fmt = AttributionsFormatter::new(&ContentMap::default()).with_rendered_content(all);
+    assert_eq!(
+        render_with(&doc, &fmt),
+        Delta::out().insert_text("Hello World!")
+    );
+}
+
+#[test]
+fn attributions_formatter_hides_unrendered_content() {
+    let doc = hello_deleted_world();
+    let ids = ContentIds::from_doc(&doc);
+    let alive = ids.inserts.diff(&ids.deletes);
+    let hidden = IdSet::from_iter([(ClientID::new(1), [1..5])]); // 'ello'
+    let fmt = AttributionsFormatter::new(&ContentMap::default())
+        .with_rendered_content(alive.diff(&hidden)); // hide 'ello', only `H!` remains visible
+    assert_eq!(render_with(&doc, &fmt), Delta::out().insert_text("H!"));
+}
+
+#[test]
+fn attributions_formatter_renders_attributed_outside_rendered_content() {
+    let doc = hello_deleted_world();
+    let ids = ContentIds::from_doc(&doc);
+    let alive = ids.inserts.diff(&ids.deletes);
+    // attribute deleted ' World' to Bob
+    let deleted = IdSet::from_iter([(ClientID::new(1), [5..11])]); // ' World'
+    let deletes = IdMap::from_set(&deleted, vec![ContentAttribute::delete("bob")]);
+
+    let attributions = ContentMap::new(IdMap::new(), deletes);
+    let fmt = AttributionsFormatter::new(&attributions).with_rendered_content(alive);
+    let expected = Delta::out()
+        .insert_text("Hello")
+        .insert_text_attributed(" World", None, Some(Attribution::delete(["bob"])))
+        .insert_text("!");
+    assert_eq!(render_with(&doc, &fmt), expected);
 }

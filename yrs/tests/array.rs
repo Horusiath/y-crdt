@@ -458,8 +458,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use yrs::lib0::Decode;
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Cell, ClientID, Delta, Doc, ID, In, NodeID, Out, StateVector, Update,
-    any,
+    Acquire, AcquireMut, Any, Attribute, Cell, ClientID, Delta, Doc, ID, In, NodeID, Out,
+    StateVector, Update, any,
 };
 
 static UNIQUE_NUMBER: AtomicI64 = AtomicI64::new(0);
@@ -669,4 +669,45 @@ fn insert_empty_range() {
     let array = txn.node("array").unwrap();
 
     assert_eq!(array.iter().collect::<Vec<_>>(), vec![1.into(), 2.into()]);
+}
+
+#[test]
+fn attributed_content() {
+    use yrs::test_utils::attribute_all;
+    use yrs::{Attribution, ClientID, ContentIds, DeltaOptions, Options};
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    doc.transact_mut()
+        .node_mut("array")
+        .unwrap()
+        .insert_range(0, [1, 2]); // [1,2]
+    let ids = {
+        let mut txn = doc.transact_mut();
+        let mut array = txn.node_mut("array").unwrap();
+        array.remove(0, 1); // [2]
+        array.insert(1, 42); // [2, 42]
+        ContentIds::from_transaction(&txn)
+    };
+    let fmt = attribute_all(&ids);
+    let txn = doc.transact();
+    let actual = txn
+        .node("array")
+        .unwrap()
+        .formatted(&fmt)
+        .delta(&DeltaOptions::default());
+    let expected = Delta::out()
+        .insert_range_attributed(
+            [Out::from(1)],
+            None,
+            Some(Attribution::delete::<Attribute>([])),
+        )
+        .insert(2)
+        .insert_range_attributed(
+            [Out::from(42)],
+            None,
+            Some(Attribution::insert::<Attribute>([])),
+        );
+    assert_eq!(actual, expected);
 }

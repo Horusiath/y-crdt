@@ -266,7 +266,7 @@ impl Block {
 
     pub fn range(&self) -> BlockRange {
         match self {
-            Block::Item(item) => BlockRange::new(item.id, item.len),
+            Block::Item(item) => item.range(),
             Block::GC(gc) => gc.clone(),
             Block::Skip(skip) => skip.clone(),
         }
@@ -1325,22 +1325,31 @@ impl BlockRange {
         }
     }
 
+    #[inline]
     pub fn id(&self) -> ID {
         ID::new(self.client, self.clock)
     }
 
     /// Returns an [ID] of the last update fitting into the bounds of current [BlockRange]
+    #[inline]
     pub fn last_id(&self) -> ID {
         ID::new(self.client, self.clock + self.len)
     }
 
+    #[inline]
     pub fn clock_end(&self) -> u32 {
         self.clock + self.len
     }
 
+    #[inline]
     /// Returns a range describing the clocks covered by this [BlockRange].
     pub fn clock_range(&self) -> Range<u32> {
         self.clock..(self.clock + self.len)
+    }
+
+    #[inline]
+    pub fn subrange(&self, range: Range<u32>) -> Self {
+        BlockRange::new(ID::new(self.client, range.start), range.end - range.start)
     }
 
     /// Trim a number of countable elements from the beginning of a current slice.

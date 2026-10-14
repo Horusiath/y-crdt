@@ -1,3 +1,4 @@
+use crate::formatter::{DefaultFormatter, DeltaFormatter};
 use crate::node::{Node, NodePtr, Path};
 use crate::node_ref::get_delta;
 use crate::transaction::Subdocs;
@@ -144,7 +145,13 @@ impl<'txn> Event<'txn> {
 
     /// A path from the node this event's observer is registered on, down to [Event::target].
     pub fn path(&self) -> Path {
-        Node::path(self.current_target, self.target)
+        self.path_fmt(&DefaultFormatter)
+    }
+
+    /// Like [Event::path], with indexes counted in content formatted by `fmt`.
+    pub fn path_fmt<F: DeltaFormatter>(&self, fmt: &F) -> Path {
+        let kind = self.txn.doc.offset_kind();
+        Node::path(self.current_target, self.target, kind, fmt)
     }
 
     /// Whether children changed.
@@ -174,9 +181,16 @@ impl<'txn> Event<'txn> {
         let delta = cache.get_or_insert_with(|| {
             // events are only created for committed transactions, which always have a state
             let state = txn.state.as_deref().unwrap();
-            Box::new(get_delta(txn.doc, state, target, deep))
+            Box::new(get_delta(txn.doc, state, target, deep, &DefaultFormatter))
         });
         (**delta).clone()
+    }
+
+    /// Changes made to [Event::target] within this transaction, formatted via custom formatter `f`.
+    pub fn delta_fmt<F: DeltaFormatter>(&mut self, deep: bool, f: &F) -> Delta<Out> {
+        // events are only created for committed transactions, which always have a state
+        let state = self.txn.state.as_deref().unwrap();
+        get_delta(self.txn.doc, state, self.target, deep, f)
     }
 
     /// Check if given element was deleted by this event.

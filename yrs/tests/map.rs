@@ -7,8 +7,8 @@ use yrs::lib0::Decode;
 use yrs::node::{DeepObservable, Observable, Path, PathSegment};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Cell, Delta, Doc, DocHandle, In, NodeRef, Out, StateVector,
-    Transaction, Update, any,
+    Acquire, AcquireMut, Any, Attribute, Cell, Delta, Doc, DocHandle, In, NodeRef, Out,
+    StateVector, Transaction, Update, any,
 };
 
 #[test]
@@ -752,4 +752,50 @@ fn test_delete_not_applied_map() {
     let keys_a: Vec<_> = root_a.attr_keys().collect();
     let keys_b: Vec<_> = root_b.attr_keys().collect();
     assert_eq!(keys_a, keys_b);
+}
+
+#[test]
+fn attributed_content() {
+    use yrs::test_utils::attribute_all;
+    use yrs::{Attribution, ClientID, ContentIds, DeltaOptions, Options};
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    fn render(doc: &Doc, ids: &ContentIds) -> Delta<Out> {
+        let fmt = attribute_all(ids);
+        let txn = doc.transact();
+        txn.node("map")
+            .unwrap()
+            .formatted(&fmt)
+            .delta(&DeltaOptions::default())
+    };
+    let inserted = Some(Attribution::insert::<Attribute>([]));
+
+    let ids = {
+        let mut txn = doc.transact_mut();
+        txn.node_mut("map").unwrap().insert_attr("test", 42); // {"test":42}
+        ContentIds::from_transaction(&txn)
+    };
+    let expected = Delta::out().insert_attr_attributed("test", 42, inserted.clone());
+    assert_eq!(render(&doc, &ids), expected, "initial value");
+
+    let ids = {
+        let mut txn = doc.transact_mut();
+        txn.node_mut("map")
+            .unwrap()
+            .insert_attr("test", "fourtytwo"); // {"test":"fourtytwo"}
+        ContentIds::from_transaction(&txn)
+    };
+    let expected = Delta::out().insert_attr_attributed("test", "fourtytwo", inserted);
+    assert_eq!(render(&doc, &ids), expected, "overwrite value");
+
+    let ids = {
+        let mut txn = doc.transact_mut();
+        txn.node_mut("map").unwrap().remove_attr("test"); // {}
+        ContentIds::from_transaction(&txn)
+    };
+    let deleted = Some(Attribution::delete::<Attribute>([]));
+    let expected = Delta::out().insert_attr_attributed("test", "fourtytwo", deleted);
+    assert_eq!(render(&doc, &ids), expected, "delete value");
 }

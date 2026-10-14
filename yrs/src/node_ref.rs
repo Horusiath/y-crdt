@@ -1,19 +1,24 @@
-use crate::block::{ID, ItemContent, ItemPtr, split_str};
+use crate::block::{BlockRange, ID, ItemContent, ItemPtr, split_str};
 use crate::cursor::Cursor;
-use crate::delta::{AttrOp, Op};
+use crate::delta::{AttrOp, Attribution, Op};
+use crate::formatter::{
+    AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, RenderMode,
+};
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::lib0;
-use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, TypePtr, TypeRef};
+use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRef};
 use crate::slice::BlockSlice;
 use crate::transaction::DocHandle;
-use crate::{Any, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, Transaction, TransactionState};
+use crate::{
+    Any, Assoc, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, StickyIndex, Transaction,
+    TransactionState,
+};
 use serde::Deserialize;
 use serde::de::value::{MapDeserializer, SeqDeserializer};
 use serde::de::{
     DeserializeOwned, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, Visitor,
 };
-use smallvec::SmallVec;
 use std::collections::{Bound, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut, Range, RangeBounds};
@@ -42,6 +47,71 @@ impl<T> NodeRef<T> {
     pub fn id(&self) -> NodeID {
         self.ptr.id()
     }
+
+    /// A view of this node rendered through a formatter `fmt`.
+    pub fn formatted<'f, F: DeltaFormatter>(&self, fmt: &'f F) -> Formatted<'f, &Self, F> {
+        Formatted { node: self, fmt }
+    }
+
+    /// A mutable view of this node rendered through a formatter `fmt`.
+    pub fn formatted_mut<'f, F: DeltaFormatter>(
+        &mut self,
+        fmt: &'f F,
+    ) -> Formatted<'f, &mut Self, F> {
+        Formatted { node: self, fmt }
+    }
+}
+
+/// A view of a node rendered through a formatter (see: [NodeRef::formatted]).
+pub struct Formatted<'f, N, F> {
+    node: N,
+    fmt: &'f F,
+}
+
+impl<'f, 'n, T, D, F> Formatted<'f, &'n NodeRef<T>, F>
+where
+    T: Deref<Target = Transaction<D>>,
+    D: DocHandle,
+    F: DeltaFormatter,
+{
+    /// Returns a delta representation of this node's contents.
+    pub fn delta(&self, options: &DeltaOptions) -> Delta {
+        self.node.render(self.fmt, options)
+    }
+
+    /// Returns a [StickyIndex] equivalent to a formatted `index`.
+    pub fn sticky_index(&self, index: u32, assoc: Assoc) -> Option<StickyIndex> {
+        StickyIndex::at_fmt(self.node.txn(), self.node.ptr, index, assoc, self.fmt)
+    }
+
+    /// A path from the root type down to this node.
+    pub fn path(&self) -> Path {
+        let mut root = self.node.ptr;
+        while let Some(item) = root.item {
+            root = *item.parent.as_node().unwrap();
+        }
+        let kind = self.node.txn().doc().offset_kind();
+        Node::path(root, self.node.ptr, kind, self.fmt)
+    }
+}
+
+impl<'f, 'n, T, D, F> Formatted<'f, &'n mut NodeRef<T>, F>
+where
+    T: DerefMut<Target = Transaction<D>>,
+    D: DocHandle + DerefMut,
+    F: DeltaFormatter,
+{
+    /// Returns a delta representation of this node's contents.
+    pub fn delta(&self, options: &DeltaOptions) -> Delta {
+        self.node.render(self.fmt, options)
+    }
+
+    /// Applies a sequence of delta operations, with indexes counted in formatted content.
+    pub fn apply_delta(&mut self, delta: Delta<In>) {
+        let ptr = self.node.ptr;
+        let (doc, state) = self.node.txn.split_mut();
+        apply_delta(doc, state, ptr, delta, self.fmt)
+    }
 }
 
 // read operations
@@ -54,8 +124,13 @@ where
         &self.txn
     }
 
-    fn seek(&self, index: u32) -> Option<Cursor> {
-        Cursor::at(self.ptr, self.txn.doc.offset_kind(), index)
+    fn seek(&self, index: u32) -> Option<Cursor<'static>> {
+        Cursor::at(
+            self.ptr,
+            self.txn.doc.offset_kind(),
+            &DefaultFormatter,
+            index,
+        )
     }
 
     /// The parent type, or `None` for root-level types.
@@ -193,6 +268,10 @@ where
 
     /// Returns a delta representation of this type's contents.
     pub fn delta(&self, options: &DeltaOptions) -> Delta {
+        self.render(&DefaultFormatter, options)
+    }
+
+    fn render<F: DeltaFormatter>(&self, fmt: &F, options: &DeltaOptions) -> Delta {
         let items = match (&options.items_to_render, &options.deleted_items) {
             (None, None) => None,
             (Some(inserted), None) => Some(inserted.clone()),
@@ -204,19 +283,24 @@ where
                 Some(items)
             }
         };
-        let modified = if let Some(items) = &items
-            && options.deep
-        {
-            Some(self.compute_modified(items))
-        } else {
-            None
+        let computed;
+        let modified = match (&options.modified, &items) {
+            (Some(modified), _) => Some(modified),
+            (None, Some(items)) if options.deep => {
+                computed = self.compute_modified(items);
+                Some(&computed)
+            }
+            _ => None,
         };
-        let render = NodeFormatter {
+        let render = DeltaWalk {
+            fmt,
             encoding: self.txn.doc.options.offset_kind,
             items,
+            inserted_items: options.inserted_items.as_ref(),
             deleted: options.deleted_items.as_ref(),
-            modified: modified.as_ref(),
+            modified,
             retain_inserts: options.retain_inserts,
+            retain_deletes: options.retain_deletes,
             deep: options.deep,
             link_depth: options.link_depth,
         };
@@ -343,7 +427,8 @@ where
         if len == 0 {
             return;
         }
-        if let Some(mut cursor) = Cursor::at(self.ptr, self.txn.doc.offset_kind(), index) {
+        let kind = self.txn.doc.offset_kind();
+        if let Some(mut cursor) = Cursor::at(self.ptr, kind, &DefaultFormatter, index) {
             let (doc, state) = self.txn.split_mut();
             cursor.remove(doc, state, len);
         }
@@ -395,56 +480,67 @@ where
     /// Applies a sequence of delta operations to this type.
     pub fn apply_delta(&mut self, delta: Delta<In>) {
         let (doc, state) = self.txn.split_mut();
-        apply_delta(doc, state, self.ptr, delta)
+        apply_delta(doc, state, self.ptr, delta, &DefaultFormatter);
     }
 }
 
-/// Applies a sequence of delta operations to a given `node`.
-pub(crate) fn apply_delta(
+/// Applies a sequence of delta operations to a given `node`, with indexes counted in content
+/// formatted by `fmt`.
+pub(crate) fn apply_delta<F: DeltaFormatter>(
     doc: &mut Doc,
     state: &mut TransactionState,
     node: NodePtr,
     delta: Delta<In>,
+    fmt: &F,
 ) {
     if node.item.map(|item| item.is_deleted()).unwrap_or(false) {
         return; // current node is already deleted
     }
 
     if !delta.children.is_empty() {
-        apply_ops(doc, state, node, delta.children);
+        apply_ops(doc, state, node, delta.children, fmt);
     }
 
     if !delta.attrs.is_empty() {
-        apply_attr_ops(doc, state, node, delta.attrs)
+        apply_attr_ops(doc, state, node, delta.attrs, fmt)
     }
 }
 
-fn apply_ops(doc: &mut Doc, state: &mut TransactionState, node: NodePtr, ops: Vec<Op<In>>) {
-    let mut cursor = Cursor::new(node, doc.offset_kind());
+fn apply_ops<F: DeltaFormatter>(
+    doc: &mut Doc,
+    state: &mut TransactionState,
+    node: NodePtr,
+    ops: Vec<Op<In>>,
+    fmt: &F,
+) {
+    let mut cursor = Cursor::new(node, doc.offset_kind(), fmt);
     for op in ops {
         match op {
-            Op::Retain { len, format: None } => {
+            Op::Retain {
+                len, format: None, ..
+            } => {
                 let n = cursor.forward(len);
                 assert_eq!(n, len)
             }
             Op::Retain {
                 len,
                 format: Some(attrs),
+                ..
             } => {
                 let n = cursor.format(doc, state, len, &attrs);
                 assert_eq!(n, len)
             }
-            Op::InsertText { text, format } => {
+            Op::InsertText { text, format, .. } => {
                 cursor.insert_text(doc, state, &text, format.as_deref());
             }
-            Op::Insert { items, format } => {
+            Op::Insert { items, format, .. } => {
                 cursor.insert_range(doc, state, items, format.as_deref());
             }
             Op::Remove { len, .. } => {
                 let n = cursor.remove(doc, state, len);
                 assert_eq!(n, len)
             }
-            Op::Modify { delta, format } => {
+            Op::Modify { .. } => {
                 cursor.skip_hidden();
                 let item = cursor.right().unwrap();
                 //assert_matches!(item.content, ItemContent::Node { .. });
@@ -454,11 +550,12 @@ fn apply_ops(doc: &mut Doc, state: &mut TransactionState, node: NodePtr, ops: Ve
     }
 }
 
-fn apply_attr_ops(
+fn apply_attr_ops<F: DeltaFormatter>(
     doc: &mut Doc,
     state: &mut TransactionState,
     node: NodePtr,
     attrs: HashMap<Arc<str>, AttrOp<In>>,
+    fmt: &F,
 ) {
     for (key, op) in attrs {
         match op {
@@ -468,8 +565,10 @@ fn apply_attr_ops(
             AttrOp::Remove { .. } => {
                 node.remove(doc, state, &key);
             }
-            AttrOp::Modify { delta } => match node.map.get(&key).copied() {
-                Some(item) => apply_delta(doc, state, item.as_node().unwrap(), *delta),
+            AttrOp::Modify { delta, .. } => match node.map.get(&key).copied() {
+                Some(item) => {
+                    apply_delta(doc, state, item.as_node().unwrap(), *delta, fmt);
+                }
                 None => {
                     state
                         .create_map_item(doc, node, key, In::Node(delta))
@@ -736,12 +835,11 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DeltaOptions {
     /// If `true`, retain formatter inserts with attributions.
     pub retain_inserts: bool,
-    /// If `true`, retain formatter+attributed deletes only. Yrs has no attribution renderer yet,
-    /// therefore deletes are never attributed and this option has no effect (see: [NodeRef::delta]).
+    /// If `true`, attributed deletes are retained instead of being rendered as inserts.
     pub retain_deletes: bool,
     /// Render child types as delta.
     pub deep: bool,
@@ -750,35 +848,39 @@ pub struct DeltaOptions {
     /// Default: 0 (don't jump through links).
     pub link_depth: u32,
     pub items_to_render: Option<IdSet>,
+    /// Ids inserted by the change being rendered. Content both inserted and deleted by it renders
+    /// as a fresh insert, even with `retain_deletes`.
+    pub inserted_items: Option<IdSet>,
     /// Used for computing `prev` in attributes.
     pub deleted_items: Option<IdSet>,
-}
-
-impl Default for DeltaOptions {
-    fn default() -> Self {
-        DeltaOptions {
-            retain_inserts: false,
-            retain_deletes: false,
-            link_depth: 0,
-            deep: false,
-            items_to_render: None,
-            deleted_items: None,
-        }
-    }
+    /// Nodes to render as modified children. Computed from `items_to_render` if not given.
+    pub modified: Option<Modified>,
 }
 
 /// Nodes that should be formatter as modified children, mapped onto the keys changed within them.
 /// A `None` key marks a change made to node's children.
-pub(crate) type Modified = HashMap<NodePtr, HashSet<Option<Arc<str>>>>;
+pub type Modified = HashMap<NodePtr, HashSet<Option<Arc<str>>>>;
 
-pub(crate) fn get_delta(doc: &Doc, state: &TransactionState, node: NodePtr, deep: bool) -> Delta {
+/// Renders changes of a transaction `state` made to a `node` (event delta).
+pub(crate) fn get_delta<F: DeltaFormatter>(
+    doc: &Doc,
+    state: &TransactionState,
+    node: NodePtr,
+    deep: bool,
+    fmt: &F,
+) -> Delta {
     // content that was both inserted AND deleted by this transaction is normally invisible — but a
-    // renderer may still render it (e.g. remote content integrated under a suggestion-deleted
-    // parent is auto-deleted yet rendered with a delete attribution). Render
-    // `(I ∪ D) − ((I ∩ D) − renderer.attributed)`: the symmetric difference plus the attributed
-    // part of the intersection.
+    // formatter may still render it. Render `(I ∪ D) − ((I ∩ D) − fmt.attributed)`: the symmetric
+    // difference plus the attributed part of the intersection.
     let mut items = state.insert_set.diff(&state.delete_set);
     items.merge_with(state.delete_set.diff(&state.insert_set));
+    let both = state.insert_set.intersect(&state.delete_set);
+    if !both.is_empty() {
+        let attributed = fmt.attributed();
+        if !attributed.is_empty() {
+            items.merge_with(both.intersect(attributed));
+        }
+    }
     let deep_modified;
     let modified = if deep {
         deep_modified = expand_modified(&state.changed);
@@ -786,12 +888,15 @@ pub(crate) fn get_delta(doc: &Doc, state: &TransactionState, node: NodePtr, deep
     } else {
         &state.changed
     };
-    let render = NodeFormatter {
+    let render = DeltaWalk {
+        fmt,
         encoding: doc.options.offset_kind,
         items: Some(items),
+        inserted_items: Some(&state.insert_set),
         deleted: None,
         modified: Some(modified),
         retain_inserts: false,
+        retain_deletes: true,
         deep,
         link_depth: 0,
     };
@@ -853,7 +958,7 @@ impl XmlFormat {
                             Self::delta_fmt(delta, f)?;
                         }
                     }
-                    AttrOp::Modify { delta } => {}
+                    AttrOp::Modify { .. } => {}
                     _ => { /* ignore */ }
                 }
                 write!(f, "\"")?;
@@ -864,7 +969,7 @@ impl XmlFormat {
         for op in delta.children.iter() {
             let mut attrs = Vec::new();
             match op {
-                Op::InsertText { text, format } => {
+                Op::InsertText { text, format, .. } => {
                     if let Some(format) = format.as_deref() {
                         for (key, value) in format.iter() {
                             attrs.push((key, value));
@@ -900,7 +1005,7 @@ impl XmlFormat {
                         }
                     }
                 }
-                Op::Modify { delta, format } => {}
+                Op::Modify { .. } => {}
                 _ => { /* ignore */ }
             }
         }
@@ -918,23 +1023,90 @@ impl std::fmt::Display for XmlFormat {
     }
 }
 
-/// Renders a [Node] as a [Delta] - a port of Yjs `YType.toDelta`.
-struct NodeFormatter<'a> {
+struct DeltaWalk<'a, F: DeltaFormatter> {
+    fmt: &'a F,
     encoding: OffsetKind,
     /// If `None` renders the full node state.
     /// Otherwise, will render only changes marked on [IdSet].
     items: Option<IdSet>,
+    /// Ids inserted by the change being rendered; content that is both in `insertedItems`
+    /// and deleted renders as a *fresh* insert even under `retainDeletes` (it was never part
+    /// of the consuming state)
+    inserted_items: Option<&'a IdSet>,
     /// Ids deleted by the change being formatter. Used to resolve previous values of attributes.
     deleted: Option<&'a IdSet>,
     modified: Option<&'a Modified>,
-    /// If `true`, formatter inserts are retained instead of being formatter as inserts.
+    /// If `true`, retain rendered inserts with attributions.
     retain_inserts: bool,
+    /// If `true`, retain rendered+attributed deletes only.
+    retain_deletes: bool,
     /// Render child nodes as delta.
     deep: bool,
     link_depth: u32,
 }
 
-impl<'a> NodeFormatter<'a> {
+#[derive(Default)]
+struct WalkState {
+    /// Saves all current formats for insert
+    current: Attrs,
+    /// Saves changed formats for retain
+    changed: Attrs,
+    /// The value before changes
+    prev: Attrs,
+    /// Logic for format attribution
+    /// Everything that comes after a format is formatted by the user that created it.
+    /// Two exceptions:
+    /// - the user resets formatting to the previously known formatting that is not attributed
+    /// - the user deletes a format and hence restores the previously known formatting
+    ///   that is not attributed.
+    prev_unattributed: Attrs,
+    used_attribution: Option<Attribution>,
+}
+
+impl WalkState {
+    fn data(&self, own: Option<&Attribution>) -> Option<Attribution> {
+        Attribution::combine_data(self.used_attribution.as_ref(), own)
+    }
+
+    fn instr(&self, own: Option<&Attribution>) -> Option<Attribution> {
+        Attribution::combine(self.used_attribution.as_ref(), own)
+    }
+
+    /// Attribution of an instruction which clears its own former attribution when it has none.
+    fn instr_or_clear(&self, own: Option<Attribution>) -> Option<Attribution> {
+        match (own, &self.used_attribution) {
+            (Some(own), _) => self.instr(Some(&own)),
+            (None, None) => Some(Attribution::default()),
+            // lib0 emits `{ insert: null, delete: null, .. }` over the ambient attribution,
+            // which can't be expressed here: keep only the ambient format attribution
+            (None, Some(used)) => Some(Attribution {
+                format: used.format.clone(),
+                format_at: used.format_at,
+                ..Attribution::default()
+            }),
+        }
+    }
+
+    /// Recomputes the retain diff of a format `key`: previous → current.
+    fn update_changed(&mut self, key: &Arc<str>) {
+        let current = self.current.get(key).unwrap_or(&Any::Null);
+        if current == self.prev.get(key).unwrap_or(&Any::Null) {
+            self.changed.remove(key);
+        } else {
+            self.changed.insert(key.clone(), current.clone());
+        }
+    }
+}
+
+/// Piece-wise op sizes: string-ish content by length, other content one per piece.
+fn piece_count(content: Option<&ItemContent>, len: u32) -> u32 {
+    match content {
+        None | Some(ItemContent::String(_)) | Some(ItemContent::Deleted(_)) => len,
+        _ => 1,
+    }
+}
+
+impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
     fn node(&self, node: NodePtr) -> Delta {
         let attrs_to_render = self.modified.as_ref().and_then(|m| m.get(&node));
         let render_children =
@@ -958,7 +1130,6 @@ impl<'a> NodeFormatter<'a> {
         delta
     }
 
-    /// Port of Yjs `typeMapGetDelta`. When `keys` are given, only these attributes are formatter.
     fn attrs(&self, d: &mut Delta, node: NodePtr, keys: Option<&HashSet<Option<Arc<str>>>>) {
         match keys {
             None => {
@@ -977,32 +1148,98 @@ impl<'a> NodeFormatter<'a> {
     }
 
     fn attr(&self, d: &mut Delta, key: &Arc<str>, item: ItemPtr) {
-        let child = item.content.as_node();
-        let op = if item.is_deleted() {
-            // Hard-deleted attribute within a change render: emit the `deleteAttr` op so consumers (the
-            // `YEvent` delta, RDT bindings, the maintained `delta` cache) can apply the removal. In
-            // full-state mode (`itemsToRender == null`) the attribute is simply omitted (above renders
-            // run with `render === false` for such items, so nothing was emitted before either).
-            if let Some(items) = &self.items
-                && items.contains(&item.last_id())
-            {
-                AttrOp::remove(self.deleted.and_then(|_| item.content.get_last()))
-            } else {
-                return;
+        let mut pieces = Vec::new();
+        let (deleted, attribution, content) = if !self.fmt.contains(&item) {
+            (item.is_deleted(), None, Some(&item.content))
+        } else {
+            let fmt: &'a F = self.fmt;
+            let range = BlockRange::new(item.id, item.len());
+            fmt.read_content(&mut pieces, &item, range, RenderMode::Visible);
+            let Some(p) = pieces.last() else {
+                return; // the formatter surfaces nothing for this attribute
+            };
+            let content = match p.content {
+                AttributedFragmentKind::Own => Some(&item.content),
+                AttributedFragmentKind::Restored { content, .. } => Some(content),
+                AttributedFragmentKind::Opaque => None,
+            };
+            let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
+            (p.deleted, attribution, content)
+        };
+        let child = content.and_then(ItemContent::as_node);
+        let op = if deleted {
+            match attribution {
+                // deleted attributed value is still visible: render it with its attribution
+                Some(attribution) => {
+                    let changed = match &self.items {
+                        None => true,
+                        Some(items) => {
+                            items.contains(&item.last_id())
+                                || child.is_some_and(|c| self.is_modified(c))
+                        }
+                    };
+                    if !changed {
+                        return;
+                    }
+                    let value = match child {
+                        Some(child) => self.full_value(child),
+                        None => match content.and_then(ItemContent::get_last) {
+                            Some(value) => value,
+                            None => return,
+                        },
+                    };
+                    AttrOp::Update {
+                        value,
+                        prev: self.prev_attr(item),
+                        attribution: Some(Box::new(attribution)),
+                    }
+                }
+                // Hard-deleted attribute within a change render: emit the remove op. In a full
+                // render the attribute is simply omitted.
+                None => match &self.items {
+                    Some(items) if items.contains(&item.last_id()) => {
+                        AttrOp::remove(self.deleted.and_then(|_| item.content.get_last()))
+                    }
+                    _ => return,
+                },
             }
-        } else if let Some(child) = child.filter(|child| self.is_modified(*child)) {
+        } else if let Some(child) = child.filter(|child| self.deep && self.is_modified(*child)) {
             AttrOp::modify(self.node(child))
         } else {
             let value = match child {
                 Some(child) => self.node_value(child),
-                None => match item.content.get_last() {
+                None => match content.and_then(ItemContent::get_last) {
                     Some(value) => value,
                     None => return,
                 },
             };
-            AttrOp::update(value, self.prev_attr(item))
+            AttrOp::Update {
+                value,
+                prev: self.prev_attr(item),
+                attribution: attribution.map(Box::new),
+            }
         };
         d.attrs.insert(key.clone(), op);
+    }
+
+    /// Value of a deleted, but still rendered attribute: a full-state render of its node.
+    fn full_value(&self, node: NodePtr) -> Out {
+        if !self.deep {
+            return Out::node(node.id());
+        }
+        let walk = DeltaWalk {
+            fmt: self.fmt,
+            encoding: self.encoding,
+            items: None,
+            inserted_items: None,
+            deleted: None,
+            modified: None,
+            retain_inserts: false,
+            retain_deletes: false,
+            deep: true,
+            link_depth: self.link_depth,
+        };
+        walk.node_value(node)
     }
 
     fn prev_attr(&self, item: ItemPtr) -> Option<Out> {
@@ -1044,78 +1281,296 @@ impl<'a> NodeFormatter<'a> {
     }
 
     fn children(&self, d: &mut Delta, node: NodePtr) {
-        let mut current_formats = Attrs::new(); // saves all current formats for insert
-        let mut changed_formats = Attrs::new(); // saves changed formats for retain
-        let mut previous_formats = Attrs::new(); // the value before changes
+        let mut state = WalkState::default();
+        let mut pieces: Vec<AttributedFragment<'a, F::Attr>> = Vec::new();
         let mut curr = node.start;
         while let Some(item) = curr {
             curr = item.right;
-            let content = &item.content;
-            if let ItemContent::Format(key, value) = content {
-                // format markers always flow through the shared state machine
-                self.format(
-                    item,
-                    key,
-                    value,
-                    &mut current_formats,
-                    &mut changed_formats,
-                    &mut previous_formats,
-                );
-            } else if item.is_deleted() {
-                // plain deleted content is invisible; in a change render, the ranges deleted by
-                // this change emit `delete` ops - position-only, the content itself is not needed
-                if let Some(items) = &self.items {
-                    for (range, exists) in slice(items, &item.id, item.len()) {
-                        if exists {
-                            let count = match content {
-                                ItemContent::String(_) | ItemContent::Deleted(_) => {
-                                    range.end - range.start
-                                }
-                                _ => 1,
-                            };
-                            d.remove_with(count);
-                        }
-                    }
+            if self.fmt.contains(&item) {
+                pieces.clear();
+                self.read_pieces(&mut pieces, item);
+                for piece in pieces.iter() {
+                    self.process_content(d, &mut state, item, piece);
                 }
-            } else if let Some(items) = &self.items {
-                // change render on alive plain content: inserted ranges become inserts, everything
-                // else retains (position-only). `retainInserts` (attribution-heal renders) retains
-                // previously inserted content while clearing its former attribution.
-                let modified = content.as_node().filter(|child| self.is_modified(*child));
-                for (range, exists) in slice(items, &item.id, item.len()) {
-                    if !exists {
-                        if let Some(child) = modified {
-                            d.modify_with(self.node(child));
-                        } else {
-                            // mirror the piece-wise op sizes of the delete branch
-                            let count = match content {
-                                ItemContent::String(_) | ItemContent::Deleted(_) => {
-                                    range.end - range.start
-                                }
-                                _ => 1,
-                            };
-                            d.retain_fmt_with(count, &changed_formats);
-                        }
-                    } else if self.retain_inserts {
-                        if let Some(child) = modified {
-                            d.modify_with(self.node(child));
-                        } else {
-                            d.retain_fmt_with(range.end - range.start, &changed_formats);
-                        }
-                    } else {
-                        let offset = range.start - item.id.clock;
-                        let len = range.end - range.start;
-                        self.push_content(d, content, offset, len, &current_formats);
-                    }
-                }
-            } else if self.retain_inserts {
-                // attribution-overlay render (e.g. `toDelta({ renderer, retainInserts: true })`):
-                // existing content is retained, clearing any formerly cached own-attribution
-                d.retain_fmt_with(content.len(self.encoding), &changed_formats);
             } else {
-                // full render: a plain insert of the whole item
-                self.push_content(d, content, 0, item.len(), &current_formats);
+                // generic fast path: content the renderer doesn't claim renders as-is — no attribution
+                // lookups, no AttributedContent wrappers and, in the common full-coverage case, no
+                // content slicing
+                self.fast_path(d, &mut state, item);
             }
+        }
+    }
+
+    fn fast_path(&self, d: &mut Delta, st: &mut WalkState, item: ItemPtr) {
+        let content = &item.content;
+        if let ItemContent::Format(..) = content {
+            // format markers always flow through the shared state machine
+            let mode = match &self.items {
+                None => RenderMode::Visible,
+                Some(items) if items.contains(&item.id) => RenderMode::Insert,
+                Some(_) => RenderMode::Retain,
+            };
+            let range = item.id.clock..(item.id.clock + 1);
+            let piece = AttributedFragment::new(range, item.is_deleted(), None, mode);
+            self.process_content(d, st, item, &piece);
+        } else if item.is_deleted() {
+            // plain deleted content is invisible; in a change render, the ranges deleted by
+            // this change emit `delete` ops - position-only, the content itself is not needed
+            if let Some(items) = &self.items {
+                for (range, exists) in items.slice(&BlockRange::new(item.id, item.len())) {
+                    if exists {
+                        d.remove_with(piece_count(Some(content), range.end - range.start));
+                    }
+                }
+            }
+        } else if let Some(items) = &self.items {
+            // change render on alive plain content: inserted ranges become inserts, everything
+            // else retains (position-only). `retain_inserts` (attribution-heal renders) retains
+            // previously inserted content while clearing its former attribution.
+            let modified = content.as_node().filter(|child| self.is_modified(*child));
+            for (range, exists) in items.slice(&BlockRange::new(item.id, item.len())) {
+                let len = range.end - range.start;
+                if !exists {
+                    if let Some(child) = modified {
+                        d.modify_attributed_with(self.node(child), None, st.instr(None));
+                    } else {
+                        let count = piece_count(Some(content), len);
+                        d.retain_attributed_with(count, Some(&st.changed), st.instr(None));
+                    }
+                } else if self.retain_inserts {
+                    if let Some(child) = modified {
+                        d.modify_attributed_with(self.node(child), None, st.instr_or_clear(None));
+                    } else {
+                        d.retain_attributed_with(len, Some(&st.changed), st.instr_or_clear(None));
+                    }
+                } else {
+                    let offset = range.start - item.id.clock;
+                    self.push_content(d, content, offset, len, &st.current, st.data(None));
+                }
+            }
+        } else if self.retain_inserts {
+            // attribution-overlay render: existing content is retained, clearing any formerly
+            // cached own-attribution
+            let len = content.len(self.encoding);
+            d.retain_attributed_with(len, Some(&st.changed), st.instr_or_clear(None));
+        } else {
+            // full render: a plain insert of the whole item
+            self.push_content(d, content, 0, item.len(), &st.current, st.data(None));
+        }
+    }
+
+    /// Reads the pieces of an item claimed by the formatter, in a mode fitting the render.
+    fn read_pieces(&self, pieces: &mut Vec<AttributedFragment<'a, F::Attr>>, item: ItemPtr) {
+        let fmt: &'a F = self.fmt;
+        let item_range = BlockRange::new(item.id, item.len());
+        let Some(items) = &self.items else {
+            fmt.read_content(pieces, &item, item_range, RenderMode::Visible);
+            return;
+        };
+        // Fresh content deleted by the very change being rendered renders as an insert even
+        // with `retain_deletes`. Freshness is decided per id range, not per item, as items may
+        // merge across transactions. Format markers keep the retained path.
+        let is_format = matches!(item.content, ItemContent::Format(..));
+        let inserted = self.inserted_items.filter(|_| item.is_deleted());
+        let check_fresh = inserted.is_some() && !is_format;
+        let fresh_format = is_format && inserted.is_some_and(|ids| ids.contains(&item.id));
+        let client = item.id.client;
+        let block_range =
+            |r: Range<u32>| BlockRange::new(ID::new(client, r.start), r.end - r.start);
+        for (range, exists) in items.slice(&item_range) {
+            let range = block_range(range);
+            match inserted {
+                Some(inserted) if exists && check_fresh => {
+                    for (range, fresh) in inserted.slice(&range) {
+                        let mode = if fresh {
+                            RenderMode::Fresh
+                        } else {
+                            RenderMode::Insert
+                        };
+                        fmt.read_content(pieces, &item, block_range(range), mode);
+                    }
+                }
+                _ => {
+                    let mode = if exists && !fresh_format {
+                        RenderMode::Insert
+                    } else {
+                        RenderMode::Retain
+                    };
+                    fmt.read_content(pieces, &item, range, mode);
+                }
+            }
+        }
+        if fresh_format {
+            for piece in pieces.iter_mut() {
+                piece.fresh = true;
+            }
+        }
+    }
+
+    /// Emits ops for a single (possibly attributed) piece and drives the format state machine.
+    fn process_content(
+        &self,
+        d: &mut Delta,
+        st: &mut WalkState,
+        item: ItemPtr,
+        p: &AttributedFragment<F::Attr>,
+    ) {
+        // render (attributed) content even if it was deleted
+        let render_content = p.render && (!p.deleted || p.attrs.is_some());
+        // content that was just deleted. It is not rendered as an insertion, because it doesn't
+        // have any formats.
+        let render_delete = p.render && p.deleted;
+        // existing content that should be retained, only adding changed formats
+        let retain_content = !p.render && (!p.deleted || p.attrs.is_some());
+        let (content, offset) = match p.content {
+            AttributedFragmentKind::Own => (Some(&item.content), p.range.start - item.id.clock),
+            AttributedFragmentKind::Restored { content, offset } => (Some(content), offset),
+            AttributedFragmentKind::Opaque => (None, 0),
+        };
+        let len = p.len();
+        let retain_attributed = if p.deleted {
+            self.retain_deletes && !p.fresh
+        } else {
+            self.retain_inserts
+        };
+        match content {
+            None | Some(ItemContent::Deleted(_)) => {
+                // fresh content renders as nothing: the consuming state never saw it
+                if render_delete && !p.fresh {
+                    d.remove_with(len);
+                }
+            }
+            Some(ItemContent::Format(key, value)) => self.process_format(
+                st,
+                p,
+                key,
+                value,
+                render_content || render_delete,
+                retain_content,
+            ),
+            Some(content) => {
+                let child = content.as_node();
+                if render_content {
+                    let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
+                    if !retain_attributed {
+                        let attribution = st.data(attribution.as_ref());
+                        self.push_content(d, content, offset, len, &st.current, attribution);
+                    } else if let (true, Some(child)) = (p.deleted, child) {
+                        let attribution = match attribution {
+                            Some(a) => st.instr(Some(&a)),
+                            None => Some(Attribution::default()),
+                        };
+                        d.modify_attributed_with(self.node(child), None, attribution);
+                    } else if let Some(child) = child.filter(|c| self.is_modified(*c)) {
+                        // a de/re-attributed node the formatter still claims: descend so that the
+                        // nested walk heals exactly the changed ids
+                        let attribution = st.instr_or_clear(attribution);
+                        d.modify_attributed_with(self.node(child), None, attribution);
+                    } else {
+                        let attribution = st.instr_or_clear(attribution);
+                        d.retain_attributed_with(len, Some(&st.changed), attribution);
+                    }
+                } else if render_delete {
+                    d.remove_with(piece_count(Some(content), len));
+                } else if retain_content {
+                    if let Some(child) = child.filter(|c| self.is_modified(*c)) {
+                        d.modify_attributed_with(self.node(child), None, st.instr(None));
+                    } else {
+                        let count = piece_count(Some(content), len);
+                        d.retain_attributed_with(count, Some(&st.changed), st.instr(None));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Format state machine: everything that comes after a format marker is formatted by it, and
+    /// attributed to whoever inserted (or deleted) the marker - unless it resets the formatting to
+    /// the previously known unattributed value.
+    fn process_format(
+        &self,
+        st: &mut WalkState,
+        p: &AttributedFragment<F::Attr>,
+        key: &Arc<str>,
+        value: &Any,
+        render: bool,
+        retain: bool,
+    ) {
+        let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
+        if attribution.is_some() && (p.deleted || !st.prev_unattributed.contains_key(key)) {
+            let previous = if p.deleted {
+                value.clone()
+            } else {
+                st.current.get(key).cloned().unwrap_or(Any::Null)
+            };
+            st.prev_unattributed.insert(key.clone(), previous);
+        }
+
+        // update formats
+        if render {
+            if p.deleted {
+                // markers deleted by this change governed the consuming state until now
+                if self.items.is_some() && !self.retain_inserts {
+                    st.prev.insert(key.clone(), value.clone());
+                }
+            } else {
+                if self.retain_inserts {
+                    st.prev.insert(key.clone(), value.clone());
+                }
+                update_format(&mut st.current, key, value);
+            }
+            st.update_changed(key);
+        } else if retain && !p.deleted {
+            // an alive marker retained by this change: it doesn't change the formatting of the
+            // content that follows it, it only describes it
+            update_format(&mut st.current, key, value);
+            st.changed.remove(key);
+            st.prev.insert(key.clone(), value.clone());
+        }
+
+        // update attributions
+        if attribution.is_none() && !st.prev_unattributed.contains_key(key) {
+            return;
+        }
+        let mut formatting = st.used_attribution.clone().unwrap_or_default();
+        let mut changed = formatting.format.take().unwrap_or_default();
+        let current = st.current.get(key).unwrap_or(&Any::Null);
+        let same_as_previous = st.prev_unattributed.get(key) == Some(current);
+        match &attribution {
+            None if !same_as_previous => { /* skip */ }
+            Some(a) if !same_as_previous => {
+                // an attributed marker opens attributed formatting of a key
+                let by = changed.entry(key.clone()).or_insert(None);
+                let mut list = by.take().unwrap_or_default();
+                let attributors = if p.deleted { &a.delete } else { &a.insert };
+                list.extend(attributors.iter().flatten().cloned());
+                *by = Some(list);
+                let at = if p.deleted { a.delete_at } else { a.insert_at };
+                if at != 0 {
+                    formatting.format_at = at;
+                }
+            }
+            _ => {
+                // an unattributed marker, or one resetting to the previous unattributed value,
+                // ends the attributed range. A rendered one ends it explicitly in change renders.
+                let explicit = attribution.is_some() && self.items.is_some() && (render || p.fresh);
+                if explicit {
+                    changed.insert(key.clone(), None);
+                } else {
+                    changed.remove(key);
+                }
+                st.prev_unattributed.remove(key);
+            }
+        }
+        if changed.is_empty() {
+            st.used_attribution = None;
+        } else if let Some(a) = &attribution {
+            let at = if p.deleted { a.delete_at } else { a.insert_at };
+            if at != 0 {
+                formatting.format_at = at;
+            }
+            formatting.format = Some(changed);
+            st.used_attribution = Some(formatting);
         }
     }
 
@@ -1127,108 +1582,27 @@ impl<'a> NodeFormatter<'a> {
         offset: u32,
         len: u32,
         format: &Attrs,
+        attribution: Option<Attribution>,
     ) {
         match content {
             ItemContent::Node(node) => {
-                d.insert_fmt_with(self.node_value(NodePtr::from(node)), format)
+                let value = self.node_value(NodePtr::from(node));
+                d.insert_range_attributed_with(std::iter::once(value), Some(format), attribution)
             }
             ItemContent::String(str) => {
                 // clock offsets are always UTF-16 based
                 let (_, str) = split_str(str, offset as usize, OffsetKind::Utf16);
                 let (str, _) = split_str(str, len as usize, OffsetKind::Utf16);
-                d.insert_text_fmt_with(str, format);
+                d.insert_text_attributed_with(str, Some(format), attribution);
             }
             _ => {
                 let mut buf = vec![Out::default(); len as usize];
                 let read = content.read(offset as usize, &mut buf);
-                d.insert_range_fmt_with(buf.into_iter().take(read), format)
+                buf.truncate(read);
+                d.insert_range_attributed_with(buf, Some(format), attribution)
             }
         }
     }
-
-    /// Format state machine: everything that comes after a format marker is formatted by it.
-    fn format(
-        &self,
-        item: ItemPtr,
-        key: &Arc<str>,
-        value: &Any,
-        current: &mut Attrs,
-        changed: &mut Attrs,
-        previous: &mut Attrs,
-    ) {
-        let deleted = item.is_deleted();
-        let render = match &self.items {
-            None => !deleted,                        // full render
-            Some(items) => items.contains(&item.id), // change render
-        };
-        if render {
-            if deleted {
-                // `previousFormats` tracks the value governing the current walk position in the
-                // *consuming cache state*, so the retain diff below stays a plain cache → new-state
-                // comparison. Contributors: markers deleted by this change in event renders (their
-                // value governed the cache until now; heal-rendered deletes are PRE-deleted markers
-                // whose removal the cache already rendered — they must not contribute), alive
-                // markers re-rendered by heal renders (`retainInserts` — their value was in the
-                // cache), and retained alive markers (the branch below). A gated update here is not
-                // enough: a marker deleted by the change whose value coincides with the walk's
-                // current value would silently drop out of the cache-reference tracking, and a later
-                // marker would be misread as a restore-to-previous, swallowing a needed format diff.
-                if self.items.is_some() && !self.retain_inserts {
-                    previous.insert(key.clone(), value.clone());
-                }
-            } else {
-                if self.retain_inserts {
-                    previous.insert(key.clone(), value.clone());
-                }
-                update_format(current, key, value);
-            }
-            // the retain diff for following spans is exactly cache (previousFormats) → new
-            // state (currentFormats), recomputed per key at every rendered marker
-            if current.get(key).unwrap_or(&Any::Null) == previous.get(key).unwrap_or(&Any::Null) {
-                changed.remove(key);
-            } else {
-                let value = current.get(key).cloned().unwrap_or(Any::Null);
-                changed.insert(key.clone(), value);
-            }
-        } else if !deleted {
-            // an alive marker retained by this change: it doesn't change the formatting of the
-            // content that follows it, it only describes it
-            update_format(current, key, value);
-            changed.remove(key);
-            previous.insert(key.clone(), value.clone());
-        }
-    }
-}
-
-/// Splits an id range of `[clock..clock+len)` onto slices, marking which of them exist in a given
-/// `set` - a port of Yjs `IdSet.slice`.
-fn slice(set: &IdSet, id: &ID, len: u32) -> SmallVec<[(Range<u32>, bool); 1]> {
-    let mut res = SmallVec::new();
-    let end = id.clock + len;
-    if let Some(ranges) = set.get(&id.client)
-        && let Some(index) = ranges.find_start(id.clock)
-    {
-        let mut prev_end = id.clock;
-        for (range, _) in &ranges.as_slice()[index..] {
-            if range.start >= end {
-                break;
-            }
-            let start = range.start.max(id.clock);
-            let stop = range.end.min(end);
-            if prev_end < start {
-                res.push((prev_end..start, false));
-            }
-            res.push((start..stop, true));
-            prev_end = stop;
-        }
-        if !res.is_empty() && prev_end < end {
-            res.push((prev_end..end, false));
-        }
-    }
-    if res.is_empty() {
-        res.push((id.clock..end, false));
-    }
-    res
 }
 
 /// Sets a format `value` under a given `key`, where a `null` value removes the format.

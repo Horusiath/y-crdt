@@ -1,7 +1,7 @@
 use yrs::lib0::Decode;
 use yrs::node::Observable;
 use yrs::test_utils::exchange_updates;
-use yrs::{Acquire, AcquireMut, Cell, Delta, Doc, In, Out, StateVector, Update};
+use yrs::{Acquire, AcquireMut, Attribute, Cell, Delta, Doc, In, Out, StateVector, Update};
 
 #[test]
 fn insert_attribute() {
@@ -296,4 +296,116 @@ fn issue_607() {
         let actual = txn.node(n.id).unwrap().format_xml().to_string();
         assert_eq!(actual, "<p><b></b></p>");
     }
+}
+
+#[test]
+fn fragment_attributed_content() {
+    use yrs::test_utils::attribute_all;
+    use yrs::{Attribution, ContentIds, DeltaOptions};
+    let mut doc = Doc::with_options(yrs::Options {
+        skip_gc: true,
+        ..yrs::Options::with_client_id(yrs::ClientID::new(1))
+    });
+    let (frag, e1, e2) = {
+        let mut txn = doc.transact_mut();
+        let fragment = Delta::new()
+            .insert(Delta::new().insert_text("hello"))
+            .insert(Delta::new());
+        let frag = txn
+            .node_mut("root")
+            .unwrap()
+            .insert(0, fragment)
+            .node_id()
+            .unwrap();
+        let frag_ref = txn.node(frag.clone()).unwrap();
+        let (e1, e2) = (frag_ref.get(0).unwrap(), frag_ref.get(1).unwrap());
+        (frag, e1.node_id().unwrap(), e2.node_id().unwrap())
+        // root: [frag:[e1:{"hello"}, e2:{}]]
+    };
+    let (e3, ids) = {
+        let mut txn = doc.transact_mut();
+        let mut frag = txn.node_mut(frag.clone()).unwrap();
+        frag.remove(0, 1);
+        let e3 = frag
+            .insert(1, Delta::new().insert_text("world"))
+            .node_id()
+            .unwrap();
+        (e3, ContentIds::from_transaction(&txn))
+        // root: [frag:[e2:{}, e3:{"world"}]]
+    };
+    let fmt = attribute_all(&ids);
+    let txn = doc.transact();
+    let opts = DeltaOptions::default();
+    let actual = txn.node(frag.clone()).unwrap().formatted(&fmt).delta(&opts);
+    let deleted = Some(Attribution::delete::<Attribute>([]));
+    // e1: <deleted>, e2: <empty>, e3: "world"
+    let expected = Delta::out()
+        .insert_range_attributed([Out::node(e1.clone())], None, deleted.clone())
+        .insert(Out::node(e2))
+        .insert_range_attributed(
+            [Out::node(e3)],
+            None,
+            Some(Attribution::insert::<Attribute>([])),
+        );
+    assert_eq!(actual, expected);
+    // deleted nodes can't be reached with `Transaction::node`: check elem1 through a deep render
+    let deep = DeltaOptions {
+        deep: true,
+        ..Default::default()
+    };
+    let actual = txn.node(frag).unwrap().formatted(&fmt).delta(&deep);
+    let hello = Delta::out().insert_text_attributed("hello", None, deleted.clone());
+    let elem1 =
+        Delta::out().insert_range_attributed([Out::node_with_delta(e1, hello)], None, deleted);
+    assert_eq!(actual.children[0], elem1.children[0]);
+}
+
+#[test]
+fn element_attributed_content() {
+    use yrs::test_utils::attribute_all;
+    use yrs::{Attribution, ContentIds, DeltaOptions};
+    let mut doc = Doc::with_options(yrs::Options {
+        skip_gc: true,
+        ..yrs::Options::with_client_id(yrs::ClientID::new(1))
+    });
+    let (e1, e2) = {
+        let mut txn = doc.transact_mut();
+        let mut p = txn.node_mut("p").unwrap(); // <p></p>
+        let e1 = p
+            .insert(0, Delta::new().insert_text("hello"))
+            .node_id()
+            .unwrap();
+        let e2 = p.insert(1, Delta::with_name("span")).node_id().unwrap();
+        (e1, e2)
+        // <p>{hello}<span/></p>
+    };
+    let (e3, ids) = {
+        let mut txn = doc.transact_mut();
+        let mut p = txn.node_mut("p").unwrap();
+        p.remove(0, 1); // <p><span/></p>
+        let e3 = p
+            .insert(1, Delta::new().insert_text("world"))
+            .node_id()
+            .unwrap(); // <p><span/>{world}</p>
+        p.insert_attr("key", "42"); // <p key="42"><span/>{world}</p>
+        (e3, ContentIds::from_transaction(&txn))
+    };
+    let fmt = attribute_all(&ids);
+    let txn = doc.transact();
+    let opts = DeltaOptions {
+        deep: true,
+        ..Default::default()
+    };
+    let actual = txn.node("p").unwrap().formatted(&fmt).delta(&opts);
+    let deleted = Some(Attribution::delete::<Attribute>([]));
+    let inserted = Some(Attribution::insert::<Attribute>([]));
+    let hello = Delta::out().insert_text_attributed("hello", None, deleted.clone());
+    let world = Delta::out().insert_text_attributed("world", None, inserted.clone());
+    let expected = Delta::out()
+        .insert_range_attributed([Out::node_with_delta(e1, hello)], None, deleted)
+        .insert(Out::node_with_delta(e2, Delta::<Out>::with_name("span")))
+        .insert_range_attributed([Out::node_with_delta(e3, world)], None, inserted.clone())
+        .insert_attr_attributed("key", "42", inserted);
+    // <p key="42">~~{hello}~~<span/>{world}</p>
+    assert_eq!(actual, expected);
 }

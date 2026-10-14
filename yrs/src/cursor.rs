@@ -1,8 +1,12 @@
-use crate::block::{ID, Item, ItemContent, ItemPtr};
+use crate::block::{BlockRange, ID, Item, ItemContent, ItemPtr};
+use crate::formatter::{
+    AttributedFragment, DefaultFormatter, DeltaFormatter, RenderMode, clock_len, formatted_len,
+    native_len,
+};
 use crate::node::{Attrs, Node, NodePtr, TypePtr};
 use crate::transaction::TransactionState;
 use crate::utils::OptionExt;
-use crate::{Any, Doc, In, OffsetKind, Out};
+use crate::{Any, Doc, IdSet, In, OffsetKind, Out};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -10,8 +14,8 @@ use std::sync::Arc;
 /// keep track of active formatting attributes at its current position.
 ///
 /// It can also be used to introduce modifications (inserting, removal and formatting) at
-/// its position.
-pub(crate) struct Cursor {
+/// its position. Visibility and lengths of items are decided by a formatter `F`.
+pub(crate) struct Cursor<'f, F: DeltaFormatter = DefaultFormatter> {
     parent: NodePtr,
     left: Option<ItemPtr>,
     right: Option<ItemPtr>,
@@ -22,11 +26,12 @@ pub(crate) struct Cursor {
     /// Formatting attributes active at the cursor position.
     attrs: Option<Box<Attrs>>,
     encoding: OffsetKind,
+    fmt: &'f F,
 }
 
-impl Cursor {
+impl<'f, F: DeltaFormatter> Cursor<'f, F> {
     /// Creates a cursor placed at the beginning of a `parent` node.
-    pub fn new(parent: NodePtr, encoding: OffsetKind) -> Self {
+    pub fn new(parent: NodePtr, encoding: OffsetKind, fmt: &'f F) -> Self {
         Cursor {
             parent,
             left: None,
@@ -35,7 +40,46 @@ impl Cursor {
             index: 0,
             attrs: None,
             encoding,
+            fmt,
         }
+    }
+
+    #[inline]
+    fn block_len(&self, item: &Item) -> u32 {
+        formatted_len(self.fmt, item, self.encoding)
+    }
+
+    /// Visible fragments of an item claimed by the formatter.
+    fn visible_fragments(&self, item: &Item) -> Vec<AttributedFragment<'f, F::Attr>> {
+        let mut fragments = Vec::new();
+        let fmt: &'f F = self.fmt;
+        fmt.read_content(&mut fragments, item, item.range(), RenderMode::Retain);
+        fragments.retain(|p| !p.deleted || p.attrs.is_some());
+        fragments
+    }
+
+    /// Maps an `offset` inside of an `item` expressed in `lib0` units onto clock units.
+    fn clock_offset(&self, item: ItemPtr, offset: u32) -> u32 {
+        if offset == 0 || !self.fmt.contains(&item) {
+            return clock_offset(item, offset, self.encoding);
+        }
+        let mut remaining = offset;
+        for p in self.visible_fragments(&item) {
+            let len = native_len(&item, &p.range, self.encoding);
+            if remaining <= len {
+                let clock =
+                    p.range.start + clock_len(&item, p.range.start, remaining, self.encoding);
+                return clock - item.id.clock;
+            }
+            remaining -= len;
+        }
+        item.len()
+    }
+
+    /// Splits an `item` at a given clock, returning the right half.
+    fn split_at(doc: &mut Doc, item: ItemPtr, clock: u32) -> Option<ItemPtr> {
+        doc.blocks
+            .split_block(item, clock - item.id.clock, OffsetKind::Utf16)
     }
 
     #[inline]
@@ -50,8 +94,8 @@ impl Cursor {
 
     /// Creates a cursor placed at a given `index` of a `parent` node, or `None` if the index
     /// exceeds the node's length. An `index` inside of a character is rounded up past it.
-    pub fn at(parent: NodePtr, encoding: OffsetKind, index: u32) -> Option<Self> {
-        let mut cursor = Self::new(parent, encoding);
+    pub fn at(parent: NodePtr, encoding: OffsetKind, fmt: &'f F, index: u32) -> Option<Self> {
+        let mut cursor = Self::new(parent, encoding, fmt);
         if cursor.forward(index) >= index {
             Some(cursor)
         } else {
@@ -95,7 +139,7 @@ impl Cursor {
                 }
             }
             _ => {
-                let len = right.visible_len(self.encoding);
+                let len = self.block_len(&right);
                 self.index += len - self.offset;
             }
         }
@@ -109,7 +153,7 @@ impl Cursor {
     pub(crate) fn skip_hidden(&mut self) {
         while self.offset == 0
             && let Some(right) = self.right
-            && (right.is_deleted() || !right.is_countable())
+            && self.block_len(&right) == 0
         {
             self.next_item();
         }
@@ -127,10 +171,14 @@ impl Cursor {
         while remaining > 0
             && let Some(right) = self.right
         {
-            let item_len = right.visible_len(self.encoding);
+            let item_len = self.block_len(&right);
             let available = item_len - self.offset;
             if remaining < available {
-                let offset = ceil_offset(right, self.offset + remaining, self.encoding);
+                let offset = if self.fmt.contains(&right) {
+                    self.offset + remaining
+                } else {
+                    ceil_offset(right, self.offset + remaining, self.encoding)
+                };
                 let moved = len - remaining + (offset - self.offset);
                 if offset == item_len {
                     self.next_item();
@@ -151,44 +199,8 @@ impl Cursor {
 
         let item = self.right?;
         let mut id = item.id.clone();
-        id.clock += clock_offset(item, self.offset, self.encoding);
+        id.clock += self.clock_offset(item, self.offset);
         Some(id)
-    }
-
-    /// Returns the element placed right after the cursor without moving it.
-    pub fn get(&self) -> Option<Out> {
-        let mut offset = self.offset;
-        let mut curr = self.right;
-        while let Some(item) = curr {
-            if item.visible_len(self.encoding) > offset {
-                let mut buf = [Out::default()];
-                read_item(item, offset, &mut buf, self.encoding);
-                return Some(std::mem::take(&mut buf[0]));
-            }
-            offset = 0;
-            curr = item.right;
-        }
-        None
-    }
-
-    /// Reads elements following the cursor into `buf`, moving the cursor over them.
-    /// Returns the number of elements read.
-    pub fn read(&mut self, buf: &mut [Out]) -> usize {
-        let mut read = 0;
-        while read < buf.len() {
-            self.skip_hidden();
-            let Some(item) = self.right else {
-                break;
-            };
-            let (n, units) = read_item(item, self.offset, &mut buf[read..], self.encoding);
-            read += n;
-            self.offset += units;
-            self.index += units;
-            if self.offset >= item.visible_len(self.encoding) {
-                self.next_item();
-            }
-        }
-        read
     }
 
     /// Splits the `right` item if the cursor is placed inside of it, so that the cursor
@@ -197,7 +209,8 @@ impl Cursor {
         if self.offset > 0
             && let Some(right) = self.right
         {
-            self.right = split_item(doc, right, self.offset, self.encoding);
+            let clock = right.id.clock + self.clock_offset(right, self.offset);
+            self.right = Self::split_at(doc, right, clock);
             self.left = Some(right);
             self.offset = 0;
         }
@@ -292,7 +305,7 @@ impl Cursor {
         if let Some(children) = children
             && let Some(node) = item.content.as_node()
         {
-            crate::node_ref::apply_delta(doc, state, node, children);
+            crate::node_ref::apply_delta(doc, state, node, children, &DefaultFormatter);
         }
         self.right = Some(item);
         self.next_item();
@@ -319,7 +332,8 @@ impl Cursor {
         // negated attributes there
         while let Some(right) = self.right {
             let is_format = matches!(right.content, ItemContent::Format(_, _));
-            if !(len > 0 || (!negated.is_empty() && (right.is_deleted() || is_format))) {
+            let hidden = right.is_deleted() && self.block_len(&right) == 0;
+            if !(len > 0 || (!negated.is_empty() && (hidden || is_format))) {
                 break;
             }
             match &right.content {
@@ -342,9 +356,13 @@ impl Cursor {
                     }
                 }
                 _ => {
-                    let right_len = right.visible_len(self.encoding);
+                    let right_len = self.block_len(&right);
                     if len < right_len {
-                        split_item(doc, right, len, self.encoding);
+                        if self.fmt.contains(&right) {
+                            self.split_pieces(doc, right, len);
+                        } else {
+                            split_item(doc, right, len, self.encoding);
+                        }
                         len = 0;
                     } else {
                         len -= right_len;
@@ -357,7 +375,7 @@ impl Cursor {
         start_len - len
     }
 
-    /// Port of Yjs `deleteText`: removes `len` elements following the cursor.
+    /// Removes `len` elements following the cursor.
     /// Returns the number of elements removed.
     pub fn remove(&mut self, doc: &mut Doc, state: &mut TransactionState, len: u32) -> u32 {
         self.split(doc);
@@ -373,6 +391,8 @@ impl Cursor {
                 }
                 remaining = remaining.saturating_sub(item.content_len(self.encoding));
                 state.delete(doc, item);
+            } else if self.fmt.contains(&item) {
+                remaining = self.remove_attributed(doc, state, item, remaining);
             }
             self.next_item();
         }
@@ -380,6 +400,72 @@ impl Cursor {
             self.clean_format_gap(doc, state, start, start_attrs.as_deref());
         }
         len - remaining
+    }
+
+    /// Splits a claimed `item` after `len` visible elements (Yjs `formatText` renderer branch).
+    fn split_pieces(&self, doc: &mut Doc, item: ItemPtr, len: u32) {
+        let mut pieces = Vec::new();
+        let fmt: &'f F = self.fmt;
+        fmt.read_content(&mut pieces, &item, item.range(), RenderMode::Retain);
+        let mut remaining = len as i64;
+        let mut i = 0;
+        while i < pieces.len() && remaining > 0 {
+            let p = &pieces[i];
+            if (!p.deleted || p.attrs.is_some()) && item.is_countable() {
+                remaining -= native_len(&item, &p.range, self.encoding) as i64;
+            }
+            i += 1;
+        }
+        if remaining < 0 || (remaining == 0 && i != pieces.len()) {
+            let p = &pieces[i - 1];
+            let consumed = (native_len(&item, &p.range, self.encoding) as i64 + remaining) as u32;
+            let clock = clock_len(&item, p.range.start, consumed, self.encoding);
+            Self::split_at(doc, item, p.range.start + clock);
+        }
+    }
+
+    /// Removes up to `len` elements of an already deleted, but still rendered `item`: nothing is
+    /// deleted, but the range is recorded in `attributed_deletes` (Yjs `deleteText` renderer
+    /// branch). Returns the number of elements left to remove.
+    fn remove_attributed(
+        &self,
+        doc: &mut Doc,
+        state: &mut TransactionState,
+        item: ItemPtr,
+        mut len: u32,
+    ) -> u32 {
+        let mut pieces = Vec::new();
+        let fmt: &'f F = self.fmt;
+        fmt.read_content(&mut pieces, &item, item.range(), RenderMode::Retain);
+        let mut split_clock = None;
+        if item.is_countable() {
+            for p in pieces.iter().filter(|p| p.attrs.is_some()) {
+                if len == 0 {
+                    // split, so that the cursor advances only past the consumed part
+                    split_clock = Some(p.range.start);
+                    break;
+                }
+                let plen = native_len(&item, &p.range, self.encoding);
+                let n = plen.min(len);
+                let clock_len = clock_len(&item, p.range.start, n, self.encoding);
+                let deletes = state.attributed_deletes.get_or_insert_with(IdSet::new);
+                deletes.insert(ID::new(item.id.client, p.range.start), clock_len);
+                len -= n;
+                if n < plen {
+                    split_clock = Some(p.range.start + clock_len);
+                    break;
+                }
+            }
+        }
+        let end = item.id.clock + item.len();
+        let split_clock = split_clock.or_else(|| match pieces.last() {
+            Some(p) if p.range.end < end => Some(p.range.end),
+            _ => None,
+        });
+        if let Some(clock) = split_clock {
+            Self::split_at(doc, item, clock);
+        }
+        len
     }
 
     /// Integrates a new item with a given `content` between `left` and `right` neighbors.
@@ -407,7 +493,7 @@ impl Cursor {
     fn minimize_format_changes(&mut self, attrs: &Attrs) {
         while let Some(right) = self.right {
             let skip = if right.is_deleted() {
-                true
+                self.block_len(&right) == 0
             } else if let ItemContent::Format(key, value) = &right.content {
                 attrs.get(key).unwrap_or(&Any::Null) == value.as_ref()
             } else {
@@ -455,7 +541,7 @@ impl Cursor {
     ) {
         while let Some(right) = self.right {
             let skip = if right.is_deleted() {
-                true
+                self.block_len(&right) == 0
             } else if let ItemContent::Format(key, value) = &right.content {
                 if negated.get(key) == Some(value.as_ref()) {
                     negated.remove(key);
@@ -536,7 +622,45 @@ impl Cursor {
     }
 }
 
-impl Iterator for Cursor {
+impl Cursor<'static, DefaultFormatter> {
+    /// Returns the element placed right after the cursor without moving it.
+    pub fn get(&self) -> Option<Out> {
+        let mut offset = self.offset;
+        let mut curr = self.right;
+        while let Some(item) = curr {
+            if item.visible_len(self.encoding) > offset {
+                let mut buf = [Out::default()];
+                read_item(item, offset, &mut buf, self.encoding);
+                return Some(std::mem::take(&mut buf[0]));
+            }
+            offset = 0;
+            curr = item.right;
+        }
+        None
+    }
+
+    /// Reads elements following the cursor into `buf`, moving the cursor over them.
+    /// Returns the number of elements read.
+    pub fn read(&mut self, buf: &mut [Out]) -> usize {
+        let mut read = 0;
+        while read < buf.len() {
+            self.skip_hidden();
+            let Some(item) = self.right else {
+                break;
+            };
+            let (n, units) = read_item(item, self.offset, &mut buf[read..], self.encoding);
+            read += n;
+            self.offset += units;
+            self.index += units;
+            if self.offset >= item.visible_len(self.encoding) {
+                self.next_item();
+            }
+        }
+        read
+    }
+}
+
+impl Iterator for Cursor<'static, DefaultFormatter> {
     type Item = Out;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -639,12 +763,13 @@ fn read_item(item: ItemPtr, offset: u32, buf: &mut [Out], encoding: OffsetKind) 
 #[cfg(test)]
 mod test {
     use super::Cursor;
+    use crate::formatter::DefaultFormatter;
     use crate::node::{Attrs, TypeRef};
     use crate::{Any, Delta, DeltaOptions, Doc, In, OffsetKind, Options, Out};
 
-    fn cursor(doc: &mut Doc, index: u32) -> Cursor {
+    fn cursor(doc: &mut Doc, index: u32) -> Cursor<'static> {
         let node = doc.get_or_create_type("test", TypeRef::Undefined);
-        Cursor::at(node, doc.options.offset_kind, index).unwrap()
+        Cursor::at(node, doc.options.offset_kind, &DefaultFormatter, index).unwrap()
     }
 
     fn bold() -> Attrs {

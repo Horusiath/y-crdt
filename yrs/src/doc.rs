@@ -456,6 +456,62 @@ impl Doc {
         Ok(())
     }
 
+    /// Encodes blocks covered by `ids`.
+    /// Gaps between the ranges of a client are filled with skip blocks.
+    pub fn write_selected<E: Encoder>(&self, ids: &IdSet, encoder: &mut E) {
+        let mut clients: Vec<_> = ids
+            .iter()
+            .filter_map(|(client, ranges)| {
+                let blocks = self.blocks.get_client(client)?;
+                let first = blocks.get(0)?.as_ref().clock_start();
+                let last = blocks.last()?.as_ref().next_clock();
+                let ranges: Vec<_> = ranges
+                    .iter()
+                    .map(|r| r.start.max(first)..r.end.min(last))
+                    .filter(|r| r.start < r.end)
+                    .collect();
+                (!ranges.is_empty()).then_some((*client, blocks, ranges))
+            })
+            .collect();
+        // Write items with higher client ids first. This heavily improves the conflict algorithm.
+        clients.sort_by(|a, b| b.0.cmp(&a.0));
+        encoder.write_var(clients.len());
+        for (client, blocks, ranges) in clients {
+            let mut count = ranges.len() - 1; // skips between ranges
+            for r in ranges.iter() {
+                let start = blocks.find_index(r.start).unwrap();
+                let end = blocks.find_index(r.end - 1).unwrap() + 1;
+                count += end - start;
+            }
+            let mut clock = ranges[0].start;
+            encoder.write_var(count);
+            encoder.write_client(client);
+            encoder.write_var(clock);
+            for r in ranges.iter() {
+                if r.start > clock {
+                    let skip =
+                        crate::block::BlockRange::new(ID::new(client, clock), r.start - clock);
+                    crate::slice::BlockSlice::Skip(skip).encode(encoder);
+                    clock = r.start;
+                }
+                let start = blocks.find_index(r.start).unwrap();
+                let end = blocks.find_index(r.end - 1).unwrap() + 1;
+                for i in start..end {
+                    let mut slice = blocks[i].as_slice();
+                    let block_end = slice.clock_end() + 1;
+                    if clock > slice.clock_start() {
+                        slice.trim_start(clock - slice.clock_start());
+                    }
+                    if block_end > r.end {
+                        slice.trim_end(block_end - r.end);
+                    }
+                    slice.encode(encoder);
+                    clock = block_end.min(r.end);
+                }
+            }
+        }
+    }
+
     pub(crate) fn write_blocks_to<E: Encoder>(&self, sv: &StateVector, encoder: &mut E) {
         let local_sv = self.blocks.get_state_vector();
         let mut diff = Vec::with_capacity(sv.len());
@@ -503,7 +559,7 @@ impl Doc {
         // 2. make Diff implement Encode trait and encode it
         // this way we can add some extra utility method on top of Diff (like introspection) without need of decoding it.
         self.write_blocks_from(sv, encoder);
-        let delete_set = IdSet::from_store(&self.blocks);
+        let delete_set = IdSet::tombstones_from(&self.blocks);
         delete_set.encode(encoder);
     }
 
@@ -2617,5 +2673,25 @@ mod test {
             "oo",
             "Pending delete should have been applied"
         );
+    }
+
+    #[test]
+    fn write_selected() {
+        let mut doc = Doc::with_client_id(1);
+        doc.transact_mut()
+            .node_mut("t")
+            .unwrap()
+            .insert_text(0, "abc"); // 1:0..3
+        doc.transact_mut()
+            .node_mut("t")
+            .unwrap()
+            .insert_text(3, "def"); // 1:3..6
+        let client = ClientID::new(1);
+        let ids = IdSet::from_iter([(client, [1..2, 4..6])]); // bde
+        let mut encoder = EncoderV1::new();
+        doc.write_selected(&ids, &mut encoder);
+        IdSet::new().encode(&mut encoder);
+        let update = Update::decode_v1(&encoder.to_vec()).unwrap();
+        assert_eq!(update.insertions(true), ids);
     }
 }

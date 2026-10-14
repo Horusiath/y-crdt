@@ -12,6 +12,35 @@ use crate::{Doc, Options, StateVector, Update};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";
 
+/// Creates a copy of a `doc` with all of its content - a port of Yjs `cloneDoc`.
+pub fn clone_doc(doc: &Doc, options: Option<Options>) -> Doc {
+    let update = doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+    let mut clone = Doc::with_options(options.unwrap_or_default());
+    clone
+        .transact_mut()
+        .apply_update(crate::Update::decode_v1(&update).unwrap())
+        .unwrap();
+    clone
+}
+
+/// An [crate::AttributionsFormatter] attributing `ids` with empty attribute lists.
+pub fn attribute_all(ids: &crate::ContentIds) -> crate::AttributionsFormatter {
+    let map = crate::ContentMap::from_content_ids(ids, vec![], vec![]);
+    crate::AttributionsFormatter::new(&map)
+}
+
+/// Equivalent of a Yjs `DiffRenderer` created when `doc` had the content `base`: content inserted
+/// since is attributed as inserted, content deleted since (and not inserted since) as deleted.
+pub fn diff_formatter(base: &crate::ContentIds, doc: &Doc) -> crate::AttributionsFormatter {
+    let next = crate::ContentIds::from_doc(doc);
+    let diff = next.diff(base);
+    let inserts = diff.inserts.diff(&next.deletes);
+    let deletes = diff.deletes.diff(&diff.inserts);
+    attribute_all(&crate::ContentIds::new(inserts, deletes))
+}
+
 pub fn exchange_updates(docs: &mut [&mut Doc]) {
     for i in 0..docs.len() {
         for j in 0..docs.len() {

@@ -160,6 +160,7 @@ pub struct TransactionState {
     pub(crate) subdocs: Option<Box<Subdocs>>,
     pub(crate) origin: Option<Origin>,
     pub(crate) local: bool,
+    pub(crate) attributed_deletes: Option<IdSet>,
     committed: bool,
     needs_cleanup: bool,
 }
@@ -178,6 +179,7 @@ impl TransactionState {
             subdocs: None,
             origin,
             local: true,
+            attributed_deletes: None,
             committed: false,
             needs_cleanup: false,
         }
@@ -237,7 +239,7 @@ impl<D: DocHandle> Transaction<D> {
         let store = self.doc();
         let blocks = &store.blocks;
         let sv = blocks.get_state_vector();
-        let ds = IdSet::from_store(blocks);
+        let ds = IdSet::tombstones_from(blocks);
         Snapshot::new(sv, ds)
     }
 
@@ -271,7 +273,7 @@ impl<D: DocHandle> Transaction<D> {
     pub fn encode_state_as_update<E: Encoder>(&self, sv: &StateVector, encoder: &mut E) {
         let store = self.doc();
         store.write_blocks_from(sv, encoder);
-        let ds = IdSet::from_store(&store.blocks);
+        let ds = IdSet::tombstones_from(&store.blocks);
         ds.encode(encoder);
     }
 
@@ -357,6 +359,18 @@ impl<D: DocHandle> Transaction<D> {
         self.state
             .as_ref()
             .map_or_else(|| EMPTY.get_or_init(IdSet::new), |s| &s.delete_set)
+    }
+
+    /// Returns `false` if this transaction applies a remote update.
+    pub fn is_local(&self) -> bool {
+        self.state.as_ref().map_or(true, |s| s.local)
+    }
+
+    /// Deletes performed over content which was already deleted, but still rendered by
+    /// a formatter (see [crate::DeltaFormatter]).
+    pub fn attributed_deletes(&self) -> Option<&IdSet> {
+        let state = self.state.as_ref()?;
+        state.attributed_deletes.as_ref()
     }
 
     /// Returns origin of the transaction if any was defined.
@@ -1098,7 +1112,13 @@ impl TransactionState {
         let block_ptr = self.integrate_item(doc, block, 0);
 
         if let Some(remainder) = delta {
-            crate::node_ref::apply_delta(doc, self, inner_ref.unwrap(), remainder);
+            crate::node_ref::apply_delta(
+                doc,
+                self,
+                inner_ref.unwrap(),
+                remainder,
+                &crate::DefaultFormatter,
+            );
         }
 
         block_ptr

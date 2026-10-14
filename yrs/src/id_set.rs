@@ -1,6 +1,6 @@
 use crate::block::{BlockRange, ClientID, ID};
 use crate::block_store::BlockStore;
-use crate::ids::{BlockSliceIter, IdMapInner, IdRanges};
+use crate::ids::{BlockSliceIter, IdMapInner, IdRanges, RangesSlice};
 use crate::iter::TxnIterator;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::slice::BlockSlice;
@@ -227,8 +227,8 @@ impl From<StateVector> for IdSet {
 }
 
 impl IdSet {
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self(IdMapInner::new())
     }
 
     pub fn from_iter<I1, I2>(iter: I1) -> Self
@@ -346,6 +346,63 @@ impl IdSet {
     pub fn get(&self, client_id: &ClientID) -> Option<&IdRange> {
         self.0.get(client_id)
     }
+
+    /// Checks if any id within `range` is contained in this set.
+    pub fn intersects(&self, range: &BlockRange) -> bool {
+        match self.0.get(&range.client) {
+            Some(ranges) => match ranges.find_start(range.clock) {
+                Some(i) => ranges.as_slice()[i].0.start < range.clock + range.len,
+                None => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Checks if all ids within `range` are contained in this set.
+    pub fn contains_range(&self, range: &BlockRange) -> bool {
+        match self.0.get(&range.client) {
+            Some(ranges) => match ranges.find_start(range.clock) {
+                Some(i) => {
+                    let r = &ranges.as_slice()[i].0;
+                    r.start <= range.clock && range.clock + range.len <= r.end
+                }
+                None => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Number of ids within `range` contained in this set.
+    pub fn covered_len(&self, range: &BlockRange) -> u32 {
+        let mut covered = 0;
+        for (range, exists) in self.slice(range) {
+            if exists {
+                covered += range.end - range.start;
+            }
+        }
+        covered
+    }
+
+    /// Splits `range` into consecutive ranges.
+    pub fn slice(&self, range: &BlockRange) -> Slices<'_> {
+        let ranges = self.0.get(&range.client);
+        Slices(RangesSlice::new(ranges, range.clock, range.len))
+    }
+
+    pub(crate) fn from_store(store: &BlockStore) -> Self {
+        let mut set = IdSet::new();
+        for (&client, blocks) in store.iter() {
+            let mut inserts = IdRange::with_capacity(blocks.len());
+            for block in blocks.iter() {
+                let (start, end) = block.as_ref().clock_range();
+                inserts.insert(start..(end + 1));
+            }
+            if !inserts.is_empty() {
+                set.0.clients_mut().insert(client, inserts);
+            }
+        }
+        set
+    }
 }
 
 impl Encode for IdSet {
@@ -448,11 +505,23 @@ impl std::fmt::Display for IdSet {
     }
 }
 
+pub struct Slices<'a>(RangesSlice<'a, ()>);
+
+impl<'a> Iterator for Slices<'a> {
+    type Item = (Range<u32>, bool);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let (range, value) = self.0.next()?;
+        Some((range, value.is_some()))
+    }
+}
+
 /// An extension over [IdSet] that defines methods specific to work with block store deletions.
 pub(crate) trait DeleteSet {
     /// Creates a [IdSet] by reading all deleted blocks and including their clock ranges into
     /// the delete set itself.
-    fn from_store(store: &BlockStore) -> Self;
+    fn tombstones_from(store: &BlockStore) -> Self;
 
     fn try_squash_with(&mut self, store: &mut Doc);
 
@@ -460,7 +529,7 @@ pub(crate) trait DeleteSet {
 }
 
 impl DeleteSet for IdSet {
-    fn from_store(store: &BlockStore) -> Self {
+    fn tombstones_from(store: &BlockStore) -> Self {
         let mut set = IdSet::new();
         for (&client, blocks) in store.iter() {
             let mut deletes = IdRange::with_capacity(blocks.len());
@@ -1133,5 +1202,43 @@ pub(crate) mod test {
         assert_eq!(start, 5);
         assert_eq!(end, 5);
         assert!(i.next(&txn).is_none());
+    }
+
+    #[test]
+    fn repeat_random_covers_and_covered_length() {
+        const CLIENTS: u64 = 4;
+        const CLOCK_RANGE: u32 = 100;
+        let mut ids = IdSet::new();
+        for _ in 0..(CLIENTS as u32 * CLOCK_RANGE / 5) {
+            let client = ClientID::new(fastrand::u64(0..CLIENTS - 1));
+            let clock = fastrand::u32(0..CLOCK_RANGE);
+            ids.insert(
+                ID::new(client, clock),
+                fastrand::u32(0..(CLOCK_RANGE - clock)),
+            );
+        }
+        for _ in 0..300 {
+            let client = ClientID::new(fastrand::u64(0..CLIENTS - 1));
+            let clock = fastrand::u32(0..CLOCK_RANGE);
+            let len = fastrand::u32(1..(CLOCK_RANGE - clock + 5));
+            let covered = (clock..clock + len)
+                .filter(|&c| ids.contains(&ID::new(client, c)))
+                .count() as u32;
+            let range = BlockRange::new(ID::new(client, clock), len);
+            assert_eq!(ids.contains_range(&range), covered == len);
+            assert_eq!(ids.intersects(&range), covered > 0);
+            assert_eq!(ids.covered_len(&range), covered);
+        }
+    }
+
+    #[test]
+    fn slice_marks_gaps() {
+        let client = ClientID::new(1);
+        let ids = IdSet::from_iter([(client, [2..4, 6..8])]);
+        let slice: Vec<_> = ids.slice(&BlockRange::new(ID::new(client, 1), 6)).collect();
+        assert_eq!(
+            slice,
+            vec![(1..2, false), (2..4, true), (4..6, false), (6..7, true)]
+        );
     }
 }

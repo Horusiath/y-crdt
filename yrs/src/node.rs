@@ -1,5 +1,6 @@
 use crate::block::{Block, Item, ItemContent, ItemPtr};
 use crate::event::Event;
+use crate::formatter::formatted_len;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::transaction::TransactionState;
 use crate::{
@@ -462,32 +463,40 @@ impl Node {
         len - remaining
     }
 
-    pub(crate) fn path(from: NodePtr, to: NodePtr) -> Path {
+    /// Path from node `from` down to `to`, with indexes counted in content formatted by `fmt`
+    /// (a port of Yjs `getPathTo`).
+    pub(crate) fn path<F: crate::DeltaFormatter>(
+        from: NodePtr,
+        to: NodePtr,
+        kind: crate::OffsetKind,
+        fmt: &F,
+    ) -> Path {
         let parent = from;
         let mut child = to;
         let mut path = VecDeque::default();
-        while let Some(item) = &child.item {
+        while let Some(item) = child.item {
             if parent.item == child.item {
                 break;
             }
-            let item_id = item.id.clone();
             let parent_sub = item.parent_sub.clone();
             child = *item.parent.as_node().unwrap();
             if let Some(parent_sub) = parent_sub {
                 // parent is map-ish
                 path.push_front(PathSegment::Key(parent_sub));
             } else {
-                // parent is array-ish
+                // parent is array-ish: an index into a deleted parent is meaningless, unless
+                // the formatter still renders it
                 let mut i = 0;
-                let mut c = child.start;
-                while let Some(ptr) = c {
-                    if ptr.id() == &item_id {
-                        break;
+                let rendered = match child.item {
+                    Some(p) => !p.is_deleted() || formatted_len(fmt, &p, kind) > 0,
+                    None => true,
+                };
+                if rendered {
+                    let mut c = item.left;
+                    while let Some(ptr) = c {
+                        i += formatted_len(fmt, &ptr, kind);
+                        c = ptr.left;
                     }
-                    if !ptr.is_deleted() && ptr.is_countable() {
-                        i += ptr.len();
-                    }
-                    c = ptr.right;
                 }
                 path.push_front(PathSegment::Index(i));
             }

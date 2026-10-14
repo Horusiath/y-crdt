@@ -1,5 +1,5 @@
 use crate::block::{BlockRange, ClientID};
-use crate::ids::{IdMapInner, IdRanges, Merge};
+use crate::ids::{IdMapInner, IdRanges, Merge, RangesSlice};
 use crate::lib0::serde::{from_any, to_any};
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::{ID, IdSet};
@@ -90,7 +90,7 @@ impl<A: PartialEq + Eq + Hash + Clone> Default for IdMap<A> {
 }
 
 impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
-    pub fn from_set(id_set: IdSet, attrs: Vec<ContentAttribute<A>>) -> Self {
+    pub fn from_set(id_set: &IdSet, attrs: Vec<ContentAttribute<A>>) -> Self {
         let mut id_map = IdMap::new();
         let mut attrs: SmallVec<[ContentAttribute<A>; 2]> = attrs.into();
         attrs.dedup();
@@ -116,6 +116,23 @@ impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
 
     pub fn contains(&self, id: &ID) -> bool {
         self.inner.contains(id)
+    }
+
+    pub fn covered_len(&self, range: &BlockRange) -> u32 {
+        let mut covered = 0;
+        for (range, attrs) in self.slice(range) {
+            if attrs.is_some() {
+                covered += range.end - range.start;
+            }
+        }
+        covered
+    }
+
+    /// Splits `range` into consecutive ranges with their attributes.
+    /// Gaps are represented as `None` params.
+    pub fn slice(&self, range: &BlockRange) -> Slices<'_, A> {
+        let ranges = self.inner.get(&range.client);
+        Slices(RangesSlice::new(ranges, range.clock, range.len))
     }
 
     pub fn attributions(&self, range: &BlockRange) -> Vec<AttrRange<A>> {
@@ -167,8 +184,9 @@ impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
         result
     }
 
+    /// Attributes `range` with `attrs`. An empty `attrs` list still marks the range as attributed.
     pub fn insert(&mut self, range: BlockRange, attrs: Vec<ContentAttribute<A>>) {
-        if attrs.is_empty() || range.len == 0 {
+        if range.len == 0 {
             return;
         }
 
@@ -284,6 +302,17 @@ where
 {
     fn diff_with(&mut self, other: &IdMap<U>) {
         self.inner.diff_with(&other.inner);
+    }
+}
+
+pub struct Slices<'a, A>(RangesSlice<'a, ContentAttributes<A>>);
+
+impl<'a, A> Iterator for Slices<'a, A> {
+    type Item = (Range<u32>, Option<&'a ContentAttributes<A>>);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
     }
 }
 
@@ -795,10 +824,40 @@ mod test {
         assert_eq!(set, expected);
     }
 
-    #[ignore]
     #[test]
     fn attribution_encoding() {
-        //TODO: to make this test pass, we need to update transaction with notion of insert/delete id sets
+        use crate::{Acquire, AcquireMut, AttrValue, Cell, Doc};
+        let attributions = Cell::new(IdMap::<AttrValue>::new());
+        let mut doc = Doc::with_client_id(1);
+        let a = attributions.clone();
+        doc.observe_after_transaction_with("attr", move |txn| {
+            let mut a = a.acquire_mut();
+            let ins = vec![
+                ContentAttribute::insert("userX"),
+                ContentAttribute::insert_at(42),
+            ];
+            let del = vec![
+                ContentAttribute::delete("userX"),
+                ContentAttribute::delete_at(42),
+            ];
+            a.merge_with(IdMap::from_set(txn.insert_set(), ins));
+            a.merge_with(IdMap::from_set(txn.delete_set(), del));
+        });
+        for i in 0..100u32 {
+            let mut txn = doc.transact_mut();
+            let mut text = txn.node_mut("text").unwrap();
+            let len = text.len();
+            if i % 2 == 1 && len > 0 {
+                let pos = fastrand::u32(0..len);
+                text.remove(pos, fastrand::u32(0..(len - pos)));
+            } else {
+                text.insert_text(fastrand::u32(0..=len), "word");
+            }
+        }
+        let attributions = attributions.acquire().clone();
+        assert!(!attributions.is_empty());
+        let decoded = IdMap::<AttrValue>::decode_v1(&attributions.encode_v1()).unwrap();
+        assert_eq!(decoded, attributions);
     }
 
     fn construct<const N: usize>(ops: [(u64, u32, u32, Vec<u32>); N]) -> IdMap<u32> {

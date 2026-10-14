@@ -589,6 +589,71 @@ impl IdRanges<()> {
     }
 }
 
+/// Lazily splits `[clock, clock+len)` onto consecutive ranges, yielding the value of each range
+/// found in a client's ranges, or `None` for gaps - the shared core of `IdSet::slice` and
+/// `IdMap::slice`. When nothing matches, a single `None` range is yielded.
+pub(crate) struct RangesSlice<'a, T> {
+    /// Remaining ranges, starting at the first one which may overlap.
+    ranges: &'a [(Range<u32>, T)],
+    prev_end: u32,
+    end: u32,
+    /// A range found right after a gap, yielded on the next call.
+    pending: Option<(Range<u32>, &'a T)>,
+    emitted: bool,
+    done: bool,
+}
+
+impl<'a, T: Merge> RangesSlice<'a, T> {
+    pub fn new(ranges: Option<&'a IdRanges<T>>, clock: u32, len: u32) -> Self {
+        let ranges = ranges
+            .and_then(|r| r.find_start(clock).map(|i| &r.as_slice()[i..]))
+            .unwrap_or(&[]);
+        RangesSlice {
+            ranges,
+            prev_end: clock,
+            end: clock + len,
+            pending: None,
+            emitted: false,
+            done: false,
+        }
+    }
+}
+
+impl<'a, T> Iterator for RangesSlice<'a, T> {
+    type Item = (Range<u32>, Option<&'a T>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((range, value)) = self.pending.take() {
+            self.prev_end = range.end;
+            return Some((range, Some(value)));
+        }
+        if self.done {
+            return None;
+        }
+        if let Some(((range, value), rest)) = self.ranges.split_first()
+            && range.start < self.end
+        {
+            self.ranges = rest;
+            self.emitted = true;
+            let start = range.start.max(self.prev_end);
+            let stop = range.end.min(self.end);
+            if self.prev_end < start {
+                let gap = self.prev_end..start;
+                self.pending = Some((start..stop, value));
+                return Some((gap, None));
+            }
+            self.prev_end = stop;
+            return Some((start..stop, Some(value)));
+        }
+        self.done = true;
+        // trailing gap, or the whole range if nothing matched
+        if !self.emitted || self.prev_end < self.end {
+            return Some((self.prev_end..self.end, None));
+        }
+        None
+    }
+}
+
 /// Generic map from [`ClientID`] to [`IdRanges<T>`], using a [`BTreeMap`] for
 /// sorted client iteration. This is the shared core of [`IdSet`] and `IdMap<A>`.
 #[derive(Clone, PartialEq, Eq)]
@@ -603,8 +668,8 @@ impl<T: Merge> Default for IdMapInner<T> {
 
 impl<T: Merge> IdMapInner<T> {
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        IdMapInner(BTreeMap::new())
     }
 
     /// Returns `true` if the map contains no clock ranges.

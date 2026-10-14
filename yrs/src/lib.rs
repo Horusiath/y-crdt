@@ -612,6 +612,7 @@ pub mod block;
 mod block_store;
 pub mod doc;
 mod event;
+mod formatter;
 mod id_map;
 mod id_set;
 mod transaction;
@@ -629,6 +630,7 @@ mod input;
 pub mod iter;
 pub mod json_path;
 pub mod lib0;
+mod meta;
 pub mod node;
 mod node_ref;
 pub mod observer;
@@ -652,19 +654,26 @@ pub use crate::any::Any;
 pub use crate::block::ClientID;
 use crate::block::ContentKind;
 pub use crate::block::ID;
-pub use crate::delta::{AttrOp, Delta, Op};
+pub use crate::delta::{AttrOp, Attribute, Attribution, Delta, Op};
 pub use crate::doc::Doc;
 pub use crate::doc::OffsetKind;
 pub use crate::doc::Options;
 pub use crate::event::{
     Event, SubdocsEvent, SubdocsEventIter, TransactionCleanupEvent, UpdateEvent,
 };
+pub use crate::formatter::{
+    AttrValue, AttributeValue, AttributedFragment, AttributedFragmentKind, AttributionsFormatter,
+    DefaultFormatter, DeltaFormatter, RenderMode, SnapshotFormatter,
+};
 pub use crate::id_map::{AttrRange, ContentAttribute, ContentAttributes, Diff, IdMap};
 pub use crate::id_set::IdSet;
 pub use crate::input::In;
 pub use crate::json_path::{JsonPath, JsonPathEval};
+pub use crate::meta::{ContentIds, ContentMap};
 pub use crate::node::NodeID;
 pub use crate::node_ref::DeltaOptions;
+pub use crate::node_ref::Formatted;
+pub use crate::node_ref::Modified;
 pub use crate::node_ref::NodeRef;
 pub use crate::observer::{Observer, Subscription};
 pub use crate::out::Out;

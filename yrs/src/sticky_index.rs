@@ -1,5 +1,6 @@
 use crate::block::{ItemContent, ItemPtr};
 use crate::cursor::Cursor;
+use crate::formatter::{DefaultFormatter, DeltaFormatter, formatted_len};
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::NodePtr;
 use crate::{ClientID, Doc, DocHandle, ID, NodeID, NodeRef, Transaction};
@@ -138,51 +139,70 @@ impl StickyIndex {
     /// assert_ne!(off2.index, off.index); // offset index changed due to new insert above
     /// ```
     pub fn get_offset<D: DocHandle>(&self, txn: &Transaction<D>) -> Option<Offset> {
+        self.get_offset_fmt(txn, true, &DefaultFormatter)
+    }
+
+    /// Like [StickyIndex::get_offset], with the index counted in content formatted by `fmt`.
+    /// If `follow_undone_deletions` is set, the position follows content recreated by undo.
+    pub fn get_offset_fmt<D: DocHandle, F: DeltaFormatter>(
+        &self,
+        txn: &Transaction<D>,
+        follow_undone_deletions: bool,
+        fmt: &F,
+    ) -> Option<Offset> {
         let mut branch = None;
         let mut index = 0;
+        let doc = txn.doc();
+        let kind = doc.options.offset_kind;
 
         match &self.scope {
             IndexScope::Relative(right_id) => {
-                let store = txn.doc();
-                if store.blocks.get_clock(&right_id.client) <= right_id.clock {
+                if doc.blocks.get_clock(&right_id.client) <= right_id.clock {
                     // type does not exist yet
                     return None;
                 }
-                let right = store.follow_redone(right_id);
+                let right = if follow_undone_deletions {
+                    doc.follow_redone(right_id)
+                } else {
+                    doc.blocks.get_item_clean_start(right_id)
+                };
                 if let Some(right) = right {
                     if let Some(b) = right.ptr.parent.as_node() {
                         branch = Some(b.clone());
-                        match b.item {
-                            Some(i) if i.is_deleted() => { /* do nothing */ }
-                            _ => {
-                                // adjust position based on left association if necessary
-                                index = if right.is_deleted() || !right.is_countable() {
-                                    0
-                                } else if self.assoc == Assoc::After {
-                                    right.start
-                                } else {
-                                    right.start + 1
-                                };
-                                let encoding = store.options.offset_kind;
-                                let mut n = right.ptr.left;
-                                while let Some(item) = n.as_deref() {
-                                    if !item.is_deleted() && item.is_countable() {
-                                        index += item.content_len(encoding);
-                                    }
-                                    n = item.left;
-                                }
+                        // an index into a deleted type is meaningless - unless a formatter
+                        // still renders it
+                        let rendered = match b.item {
+                            Some(i) => !i.is_deleted() || formatted_len(fmt, &i, kind) > 0,
+                            None => true,
+                        };
+                        if rendered {
+                            // adjust position based on left association if necessary
+                            index = if formatted_len(fmt, &right.ptr, kind) == 0 {
+                                0
+                            } else if self.assoc == Assoc::After {
+                                right.start
+                            } else {
+                                right.start + 1
+                            };
+                            let mut n = right.ptr.left;
+                            while let Some(item) = n.as_deref() {
+                                index += formatted_len(fmt, item, kind);
+                                n = item.left;
                             }
                         }
                     }
                 }
             }
             IndexScope::Absolute(NodeID::Nested(id)) => {
-                let store = txn.doc();
-                if store.blocks.get_clock(&id.client) <= id.clock {
+                if doc.blocks.get_clock(&id.client) <= id.clock {
                     // type does not exist yet
                     return None;
                 }
-                let item = store.follow_redone(id)?; // early return if item is GC'ed
+                let item = if follow_undone_deletions {
+                    doc.follow_redone(id)?
+                } else {
+                    doc.blocks.get_item_clean_start(id)?
+                }; // early return if item is GC'ed
                 if let ItemContent::Node(b) = &item.ptr.content {
                     // we don't need to materilized ItemContent::Type - they are always 1-length
                     let ptr = NodePtr::from(b.as_ref());
@@ -216,8 +236,19 @@ impl StickyIndex {
     pub fn at<D: DocHandle>(
         txn: &Transaction<D>,
         branch: NodePtr,
+        index: u32,
+        assoc: Assoc,
+    ) -> Option<Self> {
+        Self::at_fmt(txn, branch, index, assoc, &DefaultFormatter)
+    }
+
+    /// Like [StickyIndex::at], with `index` counted in content formatted by `fmt`.
+    pub fn at_fmt<D: DocHandle, F: DeltaFormatter>(
+        txn: &Transaction<D>,
+        branch: NodePtr,
         mut index: u32,
         assoc: Assoc,
+        fmt: &F,
     ) -> Option<Self> {
         if assoc == Assoc::Before {
             if index == 0 {
@@ -226,7 +257,7 @@ impl StickyIndex {
             // Assoc::Before sticks to the element on the left side of the index
             index -= 1;
         }
-        let mut cursor = Cursor::at(branch, txn.doc().options.offset_kind, index)?;
+        let mut cursor = Cursor::at(branch, txn.doc().options.offset_kind, fmt, index)?;
         let context = match cursor.next_id() {
             Some(id) => IndexScope::Relative(id),
             None if assoc == Assoc::Before => IndexScope::Absolute(branch.id()),
@@ -237,7 +268,7 @@ impl StickyIndex {
 
     pub(crate) fn within_range(&self, ptr: Option<ItemPtr>) -> bool {
         if self.assoc == Assoc::Before {
-            return false;
+            false
         } else if let Some(item) = ptr.as_deref() {
             if let Some(ptr) = item.left {
                 if let Some(pos) = self.id() {
