@@ -540,11 +540,23 @@ fn apply_ops<F: DeltaFormatter>(
                 let n = cursor.remove(doc, state, len);
                 assert_eq!(n, len)
             }
-            Op::Modify { .. } => {
+            Op::Modify { delta, format, .. } => {
                 cursor.skip_hidden();
                 let item = cursor.right().unwrap();
-                //assert_matches!(item.content, ItemContent::Node { .. });
-                if item.is_deleted() { todo!() } else { todo!() }
+                if item.is_deleted() {
+                    cursor.forward(1);
+                } else {
+                    let child = item.as_node().unwrap();
+                    apply_delta(doc, state, child, *delta, fmt);
+                    match format {
+                        Some(attrs) => {
+                            cursor.format(doc, state, 1, &attrs);
+                        }
+                        None => {
+                            cursor.forward(1);
+                        }
+                    }
+                }
             }
         }
     }

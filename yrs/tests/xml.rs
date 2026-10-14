@@ -1,7 +1,9 @@
 use yrs::lib0::Decode;
 use yrs::node::Observable;
 use yrs::test_utils::exchange_updates;
-use yrs::{Acquire, AcquireMut, Attribute, Cell, Delta, Doc, In, Out, StateVector, Update};
+use yrs::{
+    Acquire, AcquireMut, Attribute, Cell, Delta, DeltaOptions, Doc, In, Out, StateVector, Update,
+};
 
 #[test]
 fn insert_attribute() {
@@ -407,5 +409,43 @@ fn element_attributed_content() {
         .insert_range_attributed([Out::node_with_delta(e3, world)], None, inserted.clone())
         .insert_attr_attributed("key", "42", inserted);
     // <p key="42">~~{hello}~~<span/>{world}</p>
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn apply_delta_modify_nested_node() {
+    let mut doc = Doc::with_client_id(1);
+    let mut txn = doc.transact_mut();
+    let (div, span) = {
+        let mut root = txn.node_mut("xml").unwrap();
+        let Out::Node(div) = root.push_back(In::Node(Box::new(Delta::with_name("div")))) else {
+            unreachable!()
+        };
+        let Out::Node(span) = root.push_back(In::Node(Box::new(Delta::with_name("span")))) else {
+            unreachable!()
+        };
+        (div.id, span.id)
+    }; // <xml><div/><span/></xml>
+    // recurse into <div>, step over it, then edit <span>
+    txn.node_mut("xml").unwrap().apply_delta(
+        Delta::new()
+            .modify(Delta::new().insert_text("hello").insert_attr("id", "a"))
+            .modify(Delta::new().insert_text("world")),
+    ); // <xml><div id="a">hello</div><span>world</span></xml>
+    let actual = txn.node("xml").unwrap().delta(&DeltaOptions {
+        deep: true,
+        ..Default::default()
+    });
+    let expected = Delta::out()
+        .insert(Out::node_with_delta(
+            div,
+            Delta::with_name("div")
+                .insert_text("hello")
+                .insert_attr("id", "a"),
+        ))
+        .insert(Out::node_with_delta(
+            span,
+            Delta::with_name("span").insert_text("world"),
+        ));
     assert_eq!(actual, expected);
 }
