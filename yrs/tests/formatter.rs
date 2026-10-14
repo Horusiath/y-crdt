@@ -26,7 +26,7 @@ fn sync(from: &Doc, to: &mut Doc) -> ContentIds {
 }
 
 fn diff_formatter(base: &ContentIds, doc: &Doc) -> DiffFormatter {
-    DiffFormatter::new(ContentIds::from_doc(doc).diff(base), None)
+    DiffFormatter::unattributed(&ContentIds::from_doc(doc).diff(base))
 }
 
 fn render(doc: &Doc, base: &ContentIds) -> Delta {
@@ -454,7 +454,7 @@ fn init_doc() -> (Doc, Doc) {
 #[test]
 fn formatted() {
     let (base, doc) = init_doc();
-    let mut fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(&base, &doc), None);
+    let mut fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(&base, &doc));
     fmt.restore_content(&base.transact());
     let txn = doc.transact();
     let text = txn.node("text").unwrap();
@@ -470,7 +470,7 @@ fn formatted() {
 #[test]
 fn insertions_minding_attributed_content() {
     let (base, mut doc) = init_doc();
-    let mut fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(&base, &doc), None);
+    let mut fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(&base, &doc));
     fmt.restore_content(&base.transact());
     let c1 = render_text(&doc, &fmt);
     let expected = Delta::out().insert_text("hello ").insert_text_attributed(
@@ -498,7 +498,7 @@ fn insertions_into_attributed_content() {
         .node_mut("text")
         .unwrap()
         .insert_text(6, "word"); // "hello word"
-    let fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(&base, &doc), None);
+    let fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(&base, &doc));
     let c1 = render_text(&doc, &fmt);
     let expected = Delta::out().insert_text("hello ").insert_text_attributed(
         "word",
@@ -633,7 +633,7 @@ fn attribution_session1() {
     }
     exchange_updates(&mut [&mut u0, &mut u1, &mut u2]);
     let by = |user: &str| [Attribute::from(user)];
-    let fmt = DiffFormatter::new(ContentIds::doc_diff(&v1, &u0), Some(global.clone()));
+    let fmt = DiffFormatter::new(&ContentIds::doc_diff(&v1, &u0), Some(global.clone()));
     let d1 = render_text(&u0, &fmt);
     let expected = Delta::out()
         .insert_text_attributed("a", None, Some(Attribution::insert(by("0"))))
@@ -651,7 +651,7 @@ fn attribution_session1() {
         attribute(&mut global, ContentIds::from_transaction(&txn), "1");
     }
     exchange_updates(&mut [&mut u0, &mut u1, &mut u2]);
-    let fmt = DiffFormatter::new(ContentIds::doc_diff(&v2, &u0), Some(global.clone()));
+    let fmt = DiffFormatter::new(&ContentIds::doc_diff(&v2, &u0), Some(global.clone()));
     let d2 = render_text(&u0, &fmt);
     let expected = Delta::out()
         .insert_text("a")
@@ -688,7 +688,7 @@ fn attribution_change() {
         .node_mut("root")
         .unwrap()
         .apply_delta(Delta::new().retain(2).insert_text("!"));
-    let mut fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(&base, &doc), None);
+    let mut fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(&base, &doc));
     let changes = fmt.retract(&sync(&doc, &mut base));
     let opts = DeltaOptions {
         deep: true,
@@ -709,7 +709,7 @@ fn attribution_change() {
 #[test]
 fn diff_gc_deleted_content() {
     let (base, doc) = init_doc();
-    let mut fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(&base, &doc), None);
+    let mut fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(&base, &doc));
     let opaque = Delta::out().insert_text("hello ").remove(5);
     assert_eq!(render_text(&doc, &fmt), opaque);
     fmt.restore_content(&base.transact());

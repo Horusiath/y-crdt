@@ -452,7 +452,7 @@ fn apply_delta_modify_nested_node() {
 }
 
 fn diff_render(base: &Doc, doc: &Doc, name: &str) -> Delta {
-    let fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(base, doc), None);
+    let fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(base, doc));
     let txn = doc.transact();
     let deep = DeltaOptions {
         deep: true,
@@ -530,7 +530,7 @@ fn element_attributed_content_via_differ() {
     assert_eq!(actual.name, None);
 
     // the base doc catches up: its changes are no longer attributed
-    let mut fmt: DiffFormatter = DiffFormatter::new(ContentIds::doc_diff(&v1, &doc), None);
+    let mut fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(&v1, &doc));
     let update = doc
         .transact()
         .encode_state_as_update_v1(&StateVector::default());
@@ -617,7 +617,8 @@ fn to_delta_deep_emits_no_delete_ops_for_soft_deleted_parent() {
         (item, inner.node_id().unwrap())
     };
     doc.transact_mut().node_mut("frag").unwrap().remove(0, 1); // <frag></frag>
-    // the cascade surfaces as attributed inserts, never as delete ops
+    // a soft-deleted subtree renders as positive ops with delete attribution, never as delete
+    // ops: the output is a document, not a change (y-prosemirror #247)
     let deleted = Some(Attribution::delete::<Attribute>([]));
     let hello = Delta::out().insert_text_attributed("hello", None, deleted.clone());
     let item_delta = Delta::with_name("item")

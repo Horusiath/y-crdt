@@ -174,7 +174,7 @@ impl Doc {
     /// longer held by this doc is restored from `prev`.
     pub fn diff(&self, prev: &Doc) -> Delta<Out> {
         let diff = ContentIds::doc_diff(prev, self);
-        let mut fmt: DiffFormatter = DiffFormatter::new(diff.clone(), None);
+        let mut fmt = DiffFormatter::unattributed(&diff);
         fmt.restore_content(&prev.transact());
         render_diff(self, diff, &fmt)
     }

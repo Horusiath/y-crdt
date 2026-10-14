@@ -559,20 +559,22 @@ pub struct DiffFormatter<A: AttributeValue = AttrValue> {
     restored: BTreeMap<ID, ItemContent>,
 }
 
+impl DiffFormatter {
+    /// Renders a `diff` (ex. [ContentIds::doc_diff]) with no attributions.
+    pub fn unattributed(diff: &ContentIds) -> Self {
+        DiffFormatter::new(diff, None)
+    }
+}
+
 impl<A: AttributeValue> DiffFormatter<A> {
     /// Renders a `diff` (ex. [ContentIds::doc_diff]) with optional `attributions`.
-    pub fn new(diff: ContentIds, attributions: Option<ContentMap<A>>) -> Self {
-        let ContentIds {
-            inserts,
-            mut deletes,
-        } = diff;
+    pub fn new(diff: &ContentIds, attributions: Option<ContentMap<A>>) -> Self {
         // unlike Yjs: content both inserted and deleted never renders, whether gc'd or not
-        deletes.diff_with(&inserts);
+        let deletes = diff.deletes.diff(&diff.inserts);
         let attrs = attributions.as_ref();
-        let insert_map = extract(attrs.map(|a| &a.inserts), &inserts);
+        let insert_map = extract(attrs.map(|a| &a.inserts), &diff.inserts);
         let delete_map = extract(attrs.map(|a| &a.deletes), &deletes);
-        let mut attributed = inserts;
-        attributed.merge_with(deletes);
+        let attributed = diff.inserts.merge(&deletes);
         DiffFormatter {
             inserts: insert_map,
             deletes: delete_map,
@@ -590,9 +592,8 @@ impl<A: AttributeValue> DiffFormatter<A> {
         let mut deletes = extract(attrs.map(|a| &a.deletes), &changes.deletes);
         deletes.diff_with(&self.inserts);
         self.deletes.merge_with(deletes);
-        // `attributed` already covers `inserts`
-        self.attributed.0.merge_with(&changes.inserts.0);
-        self.attributed.0.merge_with(&changes.deletes.0);
+        self.attributed
+            .merge_with(changes.inserts.merge(&changes.deletes));
     }
 
     /// `changes` became base content (accepted, or synced into the base doc). Returns the ids
