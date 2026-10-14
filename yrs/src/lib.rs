@@ -663,7 +663,7 @@ pub use crate::event::{
 };
 pub use crate::formatter::{
     AttrValue, AttributeValue, AttributedFragment, AttributedFragmentKind, AttributionsFormatter,
-    DefaultFormatter, DeltaFormatter, RenderMode, SnapshotFormatter,
+    DefaultFormatter, DeltaFormatter, DiffFormatter, RenderMode, SnapshotFormatter,
 };
 pub use crate::id_map::{AttrRange, ContentAttribute, ContentAttributes, Diff, IdMap};
 pub use crate::id_set::IdSet;

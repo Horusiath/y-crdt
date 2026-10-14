@@ -65,7 +65,12 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         }
         let mut remaining = offset;
         for p in self.visible_fragments(&item) {
-            let len = native_len(&item, &p.range, self.encoding);
+            let len = native_len(
+                &item.content,
+                p.range.start - item.id.clock,
+                p.len(),
+                self.encoding,
+            );
             if remaining <= len {
                 let clock =
                     p.range.start + clock_len(&item, p.range.start, remaining, self.encoding);
@@ -412,13 +417,24 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         while i < pieces.len() && remaining > 0 {
             let p = &pieces[i];
             if (!p.deleted || p.attrs.is_some()) && item.is_countable() {
-                remaining -= native_len(&item, &p.range, self.encoding) as i64;
+                remaining -= native_len(
+                    &item.content,
+                    p.range.start - item.id.clock,
+                    p.len(),
+                    self.encoding,
+                ) as i64;
             }
             i += 1;
         }
         if remaining < 0 || (remaining == 0 && i != pieces.len()) {
             let p = &pieces[i - 1];
-            let consumed = (native_len(&item, &p.range, self.encoding) as i64 + remaining) as u32;
+            let consumed = (native_len(
+                &item.content,
+                p.range.start - item.id.clock,
+                p.len(),
+                self.encoding,
+            ) as i64
+                + remaining) as u32;
             let clock = clock_len(&item, p.range.start, consumed, self.encoding);
             Self::split_at(doc, item, p.range.start + clock);
         }
@@ -445,7 +461,12 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                     split_clock = Some(p.range.start);
                     break;
                 }
-                let plen = native_len(&item, &p.range, self.encoding);
+                let plen = native_len(
+                    &item.content,
+                    p.range.start - item.id.clock,
+                    p.len(),
+                    self.encoding,
+                );
                 let n = plen.min(len);
                 let clock_len = clock_len(&item, p.range.start, n, self.encoding);
                 let deletes = state.attributed_deletes.get_or_insert_with(IdSet::new);

@@ -4,15 +4,13 @@ use crate::delta::{AttrOp, Attribution, Op};
 use crate::formatter::{
     AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, RenderMode,
 };
-use crate::id_set::DeleteSet;
-use crate::iter::TxnIterator;
 use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRef};
 use crate::slice::BlockSlice;
 use crate::transaction::DocHandle;
 use crate::{
-    Any, Assoc, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, StickyIndex, Transaction,
-    TransactionState,
+    Any, Assoc, ContentIds, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, StickyIndex,
+    Transaction, TransactionState,
 };
 use serde::Deserialize;
 use serde::de::value::{MapDeserializer, SeqDeserializer};
@@ -272,22 +270,24 @@ where
     }
 
     fn render<F: DeltaFormatter>(&self, fmt: &F, options: &DeltaOptions) -> Delta {
+        let sym_diff;
         let items = match (&options.items_to_render, &options.deleted_items) {
             (None, None) => None,
-            (Some(inserted), None) => Some(inserted.clone()),
-            (None, Some(deleted)) => Some(deleted.clone()),
+            (Some(inserted), None) => Some(inserted),
+            (None, Some(deleted)) => Some(deleted),
             (Some(inserted), Some(deleted)) => {
                 // either inserted or deleted but not both at the same time
                 let mut items = inserted.diff(deleted);
                 items.merge_with(deleted.diff(inserted));
-                Some(items)
+                sym_diff = items;
+                Some(&sym_diff)
             }
         };
         let computed;
-        let modified = match (&options.modified, &items) {
+        let modified = match (&options.modified, items) {
             (Some(modified), _) => Some(modified),
             (None, Some(items)) if options.deep => {
-                computed = self.compute_modified(items);
+                computed = compute_modified(self.txn.doc(), items);
                 Some(&computed)
             }
             _ => None,
@@ -305,27 +305,6 @@ where
             link_depth: options.link_depth,
         };
         render.node(self.ptr)
-    }
-
-    /// Maps every node touched by `items` onto a set of
-    /// keys changed within it (a `None` key marks a change made to node's children).
-    fn compute_modified(&self, items: &IdSet) -> Modified {
-        let mut modified = Modified::new();
-        let mut blocks = items.blocks();
-        while let Some(block) = blocks.next(&*self.txn) {
-            if let BlockSlice::Item(slice) = block {
-                let mut current = Some(slice.ptr);
-                while let Some(item) = current {
-                    let parent = item.parent.as_node().unwrap();
-                    let keys = modified.entry(*parent).or_default();
-                    if !keys.insert(item.parent_sub.clone()) {
-                        break; // has already been marked as modified
-                    }
-                    current = parent.item;
-                }
-            }
-        }
-        modified
     }
 
     pub fn format_xml(&self) -> XmlFormat {
@@ -903,7 +882,7 @@ pub(crate) fn get_delta<F: DeltaFormatter>(
     let render = DeltaWalk {
         fmt,
         encoding: doc.options.offset_kind,
-        items: Some(items),
+        items: Some(&items),
         inserted_items: Some(&state.insert_set),
         deleted: None,
         modified: Some(modified),
@@ -913,6 +892,55 @@ pub(crate) fn get_delta<F: DeltaFormatter>(
         link_depth: 0,
     };
     render.node(node)
+}
+
+/// Maps every node touched by `items` onto a set of keys changed within it (a `None` key marks
+/// a change made to node's children).
+fn compute_modified(doc: &Doc, items: &IdSet) -> Modified {
+    let mut modified = Modified::new();
+    for block in items.iter_blocks(&doc.blocks) {
+        if let BlockSlice::Item(slice) = block {
+            let mut current = Some(slice.ptr);
+            while let Some(item) = current {
+                let parent = item.parent.as_node().unwrap();
+                let keys = modified.entry(*parent).or_default();
+                if !keys.insert(item.parent_sub.clone()) {
+                    break; // has already been marked as modified
+                }
+                current = parent.item;
+            }
+        }
+    }
+    modified
+}
+
+/// Renders a `diff` of `next` through a formatter `fmt` as a delta modifying every changed root
+/// node (see: [Doc::diff_with]).
+pub(crate) fn render_diff<F: DeltaFormatter>(next: &Doc, diff: ContentIds, fmt: &F) -> Delta<Out> {
+    // don't render content which was both inserted and deleted
+    let mut items = diff.inserts.diff(&diff.deletes);
+    items.merge_with(diff.deletes);
+    let opts = DeltaOptions {
+        deep: true,
+        retain_deletes: true,
+        modified: Some(compute_modified(next, &items)),
+        items_to_render: Some(items),
+        // unlike Yjs: content inserted and deleted since `prev` is fresh, so it renders as
+        // nothing whether `next` gc'd it or not
+        inserted_items: Some(diff.inserts),
+        ..Default::default()
+    };
+    let modified = opts.modified.as_ref().unwrap();
+    let txn = next.transact();
+    let mut delta = Delta::default();
+    for (name, node) in next.types.iter() {
+        let ptr = NodePtr::from(node);
+        if modified.contains_key(&ptr) {
+            let root = NodeRef::new(ptr, &txn);
+            delta.modify_attr_with(name.clone(), root.formatted(fmt).delta(&opts));
+        }
+    }
+    delta
 }
 
 fn expand_modified(changed: &Modified) -> Modified {
@@ -1040,7 +1068,7 @@ struct DeltaWalk<'a, F: DeltaFormatter> {
     encoding: OffsetKind,
     /// If `None` renders the full node state.
     /// Otherwise, will render only changes marked on [IdSet].
-    items: Option<IdSet>,
+    items: Option<&'a IdSet>,
     /// Ids inserted by the change being rendered; content that is both in `insertedItems`
     /// and deleted renders as a *fresh* insert even under `retainDeletes` (it was never part
     /// of the consuming state)

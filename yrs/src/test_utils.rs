@@ -31,16 +31,6 @@ pub fn attribute_all(ids: &crate::ContentIds) -> crate::AttributionsFormatter {
     crate::AttributionsFormatter::new(&map)
 }
 
-/// Equivalent of a Yjs `DiffRenderer` created when `doc` had the content `base`: content inserted
-/// since is attributed as inserted, content deleted since (and not inserted since) as deleted.
-pub fn diff_formatter(base: &crate::ContentIds, doc: &Doc) -> crate::AttributionsFormatter {
-    let next = crate::ContentIds::from_doc(doc);
-    let diff = next.diff(base);
-    let inserts = diff.inserts.diff(&next.deletes);
-    let deletes = diff.deletes.diff(&diff.inserts);
-    attribute_all(&crate::ContentIds::new(inserts, deletes))
-}
-
 pub fn exchange_updates(docs: &mut [&mut Doc]) {
     for i in 0..docs.len() {
         for j in 0..docs.len() {

@@ -2,15 +2,17 @@ use crate::Observer;
 use crate::block::{Block, ClientID, ItemContent, ItemPtr};
 use crate::block_store::BlockStore;
 use crate::event::{SubdocsEvent, TransactionCleanupEvent, UpdateEvent};
+use crate::formatter::{DeltaFormatter, DiffFormatter};
 use crate::id_set::DeleteSet;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::node::{Node, NodePtr, Path, PathSegment, TypeRef};
+use crate::node_ref::render_diff;
 use crate::slice::ItemSlice;
 use crate::transaction::TransactionState;
 use crate::transaction::{Origin, TransactionMut};
 use crate::update::PendingUpdate;
 use crate::utils::OptionExt;
-use crate::{Any, Subscription};
+use crate::{Any, ContentIds, Delta, Out, Subscription};
 use crate::{ID, IdSet, NodeID, Snapshot, StateVector, Transaction, Uuid, uuid_v4, uuid_v4_from};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
@@ -165,6 +167,21 @@ impl Doc {
             doc: self,
             state: None,
         }
+    }
+
+    /// Renders the changes made since `prev` as attributed inserts and deletes, as a delta
+    /// modifying every changed root node (a port of Yjs `diffDocsToDelta`). Deleted content no
+    /// longer held by this doc is restored from `prev`.
+    pub fn diff(&self, prev: &Doc) -> Delta<Out> {
+        let diff = ContentIds::doc_diff(prev, self);
+        let mut fmt: DiffFormatter = DiffFormatter::new(diff.clone(), None);
+        fmt.restore_content(&prev.transact());
+        render_diff(self, diff, &fmt)
+    }
+
+    /// Renders the changes made since `prev` through a formatter `fmt` (see: [Doc::diff]).
+    pub fn diff_with<F: DeltaFormatter>(&self, prev: &Doc, fmt: &F) -> Delta<Out> {
+        render_diff(self, ContentIds::doc_diff(prev, self), fmt)
     }
 
     /// Creates a read-write capable transaction.

@@ -1,9 +1,11 @@
 use crate::block::{BlockRange, Item, ItemContent, split_str};
 use crate::delta::Attribution;
-use crate::id_map::{ContentAttribute, ContentAttributes, IdMap};
-use crate::meta::ContentMap;
-use crate::{ClientID, ID, IdSet, OffsetKind, Snapshot};
+use crate::id_map::{ContentAttribute, ContentAttributes, Diff, IdMap};
+use crate::meta::{ContentIds, ContentMap};
+use crate::slice::BlockSlice;
+use crate::{ClientID, DocHandle, ID, IdSet, OffsetKind, Snapshot, Transaction};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
@@ -242,15 +244,14 @@ pub(crate) fn formatted_len<F: DeltaFormatter>(fmt: &F, item: &Item, kind: Offse
 }
 
 /// Calculates native length (as defined by `kind`) from UTF-16 (yjs-compatible) clock length.
-pub(crate) fn native_len(item: &Item, range: &Range<u32>, kind: OffsetKind) -> u32 {
-    match (&item.content, kind) {
+pub(crate) fn native_len(content: &ItemContent, offset: u32, len: u32, kind: OffsetKind) -> u32 {
+    match (content, kind) {
         (ItemContent::String(s), OffsetKind::Bytes) => {
-            let offset = (range.start - item.id.clock) as usize;
-            let (_, rest) = split_str(s.as_str(), offset, OffsetKind::Utf16);
-            let (slice, _) = split_str(rest, (range.end - range.start) as usize, OffsetKind::Utf16);
+            let (_, rest) = split_str(s.as_str(), offset as usize, OffsetKind::Utf16);
+            let (slice, _) = split_str(rest, len as usize, OffsetKind::Utf16);
             slice.len() as u32
         }
-        _ => range.end - range.start,
+        _ => len,
     }
 }
 
@@ -276,7 +277,12 @@ fn covered_len(
     let mut len = 0;
     for (range, exists) in ranges {
         if exists {
-            len += native_len(item, &range, kind);
+            len += native_len(
+                &item.content,
+                range.start - item.id.clock,
+                range.end - range.start,
+                kind,
+            );
         }
     }
     len
@@ -531,5 +537,282 @@ impl DeltaFormatter for SnapshotFormatter {
     #[inline]
     fn attributed(&self) -> &IdSet {
         &self.attributed
+    }
+}
+
+/// Renders the difference between two docs as attributed changes - the formatter part of Yjs
+/// `DiffRenderer`.
+///
+/// Content inserted since the base doc renders as an attributed insert, content deleted since as
+/// an attributed delete. Deleted content already garbage collected by the formatted doc renders
+/// only as a delete op, unless restored (see: [restore_content]).
+#[derive(Debug, Clone)]
+pub struct DiffFormatter<A: AttributeValue = AttrValue> {
+    /// Content inserted since the base doc.
+    inserts: IdMap<A>,
+    /// Content deleted since the base doc, minus `inserts`.
+    deletes: IdMap<A>,
+    /// Coverage of both maps.
+    attributed: IdSet,
+    attributions: Option<ContentMap<A>>,
+    /// Content of deleted ranges, which the formatted doc no longer holds.
+    restored: BTreeMap<ID, ItemContent>,
+}
+
+impl<A: AttributeValue> DiffFormatter<A> {
+    /// Renders a `diff` (ex. [ContentIds::doc_diff]) with optional `attributions`.
+    pub fn new(diff: ContentIds, attributions: Option<ContentMap<A>>) -> Self {
+        let ContentIds {
+            inserts,
+            mut deletes,
+        } = diff;
+        // unlike Yjs: content both inserted and deleted never renders, whether gc'd or not
+        deletes.diff_with(&inserts);
+        let attrs = attributions.as_ref();
+        let insert_map = extract(attrs.map(|a| &a.inserts), &inserts);
+        let delete_map = extract(attrs.map(|a| &a.deletes), &deletes);
+        let mut attributed = inserts;
+        attributed.merge_with(deletes);
+        DiffFormatter {
+            inserts: insert_map,
+            deletes: delete_map,
+            attributed,
+            attributions,
+            restored: BTreeMap::new(),
+        }
+    }
+
+    /// New `changes` appeared in the formatted doc. They must not contain base doc content.
+    pub fn extend(&mut self, changes: &ContentIds) {
+        let attrs = self.attributions.as_ref();
+        let inserts = extract(attrs.map(|a| &a.inserts), &changes.inserts);
+        self.inserts.merge_with(inserts);
+        let mut deletes = extract(attrs.map(|a| &a.deletes), &changes.deletes);
+        deletes.diff_with(&self.inserts);
+        self.deletes.merge_with(deletes);
+        // `attributed` already covers `inserts`
+        self.attributed.0.merge_with(&changes.inserts.0);
+        self.attributed.0.merge_with(&changes.deletes.0);
+    }
+
+    /// `changes` became base content (accepted, or synced into the base doc). Returns the ids
+    /// whose attribution changed.
+    pub fn retract(&mut self, changes: &ContentIds) -> IdSet {
+        self.inserts.diff_with(&changes.inserts);
+        self.deletes.diff_with(&changes.deletes);
+        let mut evicted = changes.inserts.merge(&changes.deletes);
+        self.attributed.diff_with(&evicted);
+        // an evicted range may still be covered by the other map
+        for (&client, ranges) in evicted.iter() {
+            for range in ranges.iter() {
+                let range = BlockRange::new(ID::new(client, range.start), range.end - range.start);
+                for map in [&self.inserts, &self.deletes] {
+                    for (r, attrs) in map.slice(&range) {
+                        if attrs.is_some() {
+                            self.attributed
+                                .insert(ID::new(client, r.start), r.end - r.start);
+                        }
+                    }
+                }
+            }
+        }
+        self.restored.retain(|id, content| {
+            let range = BlockRange::new(*id, content.len(OffsetKind::Utf16));
+            !changes.deletes.contains_range(&range)
+        });
+        evicted.diff_with(&changes.inserts.intersect(&changes.deletes));
+        evicted
+    }
+
+    /// Supplies the `content` of a deleted range starting at `id`.
+    pub fn restore(&mut self, id: ID, content: ItemContent) {
+        if content.len(OffsetKind::Utf16) != 0 {
+            self.restored.insert(id, content);
+        }
+    }
+
+    /// Restores the deleted content this formatter renders from `src`, a doc which still holds it
+    /// (ex. the base doc). Garbage collected content not restored renders only as a delete op.
+    pub fn restore_content<D: DocHandle>(&mut self, src: &Transaction<D>) {
+        let mut missing = self.deletes.as_id_set();
+        for (id, content) in self.restored.iter() {
+            missing.remove_range(&BlockRange::new(*id, content.len(OffsetKind::Utf16)));
+        }
+        for slice in missing.iter_blocks(&src.doc().blocks) {
+            let BlockSlice::Item(slice) = slice else {
+                continue;
+            };
+            let item = &*slice.ptr;
+            // node content can't be copied out of its doc
+            if let ItemContent::Deleted(_) | ItemContent::Node(_) = item.content {
+                continue;
+            }
+            let content = slice_content(&item.content, slice.start, slice.end - slice.start + 1);
+            self.restore(
+                ID::new(item.id.client, item.id.clock + slice.start),
+                content,
+            );
+        }
+    }
+
+    /// Splits a gc'd `range` into restored and opaque parts.
+    fn gc_slices<'f>(
+        &'f self,
+        client: ClientID,
+        mut range: Range<u32>,
+        mut f: impl FnMut(Range<u32>, AttributedFragmentKind<'f>),
+    ) {
+        while range.start < range.end {
+            let id = ID::new(client, range.start);
+            let covering = self
+                .restored
+                .range(..=id)
+                .next_back()
+                .and_then(|(start, c)| {
+                    let end = start.clock + c.len(OffsetKind::Utf16);
+                    (start.client == client && end > id.clock).then_some((start.clock, end, c))
+                });
+            let (end, kind) = match covering {
+                Some((start, end, content)) => {
+                    let offset = range.start - start;
+                    let kind = AttributedFragmentKind::Restored { content, offset };
+                    (end.min(range.end), kind)
+                }
+                None => {
+                    let next = self.restored.range(id..ID::new(client, range.end)).next();
+                    let end = next.map_or(range.end, |(id, _)| id.clock);
+                    (end, AttributedFragmentKind::Opaque)
+                }
+            };
+            f(range.start..end, kind);
+            range.start = end;
+        }
+    }
+
+    fn push<'f>(
+        &'f self,
+        out: &mut Vec<AttributedFragment<'f, A>>,
+        item: &Item,
+        range: Range<u32>,
+        attrs: Option<&ContentAttributes<A>>,
+        mode: RenderMode,
+    ) {
+        if let ItemContent::Deleted(_) = item.content {
+            self.gc_slices(item.id.client, range, |range, content| {
+                let mut fragment = AttributedFragment::new(range, true, attrs.cloned(), mode);
+                fragment.content = content;
+                out.push(fragment);
+            });
+        } else {
+            let fragment = AttributedFragment::new(range, item.is_deleted(), attrs.cloned(), mode);
+            out.push(fragment);
+        }
+    }
+}
+
+/// Attributes all `ids` with matching `attrs`, or with an empty list.
+fn extract<A: AttributeValue>(attrs: Option<&IdMap<A>>, ids: &IdSet) -> IdMap<A> {
+    let all = IdMap::from_set(ids, Vec::new());
+    match attrs {
+        None => all,
+        Some(attrs) => {
+            let mut map = all.clone();
+            map.intersect_with(attrs);
+            map.merge_with(all);
+            map
+        }
+    }
+}
+
+impl<A: AttributeValue> DeltaFormatter for DiffFormatter<A> {
+    type Attr = A;
+
+    #[inline]
+    fn contains(&self, item: &Item) -> bool {
+        self.attributed.intersects(&item.range())
+    }
+
+    fn read_content<'f>(
+        &'f self,
+        out: &mut Vec<AttributedFragment<'f, A>>,
+        item: &Item,
+        range: BlockRange,
+        mode: RenderMode,
+    ) {
+        let deleted = item.is_deleted();
+        let gc = matches!(item.content, ItemContent::Deleted(_));
+        let map = if deleted {
+            &self.deletes
+        } else {
+            &self.inserts
+        };
+        for (r, attrs) in map.slice(&range) {
+            if deleted && attrs.is_none() {
+                if matches!(mode, RenderMode::Retain | RenderMode::Fresh) {
+                    continue;
+                }
+                if gc {
+                    // gc'd content inserted since the base doc renders as nothing
+                    for (r, inserted) in self.inserts.slice(&range.subrange(r)) {
+                        if inserted.is_none() {
+                            self.push(out, item, r, None, mode);
+                        }
+                    }
+                    continue;
+                }
+            }
+            self.push(out, item, r, attrs, mode);
+        }
+    }
+
+    fn content_len(&self, item: &Item, kind: OffsetKind) -> u32 {
+        if !item.is_deleted() {
+            return if item.is_countable() {
+                item.content_len(kind)
+            } else {
+                0
+            };
+        }
+        let slices = self.deletes.slice(&item.range());
+        if !matches!(item.content, ItemContent::Deleted(_)) {
+            return if item.is_countable() {
+                covered_len(item, slices.map(|(r, a)| (r, a.is_some())), kind)
+            } else {
+                0
+            };
+        }
+        let mut len = 0;
+        for (range, attrs) in slices {
+            if attrs.is_some() {
+                self.gc_slices(item.id.client, range, |range, content| {
+                    if let AttributedFragmentKind::Restored { content, offset } = content {
+                        if content.is_countable() {
+                            len += native_len(content, offset, range.end - range.start, kind);
+                        }
+                    }
+                });
+            }
+        }
+        len
+    }
+
+    #[inline]
+    fn attributed(&self) -> &IdSet {
+        &self.attributed
+    }
+}
+
+/// Copies a `len` long slice of `content` starting at clock `offset`.
+fn slice_content(content: &ItemContent, offset: u32, len: u32) -> ItemContent {
+    let range = offset as usize..(offset + len) as usize;
+    match content {
+        ItemContent::String(s) => {
+            let (_, rest) = split_str(s.as_str(), range.start, OffsetKind::Utf16);
+            let (slice, _) = split_str(rest, len as usize, OffsetKind::Utf16);
+            ItemContent::String(slice.into())
+        }
+        ItemContent::Any(values) => ItemContent::Any(values[range].to_vec()),
+        ItemContent::JSON(values) => ItemContent::JSON(values[range].to_vec()),
+        other => other.clone(),
     }
 }
