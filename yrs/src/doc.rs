@@ -14,6 +14,7 @@ use crate::update::PendingUpdate;
 use crate::utils::OptionExt;
 use crate::{Any, ContentIds, Delta, Out, Subscription};
 use crate::{ID, IdSet, NodeID, Snapshot, StateVector, Transaction, Uuid, uuid_v4, uuid_v4_from};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -837,6 +838,25 @@ impl Default for Doc {
     }
 }
 
+impl Serialize for Doc {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.options.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Doc {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let options = Options::deserialize(deserializer)?;
+        Ok(Doc::with_options(options))
+    }
+}
+
 macro_rules! define_event_type {
     ($name:ident ($($args:tt)*)) => {
         #[cfg(feature = "sync")]
@@ -923,7 +943,7 @@ impl DocEvents {
 }
 
 /// Configuration options of [Doc] instance.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Options {
     /// Globally unique client identifier. This value must be unique across all active collaborating
     /// peers, otherwise a update collisions will happen, causing document store state to be corrupted.
@@ -1053,7 +1073,7 @@ impl Decode for Options {
 
 /// Determines how string length and offsets of [Text]/[XmlText] are being determined.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OffsetKind {
     /// Compute editable strings length and offset using UTF-8 byte count.
     Bytes,

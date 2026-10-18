@@ -1118,6 +1118,7 @@ impl TransactionState {
                 inner_ref.unwrap(),
                 remainder,
                 &crate::DefaultFormatter,
+                &mut crate::Delta::new(),
             );
         }
 

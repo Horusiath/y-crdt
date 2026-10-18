@@ -7,7 +7,8 @@ use crate::{
     Any, Assoc, ClientID, Doc, ID, In, IndexScope, Observer, Origin, Out, StickyIndex,
     Subscription, Transaction,
 };
-use serde::{Deserialize, Serialize, Serializer};
+use serde::de::{Error, MapAccess, Unexpected, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryFrom;
@@ -618,7 +619,7 @@ impl<'a> Iterator for Iter<'a> {
 
 /// An unique logical identifier of a shared collection. Can be shared across document boundaries
 /// to reference to the same logical entity across different replicas of a document.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum NodeID {
     Nested(ID),
     Root(Arc<str>),
@@ -655,6 +656,73 @@ impl NodeID {
             NodeID::Root(name) => Self::get_root(doc, name.as_ref()),
             NodeID::Nested(id) => Self::get_nested(doc, id),
         }
+    }
+}
+
+impl Serialize for NodeID {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            NodeID::Nested(id) => id.serialize(serializer),
+            NodeID::Root(str) => serializer.serialize_str(str.deref()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeID {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct NodeIDVisitor;
+
+        impl<'de> Visitor<'de> for NodeIDVisitor {
+            type Value = NodeID;
+
+            fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+                std::write!(formatter, "NodeID")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(NodeID::Root(v.into()))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut client = None;
+                let mut clock = None;
+                while let Some((key, value)) = map.next_entry()? {
+                    match key {
+                        "client" => client = Some(ClientID::new(value)),
+                        "clock" => {
+                            if value > u32::MAX as u64 {
+                                return Err(A::Error::invalid_type(
+                                    Unexpected::Unsigned(value),
+                                    &"u32",
+                                ));
+                            }
+                            clock = Some(value as u32)
+                        }
+                        _ => continue,
+                    }
+                }
+
+                match (client, clock) {
+                    (Some(client), Some(clock)) => Ok(NodeID::Nested(ID::new(client, clock))),
+                    (Some(_), _) => Err(A::Error::missing_field("clock"))?,
+                    (None, _) => Err(A::Error::missing_field("client"))?,
+                }
+            }
+        }
+
+        deserializer.deserialize_any(NodeIDVisitor)
     }
 }
 

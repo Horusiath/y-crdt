@@ -1,15 +1,16 @@
 use crate::block::{BlockRange, ID, ItemContent, ItemPtr, split_str};
-use crate::cursor::Cursor;
+use crate::cursor::{Chunk, Cursor};
 use crate::delta::{AttrOp, Attribution, Op};
 use crate::formatter::{
     AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, RenderMode,
+    formatted_len,
 };
 use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRef};
 use crate::slice::BlockSlice;
 use crate::transaction::DocHandle;
 use crate::{
-    Any, Assoc, ContentIds, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, StickyIndex,
+    Any, Assoc, ContentIds, Delta, Doc, IdSet, In, NodeID, OffsetKind, Options, Out, StickyIndex,
     Transaction, TransactionState,
 };
 use serde::Deserialize;
@@ -105,10 +106,20 @@ where
     }
 
     /// Applies a sequence of delta operations, with indexes counted in formatted content.
-    pub fn apply_delta(&mut self, delta: Delta<In>) {
+    ///
+    /// Returns the lib0 `RDT` "fix" of this apply — a change measured against the
+    /// caller's expected state (`old.apply(d)`) that transforms it into the actual state, or `null`
+    /// when `d` applied cleanly. A fix is produced when `delta` (or a nested `modify`/`modifyAttr`)
+    /// addresses a *deleted but rendered* node (e.g. a suggestion-deleted paragraph under a
+    /// DiffRenderer): that part of the change is not applied to the document, and its inverse
+    /// (`lib0/delta` `inverse` against the node's rendered state) is returned — the change is
+    /// immediately reverted.
+    pub fn apply_delta(&mut self, delta: Delta<In>) -> Delta<In> {
         let ptr = self.node.ptr;
         let (doc, state) = self.node.txn.split_mut();
-        apply_delta(doc, state, ptr, delta, self.fmt)
+        let mut fix = Delta::new();
+        apply_delta(doc, state, ptr, delta, self.fmt, &mut fix);
+        fix
     }
 }
 
@@ -459,29 +470,63 @@ where
     /// Applies a sequence of delta operations to this type.
     pub fn apply_delta(&mut self, delta: Delta<In>) {
         let (doc, state) = self.txn.split_mut();
-        apply_delta(doc, state, self.ptr, delta, &DefaultFormatter);
+        // nothing deleted renders, so there's nothing to fix
+        apply_delta(
+            doc,
+            state,
+            self.ptr,
+            delta,
+            &DefaultFormatter,
+            &mut Delta::new(),
+        );
     }
 }
 
 /// Applies a sequence of delta operations to a given `node`, with indexes counted in content
-/// formatted by `fmt`.
+/// formatted by `fmt`. The inverse of operations addressing deleted, but still rendered nodes is
+/// appended to `fix` instead.
 pub(crate) fn apply_delta<F: DeltaFormatter>(
     doc: &mut Doc,
     state: &mut TransactionState,
     node: NodePtr,
     delta: Delta<In>,
     fmt: &F,
+    fix: &mut Delta<In>,
 ) {
-    if node.item.map(|item| item.is_deleted()).unwrap_or(false) {
-        return; // current node is already deleted
+    if let Some(item) = node.item
+        && item.is_deleted()
+    {
+        let kind = doc.offset_kind();
+        if formatted_len(fmt, &item, kind) > 0 {
+            DeltaWalk::full(fmt, kind).invert(node, &delta, fix);
+        }
+        return; // an invisible deleted node: there's nothing to revert
     }
 
     if !delta.children.is_empty() {
-        apply_ops(doc, state, node, delta.children, fmt);
+        apply_ops(doc, state, node, delta.children, fmt, fix);
     }
 
     if !delta.attrs.is_empty() {
-        apply_attr_ops(doc, state, node, delta.attrs, fmt)
+        apply_attr_ops(doc, state, node, delta.attrs, fmt, fix)
+    }
+    fix.trim_retains();
+}
+
+/// Position of a fix in the space expected by the caller of [apply_delta].
+#[derive(Default)]
+struct FixPos {
+    /// Index in the caller's expected state, tracked from the applied ops.
+    expected: u32,
+    /// Length the fix already covers.
+    len: u32,
+}
+
+impl FixPos {
+    fn append_modify(&mut self, fix: &mut Delta<In>, child_fix: Delta<In>, format: Option<&Attrs>) {
+        fix.retain_with(self.expected.saturating_sub(self.len));
+        fix.modify_attributed_with(child_fix, format, None);
+        self.len = self.expected + 1;
     }
 }
 
@@ -491,9 +536,13 @@ fn apply_ops<F: DeltaFormatter>(
     node: NodePtr,
     ops: Vec<Op<In>>,
     fmt: &F,
+    fix: &mut Delta<In>,
 ) {
-    let mut cursor = Cursor::new(node, doc.offset_kind(), fmt);
+    let kind = doc.offset_kind();
+    let mut cursor = Cursor::new(node, kind, fmt);
+    let mut pos = FixPos::default();
     for op in ops {
+        let step = op.content_len(kind);
         match op {
             Op::Retain {
                 len, format: None, ..
@@ -522,11 +571,23 @@ fn apply_ops<F: DeltaFormatter>(
             Op::Modify { delta, format, .. } => {
                 cursor.skip_hidden();
                 let item = cursor.right().unwrap();
+                let child = item.as_node().unwrap();
+                let mut child_fix = Delta::new();
                 if item.is_deleted() {
-                    cursor.forward(1);
+                    // rendered tombstone: populate current formats without applying `format`
+                    cursor.format(doc, state, 1, &Attrs::new());
+                    let inv_format = format.map(|f| {
+                        let current = cursor.attrs();
+                        let prev = |k: &Arc<str>| current.and_then(|a| a.get(k)).cloned();
+                        let inv = f.keys().map(|k| (k.clone(), prev(k).unwrap_or(Any::Null)));
+                        inv.collect::<Attrs>()
+                    });
+                    apply_delta(doc, state, child, *delta, fmt, &mut child_fix);
+                    if !child_fix.is_empty() || inv_format.is_some() {
+                        pos.append_modify(fix, child_fix, inv_format.as_ref());
+                    }
                 } else {
-                    let child = item.as_node().unwrap();
-                    apply_delta(doc, state, child, *delta, fmt);
+                    apply_delta(doc, state, child, *delta, fmt, &mut child_fix);
                     match format {
                         Some(attrs) => {
                             cursor.format(doc, state, 1, &attrs);
@@ -535,9 +596,13 @@ fn apply_ops<F: DeltaFormatter>(
                             cursor.forward(1);
                         }
                     }
+                    if !child_fix.is_empty() {
+                        pos.append_modify(fix, child_fix, None);
+                    }
                 }
             }
         }
+        pos.expected += step;
     }
 }
 
@@ -547,6 +612,7 @@ fn apply_attr_ops<F: DeltaFormatter>(
     node: NodePtr,
     attrs: HashMap<Arc<str>, AttrOp<In>>,
     fmt: &F,
+    fix: &mut Delta<In>,
 ) {
     for (key, op) in attrs {
         match op {
@@ -558,7 +624,19 @@ fn apply_attr_ops<F: DeltaFormatter>(
             }
             AttrOp::Modify { delta, .. } => match node.map.get(&key).copied() {
                 Some(item) => {
-                    apply_delta(doc, state, item.as_node().unwrap(), *delta, fmt);
+                    // a deleted, but rendered value reverts the delta
+                    let mut sub_fix = Delta::new();
+                    apply_delta(
+                        doc,
+                        state,
+                        item.as_node().unwrap(),
+                        *delta,
+                        fmt,
+                        &mut sub_fix,
+                    );
+                    if !sub_fix.is_empty() {
+                        fix.modify_attr_with(key, sub_fix);
+                    }
                 }
                 None => {
                     state
@@ -1147,6 +1225,173 @@ fn piece_count(content: Option<&ItemContent>, len: u32) -> u32 {
 }
 
 impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
+    /// A deep render of the full state.
+    fn full(fmt: &'a F, encoding: OffsetKind) -> Self {
+        DeltaWalk {
+            fmt,
+            encoding,
+            items: None,
+            inserted_items: None,
+            deleted: None,
+            modified: None,
+            retain_inserts: false,
+            retain_deletes: false,
+            deep: true,
+            link_depth: 0,
+        }
+    }
+
+    /// Appends to `fix` the inverse of a `delta` against the rendered state of a `node` (lib0
+    /// `inverse(delta, render)`), reading only the content the delta touches.
+    fn invert(&self, node: NodePtr, delta: &Delta<In>, fix: &mut Delta<In>) {
+        if let (Some(name), TypeRef::XmlElement(node_name)) = (&delta.name, &node.type_ref)
+            && name == node_name
+        {
+            fix.name = Some(name.clone());
+        }
+        self.invert_attrs(node, &delta.attrs, fix);
+        self.invert_ops(node, &delta.children, fix);
+        fix.trim_retains();
+    }
+
+    fn invert_ops(&self, node: NodePtr, ops: &[Op<In>], fix: &mut Delta<In>) {
+        let mut cursor = Cursor::new(node, self.encoding, self.fmt);
+        for op in ops {
+            match op {
+                Op::InsertText { .. } | Op::Insert { .. } => {
+                    fix.remove_with(op.content_len(self.encoding));
+                }
+                Op::Retain {
+                    len,
+                    format: None,
+                    attribution: None,
+                } => {
+                    cursor.forward(*len);
+                    fix.retain_with(*len);
+                }
+                Op::Retain {
+                    len,
+                    format,
+                    attribution,
+                } => {
+                    let moved = cursor.read_chunks(*len, |c| {
+                        let format = format.as_deref().and_then(|f| inverse_format(c.format, f));
+                        let attribution =
+                            Attribution::inverse(c.attribution.as_ref(), attribution.as_deref());
+                        fix.retain_attributed_with(c.len, format.as_ref(), attribution);
+                    });
+                    fix.retain_with(len.saturating_sub(moved)); // beyond the rendered content
+                }
+                Op::Remove { len, .. } => {
+                    cursor.read_chunks(*len, |c| self.push_chunk(fix, c));
+                }
+                Op::Modify {
+                    delta,
+                    format,
+                    attribution,
+                } => {
+                    let moved = cursor.read_chunks(1, |c| {
+                        let mut child_fix = Delta::new();
+                        if let Some(child) = c.content.as_node() {
+                            self.invert(child, delta, &mut child_fix);
+                        }
+                        let format = format.as_deref().and_then(|f| inverse_format(c.format, f));
+                        let attribution =
+                            Attribution::inverse(c.attribution.as_ref(), attribution.as_deref());
+                        fix.modify_attributed_with(child_fix, format.as_ref(), attribution);
+                    });
+                    if moved == 0 {
+                        fix.retain_with(1); // beyond the rendered content
+                    }
+                }
+            }
+        }
+    }
+
+    fn invert_attrs(
+        &self,
+        node: NodePtr,
+        attrs: &HashMap<Arc<str>, AttrOp<In>>,
+        fix: &mut Delta<In>,
+    ) {
+        for (key, op) in attrs {
+            let rendered = node.map.get(key).and_then(|item| self.rendered_attr(item));
+            let Some((content, attribution)) = rendered else {
+                if !matches!(op, AttrOp::Remove { .. }) {
+                    fix.remove_attr_with(key.clone()); // undo an attribute that wasn't there
+                }
+                continue;
+            };
+            match (op, content.as_node()) {
+                (
+                    AttrOp::Modify {
+                        delta,
+                        attribution: a,
+                    },
+                    Some(child),
+                ) => {
+                    let mut sub_fix = Delta::new();
+                    self.invert(child, delta, &mut sub_fix);
+                    let a = Attribution::inverse(attribution.as_ref(), a.as_deref());
+                    fix.modify_attr_attributed_with(key.clone(), sub_fix, a);
+                }
+                (_, Some(child)) => {
+                    let value = In::Node(Box::new(self.node(child).into()));
+                    fix.insert_attr_attributed_with(key.clone(), value, attribution);
+                }
+                (_, None) => match content.get_last() {
+                    Some(value) => {
+                        let value = In::from(value);
+                        fix.insert_attr_attributed_with(key.clone(), value, attribution)
+                    }
+                    None if !matches!(op, AttrOp::Remove { .. }) => {
+                        fix.remove_attr_with(key.clone())
+                    }
+                    None => {}
+                },
+            }
+        }
+    }
+
+    /// Content and attribution of an attribute `item`, if it renders.
+    fn rendered_attr<'b>(&self, item: &'b ItemPtr) -> Option<(&'b ItemContent, Option<Attribution>)>
+    where
+        'a: 'b,
+    {
+        let (deleted, attribution, kind) = self.attr_fragment(*item)?;
+        if deleted && attribution.is_none() {
+            return None; // deleted and not attributed: it doesn't render
+        }
+        match kind {
+            AttributedFragmentKind::Own => Some((&item.content, attribution)),
+            AttributedFragmentKind::Restored { content, .. } => Some((content, attribution)),
+            AttributedFragmentKind::Opaque => None,
+        }
+    }
+
+    /// Re-inserts the content of a chunk `c` into `fix`, as the render shows it.
+    fn push_chunk(&self, fix: &mut Delta<In>, c: Chunk) {
+        match c.content {
+            ItemContent::String(str) => {
+                // clock offsets are always UTF-16 based
+                let (_, str) = split_str(str, c.offset as usize, OffsetKind::Utf16);
+                let (str, _) = split_str(str, c.clock_len as usize, OffsetKind::Utf16);
+                fix.insert_text_attributed_with(str, c.format, c.attribution);
+            }
+            ItemContent::Node(node) => {
+                let value = In::Node(Box::new(self.node(NodePtr::from(node)).into()));
+                fix.insert_range_attributed_with(std::iter::once(value), c.format, c.attribution);
+            }
+            content => {
+                let mut buf = vec![Out::default(); c.clock_len as usize];
+                let read = content.read(c.offset as usize, &mut buf);
+                buf.truncate(read);
+                let values = buf.into_iter().map(Into::into);
+                fix.insert_range_attributed_with(values, c.format, c.attribution);
+            }
+        }
+    }
+
     fn node(&self, node: NodePtr) -> Delta {
         let attrs_to_render = self.modified.as_ref().and_then(|m| m.get(&node));
         let render_children =
@@ -1187,24 +1432,32 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         }
     }
 
-    fn attr(&self, d: &mut Delta, key: &Arc<str>, item: ItemPtr) {
+    /// How an attribute `item` renders: its deleted flag, attribution and content source. `None`
+    /// if the formatter surfaces nothing for it.
+    fn attr_fragment(
+        &self,
+        item: ItemPtr,
+    ) -> Option<(bool, Option<Attribution>, AttributedFragmentKind<'a>)> {
+        if !self.fmt.contains(&item) {
+            return Some((item.is_deleted(), None, AttributedFragmentKind::Own));
+        }
         let mut pieces = Vec::new();
-        let (deleted, attribution, content) = if !self.fmt.contains(&item) {
-            (item.is_deleted(), None, Some(&item.content))
-        } else {
-            let fmt: &'a F = self.fmt;
-            let range = BlockRange::new(item.id, item.len());
-            fmt.read_content(&mut pieces, &item, range, RenderMode::Visible);
-            let Some(p) = pieces.last() else {
-                return; // the formatter surfaces nothing for this attribute
-            };
-            let content = match p.content {
-                AttributedFragmentKind::Own => Some(&item.content),
-                AttributedFragmentKind::Restored { content, .. } => Some(content),
-                AttributedFragmentKind::Opaque => None,
-            };
-            let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
-            (p.deleted, attribution, content)
+        let fmt: &'a F = self.fmt;
+        let range = BlockRange::new(item.id, item.len());
+        fmt.read_content(&mut pieces, &item, range, RenderMode::Visible);
+        let p = pieces.pop()?;
+        let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
+        Some((p.deleted, attribution, p.content))
+    }
+
+    fn attr(&self, d: &mut Delta, key: &Arc<str>, item: ItemPtr) {
+        let Some((deleted, attribution, kind)) = self.attr_fragment(item) else {
+            return; // the formatter surfaces nothing for this attribute
+        };
+        let content = match kind {
+            AttributedFragmentKind::Own => Some(&item.content),
+            AttributedFragmentKind::Restored { content, .. } => Some(content),
+            AttributedFragmentKind::Opaque => None,
         };
         let child = content.and_then(ItemContent::as_node);
         let op = if deleted {
@@ -1268,16 +1521,8 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
             return Out::node(node.id());
         }
         let walk = DeltaWalk {
-            fmt: self.fmt,
-            encoding: self.encoding,
-            items: None,
-            inserted_items: None,
-            deleted: None,
-            modified: None,
-            retain_inserts: false,
-            retain_deletes: false,
-            deep: true,
             link_depth: self.link_depth,
+            ..DeltaWalk::full(self.fmt, self.encoding)
         };
         walk.node_value(node)
     }
@@ -1643,6 +1888,19 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
             }
         }
     }
+}
+
+/// The format undoing a format `update` applied over `stored` formats: the stored value (or `null`)
+/// of every key it changes.
+fn inverse_format(stored: Option<&Attrs>, update: &Attrs) -> Option<Attrs> {
+    let mut inv = Attrs::new();
+    for (key, value) in update {
+        let prev = stored.and_then(|s| s.get(key)).unwrap_or(&Any::Null);
+        if value != prev {
+            inv.insert(key.clone(), prev.clone());
+        }
+    }
+    (!inv.is_empty()).then_some(inv)
 }
 
 /// Sets a format `value` under a given `key`, where a `null` value removes the format.

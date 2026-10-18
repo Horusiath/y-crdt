@@ -1,8 +1,10 @@
 use crate::node::Attrs;
 #[cfg(feature = "weak")]
 use crate::weak::LinkSource;
-use crate::{AttributeValue, ContentAttributes, In, Out};
+use crate::{AttributeValue, ContentAttributes, In, OffsetKind, Out};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 /// Delta containing changes of a specific [Node](crate::NodeRef) with possible recursion over nested nodes.
@@ -11,73 +13,100 @@ use std::sync::Arc;
 /// 1. Describe changes made within a specific transaction scope.
 /// 2. Describe all the properties a specific node.
 /// 3. Describe changes yet to be made onto a node (applied via: [NodeRef::apply_delta]).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delta<T = Out> {
     /// Optional node name (e.g. XML tag). `None` for text/array/map types.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<Arc<str>>,
     /// Sequential operations on the node's ordered children, like text, array or XML child nodes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Op<T>>,
     /// Operations on the node's attributes.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub attrs: HashMap<Arc<str>, AttrOp<T>>,
 
     #[cfg(feature = "weak")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkSource>,
 }
 
 /// A single operation on the ordered children axis of a [Delta].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Op<T = Out> {
     /// Retain (skip over) a number of elements, optionally applying a formatting change.
     Retain {
         len: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
     /// Insert a text string with optional formatting.
     InsertText {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
     /// Insert one or more non-text content values with optional formatting.
     Insert {
         items: Vec<T>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
     /// Delete a number of elements. `prev_value` captures the deleted content
     /// when produced by diff/undo operations.
     Remove {
         len: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
         prev: Option<Box<Delta<T>>>,
     },
     /// Apply a nested delta to an embedded child node, optionally updating its formatting.
     Modify {
         delta: Box<Delta<T>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
 }
 
+impl<T> Op<T> {
+    pub fn content_len(&self, encoding: OffsetKind) -> u32 {
+        match (self, encoding) {
+            (Op::InsertText { text, .. }, OffsetKind::Utf16) => text.encode_utf16().count() as u32,
+            _ => self.len(),
+        }
+    }
+}
+
 /// A single operation on the key-value attributes axis of a [Delta].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttrOp<T = Out> {
     /// Update attribute value.
     /// `prev_value` captures the old value when produced by diff/undo operations.
     Update {
         value: T,
+        #[serde(skip_serializing_if = "Option::is_none")]
         prev: Option<T>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
     /// Remove an attribute.
     /// `prev_value` captures the removed value when produced by diff/undo operations.
     Remove {
+        #[serde(skip_serializing_if = "Option::is_none")]
         prev: Option<T>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
     /// Apply a nested delta to an attribute whose value is itself a node.
     Modify {
         delta: Box<Delta<T>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
     },
 }
@@ -126,6 +155,11 @@ impl<T> Delta<T> {
             #[cfg(feature = "weak")]
             link: None,
         }
+    }
+
+    /// Returns `true` if this delta has no child nor attribute operations.
+    pub fn is_empty(&self) -> bool {
+        self.children.is_empty() && self.attrs.is_empty()
     }
 
     /// Recursively transforms all content values in this delta from type `T` to type `U`.
@@ -601,6 +635,7 @@ impl Delta<In> {
 }
 
 impl Delta<Out> {
+    #[inline]
     pub fn out() -> Self {
         Self::default()
     }
@@ -613,6 +648,13 @@ impl From<Delta<In>> for In {
     }
 }
 
+impl From<Delta<Out>> for Delta<In> {
+    #[inline]
+    fn from(value: Delta<Out>) -> Self {
+        value.map(In::from)
+    }
+}
+
 impl<T> Default for Delta<T> {
     fn default() -> Self {
         Delta {
@@ -622,6 +664,26 @@ impl<T> Default for Delta<T> {
             #[cfg(feature = "weak")]
             link: None,
         }
+    }
+}
+
+impl<T: Debug> Debug for Delta<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Delta");
+        #[cfg(feature = "weak")]
+        if let Some(link) = &self.link {
+            s.field("link", &link);
+        }
+        if let Some(name) = self.name.as_deref() {
+            s.field("name", &name);
+        }
+        if !self.attrs.is_empty() {
+            s.field("attrs", &self.attrs);
+        }
+        if !self.children.is_empty() {
+            s.field("children", &self.children);
+        }
+        s.finish()
     }
 }
 
@@ -764,19 +826,25 @@ pub type Attribute = Arc<str>;
 /// {@link Formats} applies here too; note `rebase` does not reconcile attribution at all
 /// (concurrent attribution edits don't converge), so prefer deterministic attribution assignment
 /// outside of concurrent editing.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Attribution {
     /// Attributors of an insertion. `Some(vec![])` means "inserted, by nobody in particular".
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub insert: Option<Vec<Attribute>>,
     /// Timestamp of the insertion; `0` means not set.
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub insert_at: u64,
     /// Attributors of a deletion.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub delete: Option<Vec<Attribute>>,
     /// Timestamp of the deletion; `0` means not set.
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub delete_at: u64,
     /// Attributors of formatting changes per format key. A `None` value is a per-key clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<HashMap<Arc<str>, Option<Vec<Attribute>>>>,
     /// Timestamp of the formatting change; `0` means not set.
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub format_at: u64,
 }
 
@@ -876,9 +944,7 @@ impl Attribution {
         }
         (!self.is_empty()).then_some(self)
     }
-}
 
-impl Attribution {
     /// Merges `right` over `left`, overriding `left`'s fields if they were defined on the `right`.
     /// Attribution's format entries are merged individually.
     /// Returns `None` if the resulting [Attribution] is empty.
@@ -915,6 +981,28 @@ impl Attribution {
         (!r.is_empty()).then_some(r)
     }
 
+    pub(crate) fn inverse(
+        stored: Option<&Attribution>,
+        update: Option<&Attribution>,
+    ) -> Option<Self> {
+        let update = update?;
+        if update.is_empty() {
+            return stored.cloned(); // undo a clear
+        }
+        let merged = Self::combine(stored, Some(update)).and_then(Self::resolved);
+        if merged.as_ref() == stored {
+            return None;
+        }
+        let mut inv = stored.cloned().unwrap_or_default();
+        if let (Some(_), Some(format)) = (stored, &update.format) {
+            let f = inv.format.get_or_insert_with(HashMap::new);
+            for key in format.keys() {
+                f.entry(key.clone()).or_insert(None);
+            }
+        }
+        Some(inv)
+    }
+
     /// Like [Attribution::combine], but for data operations (inserts, attribute updates): per-key
     /// format clears are dropped from the result.
     pub(crate) fn combine_data(
@@ -923,4 +1011,34 @@ impl Attribution {
     ) -> Option<Attribution> {
         Self::combine(ambient, own)?.resolved()
     }
+}
+
+impl Debug for Attribution {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Attribution");
+        if self.insert_at != 0 {
+            s.field("insert_at", &self.insert_at);
+        }
+        if let Some(insert) = &self.insert {
+            s.field("insert", insert);
+        }
+        if self.delete_at != 0 {
+            s.field("delete_at", &self.delete_at);
+        }
+        if let Some(delete) = &self.delete {
+            s.field("delete", delete);
+        }
+        if self.format_at != 0 {
+            s.field("format_at", &self.format_at);
+        }
+        if let Some(format) = &self.format {
+            s.field("format", format);
+        }
+        s.finish()
+    }
+}
+
+#[inline]
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }

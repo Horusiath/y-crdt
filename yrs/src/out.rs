@@ -1,23 +1,25 @@
 use crate::block::ItemPtr;
-use crate::{Any, Delta, Event, In, NodeID, Uuid};
+use crate::{Any, Delta, Doc, Event, In, NodeID, Options, Uuid};
+use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
 /// Node output can take shape of one of the two variants. Usually that depends, on if flat or deep
 /// delta was used to generate node shape.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutNode {
     /// Unique node identifier.
     pub id: NodeID,
     /// Delta representation of state changes applied on a given node.
     /// This is optional field, which presence is driven through [Event::delta] `deep` parameter.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub delta: Option<Box<Delta<Out>>>,
 }
 
 /// Value that can be returned by Yrs data types. This includes [Any] which is an extension
 /// representation of JSON, but also nested complex collaborative structures specific to Yrs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Out {
     /// Any value that it treated as a single element in its entirety.
     Any(Any),
@@ -62,6 +64,21 @@ impl Out {
             id: node_id.into(),
             delta: Some(Box::new(delta.into())),
         })
+    }
+}
+
+impl From<Out> for In {
+    fn from(value: Out) -> Self {
+        match value {
+            Out::Any(any) => In::Any(any),
+            Out::Node(node) => In::Node(Box::new(
+                node.delta.map_or_else(Delta::new, |d| (*d).into()),
+            )),
+            Out::Doc(guid) => In::Doc(Doc::with_options(Options {
+                guid,
+                ..Options::default()
+            })),
+        }
     }
 }
 

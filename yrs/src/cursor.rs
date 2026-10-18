@@ -1,7 +1,8 @@
 use crate::block::{BlockRange, ID, Item, ItemContent, ItemPtr};
+use crate::delta::Attribution;
 use crate::formatter::{
-    AttributedFragment, DefaultFormatter, DeltaFormatter, RenderMode, clock_len, formatted_len,
-    native_len,
+    AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, RenderMode,
+    clock_len, formatted_len, native_len,
 };
 use crate::node::{Attrs, Node, NodePtr, TypePtr};
 use crate::transaction::TransactionState;
@@ -72,8 +73,13 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                 self.encoding,
             );
             if remaining <= len {
-                let clock =
-                    p.range.start + clock_len(&item, p.range.start, remaining, self.encoding);
+                let clock = p.range.start
+                    + clock_len(
+                        &item.content,
+                        p.range.start - item.id.clock,
+                        remaining,
+                        self.encoding,
+                    );
                 return clock - item.id.clock;
             }
             remaining -= len;
@@ -310,7 +316,14 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         if let Some(children) = children
             && let Some(node) = item.content.as_node()
         {
-            crate::node_ref::apply_delta(doc, state, node, children, &DefaultFormatter);
+            crate::node_ref::apply_delta(
+                doc,
+                state,
+                node,
+                children,
+                &DefaultFormatter,
+                &mut crate::Delta::new(),
+            );
         }
         self.right = Some(item);
         self.next_item();
@@ -435,7 +448,12 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                 self.encoding,
             ) as i64
                 + remaining) as u32;
-            let clock = clock_len(&item, p.range.start, consumed, self.encoding);
+            let clock = clock_len(
+                &item.content,
+                p.range.start - item.id.clock,
+                consumed,
+                self.encoding,
+            );
             Self::split_at(doc, item, p.range.start + clock);
         }
     }
@@ -468,7 +486,12 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                     self.encoding,
                 );
                 let n = plen.min(len);
-                let clock_len = clock_len(&item, p.range.start, n, self.encoding);
+                let clock_len = clock_len(
+                    &item.content,
+                    p.range.start - item.id.clock,
+                    n,
+                    self.encoding,
+                );
                 let deletes = state.attributed_deletes.get_or_insert_with(IdSet::new);
                 deletes.insert(ID::new(item.id.client, p.range.start), clock_len);
                 len -= n;
@@ -641,6 +664,84 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         }
         cleanups
     }
+
+    /// Moves the cursor over `len` visible elements, calling `f` over each unique content chunk
+    /// moved over. Returns the number of elements moved over.
+    pub fn read_chunks(&mut self, len: u32, mut f: impl FnMut(Chunk<'_>)) -> u32 {
+        let mut remaining = len;
+        while remaining > 0 {
+            self.skip_hidden();
+            let Some(item) = self.right else {
+                break;
+            };
+            let n = (self.block_len(&item) - self.offset).min(remaining);
+            if n == 0 {
+                break;
+            }
+            let format = self.attrs.as_deref();
+            if !self.fmt.contains(&item) {
+                let start = clock_offset(item, self.offset, self.encoding);
+                let end = clock_offset(item, self.offset + n, self.encoding);
+                f(Chunk {
+                    content: &item.content,
+                    offset: start,
+                    clock_len: end - start,
+                    len: n,
+                    attribution: None,
+                    format,
+                });
+            } else {
+                let (mut skip, mut take) = (self.offset, n);
+                for p in self.visible_fragments(&item) {
+                    let (content, base) = match p.content {
+                        AttributedFragmentKind::Own => {
+                            (&item.content, p.range.start - item.id.clock)
+                        }
+                        AttributedFragmentKind::Restored { content, offset } => (content, offset),
+                        AttributedFragmentKind::Opaque => continue, // only its length is known
+                    };
+                    if take == 0 {
+                        break;
+                    } else if !content.is_countable() {
+                        continue;
+                    }
+                    let plen = native_len(content, base, p.len(), self.encoding);
+                    if skip >= plen {
+                        skip -= plen;
+                        continue;
+                    }
+                    let k = (plen - skip).min(take);
+                    let start = clock_len(content, base, skip, self.encoding);
+                    let clock_len = clock_len(content, base + start, k, self.encoding);
+                    f(Chunk {
+                        content,
+                        offset: base + start,
+                        clock_len,
+                        len: k,
+                        attribution: Attribution::resolve(p.attrs.as_ref(), p.deleted),
+                        format,
+                    });
+                    (skip, take) = (0, take - k);
+                }
+            }
+            remaining = remaining.saturating_sub(self.forward(n));
+        }
+        len - remaining
+    }
+}
+
+/// A uniform run of visible content (see: [Cursor::read_chunks]).
+pub(crate) struct Chunk<'a> {
+    /// Item's own content, or content restored by the formatter.
+    pub content: &'a ItemContent,
+    /// Clock offset of the run within `content`.
+    pub offset: u32,
+    pub clock_len: u32,
+    /// Length of the run in the cursor's units.
+    pub len: u32,
+    pub attribution: Option<Attribution>,
+    /// Formats active over the run.
+    pub format: Option<&'a Attrs>,
 }
 
 impl Cursor<'static, DefaultFormatter> {

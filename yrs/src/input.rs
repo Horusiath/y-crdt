@@ -1,10 +1,11 @@
 use crate::{Any, Delta, Doc, Out};
+use serde::{Deserialize, Serialize};
 
 /// A wrapper around [Out] type that enables it to be used as a type to be inserted into
 /// shared collections. If [In] contains a shared type, it will be inserted as a deep
 /// copy of the original type: therefore none of the changes applied to the original type will
 /// affect the deep copy.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum In {
     Any(Any),
     Node(Box<Delta<In>>),

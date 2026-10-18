@@ -255,12 +255,12 @@ pub(crate) fn native_len(content: &ItemContent, offset: u32, len: u32, kind: Off
     }
 }
 
-/// Calculates clock length of a given range (length compatible with Yjs UTF-16 string length).
-pub(crate) fn clock_len(item: &Item, clock: u32, len: u32, kind: OffsetKind) -> u32 {
-    match (&item.content, kind) {
+/// Clock length (Yjs-compatible UTF-16 units) of a `len` long slice of `content` (measured in
+/// `kind` units) starting at UTF-16 clock `offset`.
+pub(crate) fn clock_len(content: &ItemContent, offset: u32, len: u32, kind: OffsetKind) -> u32 {
+    match (content, kind) {
         (ItemContent::String(s), OffsetKind::Bytes) => {
-            let offset = (clock - item.id.clock) as usize;
-            let (_, rest) = split_str(s.as_str(), offset, OffsetKind::Utf16);
+            let (_, rest) = split_str(s.as_str(), offset as usize, OffsetKind::Utf16);
             let (slice, _) = split_str(rest, len as usize, OffsetKind::Bytes);
             slice.encode_utf16().count() as u32
         }

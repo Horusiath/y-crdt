@@ -1,11 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{Bound, HashSet};
-use std::convert::TryFrom;
 use std::fmt::Formatter;
-use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut, RangeBounds};
 use std::sync::Arc;
-
 use thiserror::Error;
 
 use crate::block::{ItemContent, ItemPtr};
@@ -124,10 +122,10 @@ where
 }
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LinkSource(Arc<LinkSourceInner>);
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LinkSourceInner {
     pub(crate) quote_start: StickyIndex,
     pub(crate) quote_end: StickyIndex,

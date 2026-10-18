@@ -3,8 +3,8 @@ use yrs::node::{Attrs, DeepObservable, Observable};
 use yrs::test_utils::{clone_doc, exchange_updates};
 use yrs::{
     Acquire, AcquireMut, Any, Assoc, AttrValue, Attribute, Attribution, AttributionsFormatter,
-    Cell, ClientID, ContentAttribute, ContentIds, ContentMap, Delta, DeltaFormatter, DeltaOptions,
-    DiffFormatter, Doc, IdSet, In, Options, Out, Update,
+    Cell, ClientID, ContentAttribute, ContentIds, ContentMap, DefaultFormatter, Delta,
+    DeltaFormatter, DeltaOptions, DiffFormatter, Doc, IdSet, In, Options, Out, Update, any,
 };
 
 fn bold() -> Attrs {
@@ -391,10 +391,10 @@ fn apply_delta_delete_mid_struck_chunk_modify_returns_fix() {
             .remove(1)
             .retain(1)
             .modify(Delta::new().remove(2));
-        t.formatted_mut(&fmt).apply_delta(d);
-        // step 8: `apply_delta` returns the inverse of the part addressing the rendered tombstone
-        // let fix = format!("{:?}", fix.expect("fix"));
-        // assert!(fix.contains("kk") && !fix.contains("qq"), "fix restores nA's content");
+        let fix = t.formatted_mut(&fmt).apply_delta(d);
+        // the fix restores nA's content, not nB's
+        let kk = Delta::new().insert_text_attributed("kk", None, Some(deleted()));
+        assert_eq!(fix, Delta::new().retain(2).modify(kk));
         drop(txn);
         let fresh = sdoc
             .transact()
@@ -719,4 +719,410 @@ fn diff_gc_deleted_content() {
         Some(Attribution::delete::<Attribute>([])),
     );
     assert_eq!(render_text(&doc, &fmt), restored);
+}
+
+fn deleted() -> Attribution {
+    Attribution::delete::<Attribute>([])
+}
+
+fn align(value: &str) -> Attrs {
+    Attrs::from([("align".into(), Any::from(value))])
+}
+
+fn paragraph(text: &str) -> In {
+    In::from(Delta::with_name("paragraph").insert_text(text))
+}
+
+/// A base doc initialized with `init` deltas applied to a root `node`, and a suggestion doc synced
+/// from it, which keeps the content it deletes.
+fn suggestion_pair(clients: (u64, u64), node: &str, init: Vec<Delta<In>>) -> (Doc, Doc) {
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(clients.0))
+    });
+    let mut sdoc = Doc::with_options(Options {
+        skip_gc: true,
+        cleanup_formatting: false,
+        ..Options::with_client_id(ClientID::new(clients.1))
+    });
+    {
+        let mut txn = doc.transact_mut();
+        let mut root = txn.node_mut(node).unwrap();
+        for d in init {
+            root.apply_delta(d);
+        }
+    }
+    sync(&doc, &mut sdoc);
+    (doc, sdoc)
+}
+
+/// 1. `{ prosemirror: [ <paragraph>hello world</paragraph>] }`
+/// 2. `{ prosemirror: [~~<paragraph>hello world</paragraph>~~] }` (child deleted)
+fn struck_paragraph_pair(clients: (u64, u64)) -> (Doc, Doc) {
+    let init = vec![Delta::new().insert(paragraph("hello world"))];
+    let (doc, mut sdoc) = suggestion_pair(clients, "prosemirror", init);
+    sdoc.transact_mut()
+        .node_mut("prosemirror")
+        .unwrap()
+        .remove(0, 1);
+    (doc, sdoc)
+}
+
+fn suggestions(base: &Doc, sdoc: &Doc) -> DiffFormatter {
+    DiffFormatter::unattributed(&ContentIds::doc_diff(base, sdoc))
+}
+
+fn render_deep<F: DeltaFormatter>(doc: &Doc, node: &str, fmt: &F) -> Delta {
+    let txn = doc.transact();
+    let opts = DeltaOptions {
+        deep: true,
+        ..Default::default()
+    };
+    txn.node(node).unwrap().formatted(fmt).delta(&opts)
+}
+
+fn apply_fmt(doc: &mut Doc, node: &str, fmt: &DiffFormatter, d: Delta<In>) -> Delta<In> {
+    let mut txn = doc.transact_mut();
+    txn.node_mut(node)
+        .unwrap()
+        .formatted_mut(fmt)
+        .apply_delta(d)
+}
+
+/// Ensure that no suggestion landed on the doc.
+fn assert_reverted(sdoc: &Doc, node: &str, fmt: &DiffFormatter, before: &Delta) {
+    assert_eq!(&render_deep(sdoc, node, fmt), before, "nothing was applied");
+    // yrs has no maintained `.delta` cache:
+    // t.assert(ynode.delta.equals(fresh))
+    // yrs deltas can't be applied onto deltas (lib0 `apply`), so the round trip can't be checked:
+    // before.apply(d).apply(fix) == fresh
+}
+
+#[test]
+fn apply_delta_modify_into_tombstone_returns_inverse() {
+    for clients in [(1, 2), (2, 1)] {
+        let (doc, mut sdoc) = struck_paragraph_pair(clients);
+        let fmt = suggestions(&doc, &sdoc);
+        let before = render_deep(&sdoc, "prosemirror", &fmt);
+        let fired = Cell::new(0);
+        let fired_c = fired.clone();
+        let _sub = sdoc
+            .transact_mut()
+            .node_mut("prosemirror")
+            .unwrap()
+            .observe_deep(move |_| *fired_c.acquire_mut() += 1);
+        let d = Delta::new().modify(Delta::new().retain(2).insert_text("XY"));
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        assert_eq!(fix, Delta::new().modify(Delta::new().retain(2).remove(2)));
+        assert_eq!(*fired.acquire(), 0, "a fully reverted apply emits no event");
+        assert_reverted(&sdoc, "prosemirror", &fmt, &before);
+    }
+}
+
+#[test]
+fn apply_delta_delete_inside_tombstone_inverse() {
+    for clients in [(1, 2), (2, 1)] {
+        let (doc, mut sdoc) = struck_paragraph_pair(clients);
+        let fmt = suggestions(&doc, &sdoc);
+        let before = render_deep(&sdoc, "prosemirror", &fmt);
+        let d = Delta::new().modify(Delta::new().retain(2).remove(4));
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        let reinsert = Delta::new()
+            .retain(2)
+            .insert_text_attributed("llo ", None, Some(deleted()));
+        assert_eq!(fix, Delta::new().modify(reinsert));
+        assert_reverted(&sdoc, "prosemirror", &fmt, &before);
+    }
+}
+
+#[test]
+fn apply_delta_format_inside_tombstone_inverse() {
+    for clients in [(1, 2), (2, 1)] {
+        let (doc, mut sdoc) = struck_paragraph_pair(clients);
+        let fmt = suggestions(&doc, &sdoc);
+        let before = render_deep(&sdoc, "prosemirror", &fmt);
+        let bold = Attrs::from([("bold".into(), any!({}))]); // `{ bold: {} }`
+        let d = Delta::new().modify(Delta::new().retain(1).retain_fmt(4, &bold));
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        let unbold = Delta::new().retain(1).retain_fmt(4, &unbold());
+        assert_eq!(fix, Delta::new().modify(unbold));
+        assert_reverted(&sdoc, "prosemirror", &fmt, &before);
+    }
+}
+
+#[test]
+fn apply_delta_node_format_on_tombstone_inverse() {
+    for clients in [(1, 2), (2, 1)] {
+        let init = vec![
+            Delta::new().insert_range([paragraph("aa"), paragraph("bb")]),
+            // base-doc node format over both paragraphs: an alive `align` marker sits before the first one
+            Delta::new().retain_fmt(2, &align("x")),
+        ];
+        let (doc, mut sdoc) = suggestion_pair(clients, "prosemirror", init);
+        // suggestion-delete the second paragraph
+        sdoc.transact_mut()
+            .node_mut("prosemirror")
+            .unwrap()
+            .remove(1, 1);
+        let fmt = suggestions(&doc, &sdoc);
+        let before = render_deep(&sdoc, "prosemirror", &fmt);
+        let d = Delta::new().retain(1).modify_fmt(Delta::new(), &align("y"));
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        let expected = Delta::new().retain(1).modify_fmt(Delta::new(), &align("x"));
+        assert_eq!(fix, expected);
+        assert_reverted(&sdoc, "prosemirror", &fmt, &before);
+    }
+}
+
+/// Base `[aa, hello world, cc]` paragraphs with `hello world` struck by the suggestion doc.
+fn deleted_mid_par(clients: (u64, u64)) -> (Doc, Doc) {
+    let paragraphs = [paragraph("aa"), paragraph("hello world"), paragraph("cc")];
+    let init = vec![Delta::new().insert_range(paragraphs)];
+    let (doc, mut sdoc) = suggestion_pair(clients, "prosemirror", init);
+    // suggestion-delete the middle paragraph
+    sdoc.transact_mut()
+        .node_mut("prosemirror")
+        .unwrap()
+        .remove(1, 1);
+    (doc, sdoc)
+    // { prosemirror: [ <paragraph>aa</paragraph>, ~<paragraph>hello world</paragraph>~, <paragraph>cc</paragraph> ] }
+}
+
+/// Applied and reverted ops coexist in one delta: ops on live content land (one 'delta' event),
+/// only the tombstone-targeting modify reverts — and the fix's retain pad is measured in the
+/// caller's *expected* space (including `d`'s own earlier insert).
+#[test]
+fn apply_delta_mixed_fix_coordinates() {
+    for clients in [(1, 2), (2, 1)] {
+        let (doc, mut sdoc) = deleted_mid_par(clients);
+        let fmt = suggestions(&doc, &sdoc);
+        let fired = Cell::new(0);
+        let fired_c = fired.clone();
+        let _sub = sdoc
+            .transact_mut()
+            .node_mut("prosemirror")
+            .unwrap()
+            .observe_deep(move |_| *fired_c.acquire_mut() += 1);
+        let d = Delta::new()
+            .insert(paragraph("nn"))
+            .retain(1)
+            .modify(Delta::new().retain(2).insert_text("XY"))
+            .modify(Delta::new().retain(2).insert_text("ZZ"));
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        assert_eq!(
+            *fired.acquire(),
+            1,
+            "the applied part of the change emits exactly one delta event"
+        );
+        let inverse = Delta::new().retain(2).remove(2);
+        assert_eq!(fix, Delta::new().retain(2).modify(inverse));
+        let fresh = format!(
+            "{:?}",
+            render_deep(&sdoc, "prosemirror", &suggestions(&doc, &sdoc))
+        );
+        assert!(
+            fresh.contains("\"nn\"") && fresh.contains("\"ZZ\""),
+            "ops on live content were applied"
+        );
+        assert!(
+            !fresh.contains("XY"),
+            "the tombstone-targeting modify was not applied"
+        );
+        // yrs has no maintained `.delta` cache:
+        // t.assert(ynode.delta.equals(ynode.toDelta({ deep: true })))
+    }
+}
+
+/// `modifyAttr` addressing a suggestion-deleted (still rendered) map value: the renderer-aware
+/// lookup finds the tombstone, nothing is applied, and the fix wraps the inverse in a
+/// `modifyAttr` — previously this hit `unexpectedCase` (`nodeMapGet` is blind to deleted items).
+#[test]
+fn apply_delta_modify_attr_on_deleted_map_value() {
+    for clients in [(1, 2), (2, 1)] {
+        let init = vec![Delta::new().insert_attr("title", Delta::new().insert_text("hi"))];
+        let (doc, mut sdoc) = suggestion_pair(clients, "m", init);
+        // suggestion-delete the attribute (stays rendered, delete-attributed)
+        sdoc.transact_mut()
+            .node_mut("m")
+            .unwrap()
+            .remove_attr("title");
+        let fmt = suggestions(&doc, &sdoc);
+        let before = render_deep(&sdoc, "m", &fmt);
+        let d = Delta::new().modify_attr("title", Delta::new().insert_text("X"));
+        let fix = apply_fmt(&mut sdoc, "m", &fmt, d);
+        assert_eq!(
+            fix,
+            Delta::new().modify_attr("title", Delta::new().remove(1)),
+            "no throw — the reverted operation is returned"
+        );
+        assert_reverted(&sdoc, "m", &fmt, &before);
+    }
+}
+
+/// A plainly deleted (invisible — no renderer claims it) type keeps today's semantics: the apply
+/// is silently dropped and `applyDelta` returns `null` (the caller's view shows nothing there, so
+/// there is nothing to revert).
+#[test]
+fn apply_delta_invisible_deleted_silent_null() {
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::with_client_id(ClientID::new(1))
+    });
+    let mut txn = doc.transact_mut();
+    let par = txn
+        .node_mut("prosemirror")
+        .unwrap()
+        .push_back(paragraph("hello"))
+        .node_id()
+        .unwrap();
+    let mut par = txn.node_mut(par).unwrap();
+    par.txn_mut().node_mut("prosemirror").unwrap().remove(0, 1);
+    let d = Delta::new().retain(2).insert_text("XY");
+    let fix = par.formatted_mut(&DefaultFormatter).apply_delta(d);
+    assert!(
+        fix.is_empty(),
+        "invisible deleted type: silent drop, no fix"
+    );
+    let opts = DeltaOptions {
+        deep: true,
+        ..Default::default()
+    };
+    let root = txn.node("prosemirror").unwrap().delta(&opts);
+    assert_eq!(root, Delta::out(), "nothing was applied");
+}
+
+/// `applyDelta` called directly on a deleted-but-rendered type (the top-level guard): nothing is
+/// applied and the inverse against the rendered state is returned. Without a renderer the same
+/// call stays a silent `null` drop.
+#[test]
+fn apply_delta_direct_guard_on_deleted_type() {
+    for clients in [(1, 2), (2, 1)] {
+        let init = vec![Delta::new().insert(paragraph("hello world"))];
+        let (doc, mut sdoc) = suggestion_pair(clients, "prosemirror", init);
+        let mut txn = sdoc.transact_mut();
+        let par = txn.node("prosemirror").unwrap().get(0).unwrap();
+        let mut par = txn.node_mut(par.node_id().unwrap()).unwrap();
+        par.txn_mut().node_mut("prosemirror").unwrap().remove(0, 1);
+        let fmt = suggestions(&doc, par.txn().doc());
+        let opts = DeltaOptions {
+            deep: true,
+            ..Default::default()
+        };
+        let root_before = par
+            .txn()
+            .node("prosemirror")
+            .unwrap()
+            .formatted(&fmt)
+            .delta(&opts);
+        let d = || Delta::new().retain(2).insert_text("XY");
+        // children do not inherit the root's renderer — without one the node is invisible
+        let fix = par.formatted_mut(&DefaultFormatter).apply_delta(d());
+        assert!(fix.is_empty(), "no renderer: silent drop");
+        let fix = par.formatted_mut(&fmt).apply_delta(d());
+        assert_eq!(fix, Delta::new().retain(2).remove(2));
+        let root = par
+            .txn()
+            .node("prosemirror")
+            .unwrap()
+            .formatted(&fmt)
+            .delta(&opts);
+        assert_eq!(root, root_before, "nothing was applied to the doc");
+        // yrs has no maintained `.delta` cache, nor deltas applicable onto deltas (lib0 `apply`):
+        // t.assert(ynode.delta.equals(ynode.toDelta({ deep: true })))
+        // parBefore.apply(d).apply(fix) == par.toDelta({ deep: true, renderer })
+    }
+}
+
+/// A tombstone grandchild behind an alive child: the alive child's applyDelta bubbles the nested
+/// fix, and the parent wraps it positionally — `modify(modify(inverse))`.
+#[test]
+fn apply_delta_nested_tombstone_fix_bubbles() {
+    for clients in [(1, 2), (2, 1)] {
+        let nested = In::from(Delta::with_name("nested").insert_text("ww"));
+        let par = In::from(Delta::with_name("paragraph").insert(nested));
+        let (doc, mut sdoc) =
+            suggestion_pair(clients, "prosemirror", vec![Delta::new().insert(par)]);
+        {
+            let mut txn = sdoc.transact_mut();
+            // suggestion-delete only the nested node inside the (alive) paragraph
+            let par = txn.node("prosemirror").unwrap().get(0).unwrap();
+            txn.node_mut(par.node_id().unwrap()).unwrap().remove(0, 1);
+        }
+        let fmt = suggestions(&doc, &sdoc);
+        let before = render_deep(&sdoc, "prosemirror", &fmt);
+        let d = Delta::new().modify(Delta::new().modify(Delta::new().insert_text("X")));
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        let inverse = Delta::new().modify(Delta::new().modify(Delta::new().remove(1)));
+        assert_eq!(fix, inverse);
+        assert_reverted(&sdoc, "prosemirror", &fmt, &before);
+    }
+}
+
+/// A plain `delete` op spanning a tombstone keeps its existing semantics (suggestion-deletes the
+/// alive content, records the attributed range) and returns no fix — the known, downstream-healed
+/// gap; pinned here so a change of behavior is a conscious one.
+#[test]
+fn apply_delta_pure_delete_over_tombstone_no_fix() {
+    for clients in [(1, 2), (2, 1)] {
+        let (doc, mut sdoc) = deleted_mid_par(clients);
+        let fmt = suggestions(&doc, &sdoc);
+        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, Delta::new().remove(3));
+        assert!(
+            fix.is_empty(),
+            "a plain delete over a tombstone range returns no fix"
+        );
+        // yrs has no maintained `.delta` cache:
+        // t.assert(ynode.delta.equals(fresh))
+    }
+}
+
+/// The fix of a delta touching alive, struck and restored content, a struck nested node and a
+/// struck attribute equals Yjs `inverse(d, toDeltaDeep())` of the struck node.
+#[test]
+fn apply_delta_fix_is_inverse_of_deep_render() {
+    let p = In::from(Delta::with_name("p").insert_text("p"));
+    let q = Delta::with_name("q").insert_text("abcdef").insert(p);
+    let q = In::from(q.insert_attr("title", "t"));
+    let init = vec![Delta::new().insert_text("x").insert(q).insert_text("z")];
+    let (doc, _) = suggestion_pair((1, 2), "r", init);
+    // `cd` is gc'd by a replica, `sdoc` only receives its tombstone
+    let mut replica = clone_doc(&doc, None);
+    let strike_cd = Delta::new().retain(2).remove(2);
+    replica
+        .transact_mut()
+        .node_mut("r")
+        .unwrap()
+        .apply_delta(Delta::new().retain(1).modify(strike_cd));
+    let mut sdoc = clone_doc(
+        &replica,
+        Some(Options {
+            skip_gc: true,
+            cleanup_formatting: false,
+            ..Options::with_client_id(ClientID::new(2))
+        }),
+    );
+    sdoc.transact_mut().node_mut("r").unwrap().remove(1, 1);
+    let mut fmt = suggestions(&doc, &sdoc);
+    fmt.restore_content(&doc.transact());
+    let qd = Delta::new()
+        .retain(1)
+        .remove(2) // struck 'b', restored 'c'
+        .retain_fmt(2, &bold()) // restored 'd', struck 'e'
+        .insert_text("Y")
+        .retain(1)
+        .modify(Delta::new().remove(1))
+        .insert_attr("title", "t2")
+        .insert_attr("k", 1);
+    let d = Delta::new().retain(1).modify(qd).retain_fmt(1, &bold());
+    let fix = apply_fmt(&mut sdoc, "r", &fmt, d);
+    let q_fix = Delta::new()
+        .retain(1)
+        .insert_text_attributed("bc", None, Some(deleted()))
+        .retain_fmt(2, &unbold())
+        .remove(1)
+        .retain(1)
+        .modify(Delta::new().insert_text_attributed("p", None, Some(deleted())))
+        .insert_attr_attributed("title", "t", Some(deleted()))
+        .remove_attr("k");
+    assert_eq!(fix, Delta::new().retain(1).modify(q_fix));
 }
