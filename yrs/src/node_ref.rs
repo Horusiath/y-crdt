@@ -2,8 +2,7 @@ use crate::block::{BlockRange, ID, ItemContent, ItemPtr, split_str};
 use crate::cursor::{Chunk, Cursor};
 use crate::delta::{AttrOp, Attribution, Op};
 use crate::formatter::{
-    AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, RenderMode,
-    formatted_len,
+    AttributedFragment, DefaultFormatter, DeltaFormatter, RenderMode, formatted_len,
 };
 use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRef};
@@ -1358,15 +1357,11 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
     where
         'a: 'b,
     {
-        let (deleted, attribution, kind) = self.attr_fragment(*item)?;
+        let (deleted, attribution, content) = self.attr_fragment(item)?;
         if deleted && attribution.is_none() {
             return None; // deleted and not attributed: it doesn't render
         }
-        match kind {
-            AttributedFragmentKind::Own => Some((&item.content, attribution)),
-            AttributedFragmentKind::Restored { content, .. } => Some((content, attribution)),
-            AttributedFragmentKind::Opaque => None,
-        }
+        Some((content?, attribution))
     }
 
     /// Re-inserts the content of a chunk `c` into `fix`, as the render shows it.
@@ -1434,30 +1429,29 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
 
     /// How an attribute `item` renders: its deleted flag, attribution and content source. `None`
     /// if the formatter surfaces nothing for it.
-    fn attr_fragment(
+    fn attr_fragment<'b>(
         &self,
-        item: ItemPtr,
-    ) -> Option<(bool, Option<Attribution>, AttributedFragmentKind<'a>)> {
-        if !self.fmt.contains(&item) {
-            return Some((item.is_deleted(), None, AttributedFragmentKind::Own));
+        item: &'b ItemPtr,
+    ) -> Option<(bool, Option<Attribution>, Option<&'b ItemContent>)>
+    where
+        'a: 'b,
+    {
+        if !self.fmt.contains(item) {
+            return Some((item.is_deleted(), None, Some(&item.content)));
         }
         let mut pieces = Vec::new();
         let fmt: &'a F = self.fmt;
         let range = BlockRange::new(item.id, item.len());
-        fmt.read_content(&mut pieces, &item, range, RenderMode::Visible);
+        fmt.read_content(&mut pieces, item, range, RenderMode::Visible);
         let p = pieces.pop()?;
         let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
-        Some((p.deleted, attribution, p.content))
+        let content = p.content(item).map(|(content, _)| content);
+        Some((p.deleted, attribution, content))
     }
 
     fn attr(&self, d: &mut Delta, key: &Arc<str>, item: ItemPtr) {
-        let Some((deleted, attribution, kind)) = self.attr_fragment(item) else {
+        let Some((deleted, attribution, content)) = self.attr_fragment(&item) else {
             return; // the formatter surfaces nothing for this attribute
-        };
-        let content = match kind {
-            AttributedFragmentKind::Own => Some(&item.content),
-            AttributedFragmentKind::Restored { content, .. } => Some(content),
-            AttributedFragmentKind::Opaque => None,
         };
         let child = content.and_then(ItemContent::as_node);
         let op = if deleted {
@@ -1707,11 +1701,7 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         let render_delete = p.render && p.deleted;
         // existing content that should be retained, only adding changed formats
         let retain_content = !p.render && (!p.deleted || p.attrs.is_some());
-        let (content, offset) = match p.content {
-            AttributedFragmentKind::Own => (Some(&item.content), p.range.start - item.id.clock),
-            AttributedFragmentKind::Restored { content, offset } => (Some(content), offset),
-            AttributedFragmentKind::Opaque => (None, 0),
-        };
+        let (content, offset) = p.content(&item).map_or((None, 0), |(c, o)| (Some(c), o));
         let len = p.len();
         let retain_attributed = if p.deleted {
             self.retain_deletes && !p.fresh

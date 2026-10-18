@@ -160,6 +160,18 @@ impl<'f, A> AttributedFragment<'f, A> {
     pub fn len(&self) -> u32 {
         self.range.end - self.range.start
     }
+
+    /// Content of this fragment and the clock offset it starts at within it, if any is known.
+    pub fn content<'i>(&self, item: &'i Item) -> Option<(&'i ItemContent, u32)>
+    where
+        'f: 'i,
+    {
+        match self.content {
+            AttributedFragmentKind::Own => Some((&item.content, self.range.start - item.id.clock)),
+            AttributedFragmentKind::Restored { content, offset } => Some((content, offset)),
+            AttributedFragmentKind::Opaque => None,
+        }
+    }
 }
 
 /// Where the content of a [AttributedFragment] comes from.
