@@ -8,6 +8,7 @@ use crate::iter::TxnIterator;
 use crate::lib0::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::node::{Node, NodePtr, TypePtr, TypeRef};
 use crate::slice::BlockSlice;
+use crate::undo::UndoStack;
 use crate::update::Update;
 use crate::utils::OptionExt;
 use crate::{
@@ -556,6 +557,14 @@ impl<D: DocHandle + DerefMut> Transaction<D> {
     pub fn apply_update(&mut self, update: Update) -> crate::Result<()> {
         let (doc, state) = self.split_mut();
         state.apply_update(doc, update)
+    }
+
+    /// Undoes a change described by the ids it inserted and deleted.
+    /// Returns `true` if anything changed.
+    pub fn revert(&mut self, inserts: &IdSet, deletes: &IdSet) -> bool {
+        let (doc, state) = self.split_mut();
+        let unused = UndoStack::default();
+        crate::undo::revert::<()>(doc, state, inserts, deletes, None, &unused, &unused)
     }
 
     /// Perform garbage collection of deleted blocks, even if a document was created with `skip_gc`

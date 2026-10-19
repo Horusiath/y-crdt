@@ -670,10 +670,14 @@ fn attribution_session1() {
         .insert_text_attributed("b", None, Some(Attribution::delete(by("0"))))
         .insert_text("c");
     assert_eq!(d3, expected);
-    // step 9: `undo_content_ids` doesn't exist yet
-    // undo_content_ids(&mut u0, &ContentIds::from(only_user0));
-    // let d4 = u0.transact().node("text").unwrap().delta(&DeltaOptions::default());
-    // assert_eq!(d4, Delta::out().insert_text("bc"));
+    let ids = ContentIds::from(only_user0);
+    u0.transact_mut().revert(&ids.inserts, &ids.deletes);
+    let d4 = u0
+        .transact()
+        .node("text")
+        .unwrap()
+        .delta(&DeltaOptions::default());
+    assert_eq!(d4, Delta::out().insert_text("bc"));
 }
 
 #[test]

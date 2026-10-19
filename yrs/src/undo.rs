@@ -6,7 +6,10 @@ use crate::node::{Node, NodePtr};
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
-use crate::{Cell, Doc, ID, IdSet, NodeRef, Observer, OwnedMut, Transaction, TransactionMut, Uuid};
+use crate::{
+    Cell, Doc, ID, IdSet, NodeRef, Observer, OwnedMut, Transaction, TransactionMut,
+    TransactionState, Uuid,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
@@ -654,57 +657,16 @@ where
         undoing: bool,
         origin: Origin,
     ) -> bool {
-        let mut to_redo = HashSet::<ItemPtr>::new();
-        let mut to_delete = Vec::<ItemPtr>::new();
-        let mut change_performed = false;
-
-        let deleted: Vec<_> = item.insertions.blocks().collect(&txn);
-        for slice in deleted {
-            if let BlockSlice::Item(slice) = slice {
-                let mut item = txn.doc.materialize(slice);
-                if item.redone.is_some() {
-                    let slice = match txn.doc.follow_redone(item.id()) {
-                        Some(slice) => slice,
-                        None => return false,
-                    };
-                    item = txn.doc.materialize(slice);
-                }
-
-                if !item.is_deleted() && scope.iter().any(|b| b.is_parent_of(Some(item))) {
-                    to_delete.push(item);
-                }
-            }
-        }
-
-        let mut deleted = item.deletions.blocks();
-        while let Some(slice) = deleted.next(&txn) {
-            if let BlockSlice::Item(slice) = slice {
-                let ptr = txn.doc.materialize(slice);
-                if scope.iter().any(|b| b.is_parent_of(Some(ptr)))
-                    && !item.insertions.contains(ptr.id())
-                // Never redo structs in stackItem.insertions because they were created and deleted in the same capture interval.
-                {
-                    to_redo.insert(ptr);
-                }
-            }
-        }
-
         let (doc, state) = txn.split_mut();
-        for &ptr in to_redo.iter() {
-            let mut ptr = ptr;
-            change_performed |= ptr
-                .redo(doc, state, &to_redo, &item.insertions, stack, other)
-                .is_some();
-        }
-
-        // We want to delete in reverse order so that children are deleted before
-        // parents, so we have more information available when items are filtered.
-        for &item in to_delete.iter().rev() {
-            // if self.options.delete_filter(item) {
-            state.delete(doc, item);
-            change_performed = true;
-        }
-
+        let change_performed = revert(
+            doc,
+            state,
+            &item.insertions,
+            &item.deletions,
+            Some(scope),
+            stack,
+            other,
+        );
         txn.commit();
         if change_performed {
             txn.commit();
@@ -721,6 +683,65 @@ where
             false
         }
     }
+}
+
+pub(crate) fn revert<M>(
+    doc: &mut Doc,
+    state: &mut TransactionState,
+    insertions: &IdSet,
+    deletions: &IdSet,
+    scope: Option<&HashSet<NodePtr>>,
+    stack_a: &UndoStack<M>,
+    stack_b: &UndoStack<M>,
+) -> bool {
+    let in_scope =
+        |item: ItemPtr| scope.is_none_or(|s| s.iter().any(|b| b.is_parent_of(Some(item))));
+    let mut to_redo = HashSet::<ItemPtr>::new();
+    let mut to_delete = Vec::<ItemPtr>::new();
+    let mut change_performed = false;
+
+    let inserted: Vec<_> = insertions.iter_blocks(&doc.blocks).collect();
+    for slice in inserted {
+        if let BlockSlice::Item(slice) = slice {
+            let mut item = doc.materialize(slice);
+            if item.redone.is_some() {
+                let slice = match doc.follow_redone(item.id()) {
+                    Some(slice) => slice,
+                    None => return false,
+                };
+                item = doc.materialize(slice);
+            }
+            if !item.is_deleted() && in_scope(item) {
+                to_delete.push(item);
+            }
+        }
+    }
+
+    let mut deleted = deletions.blocks();
+    while let Some(slice) = deleted.next_in(&doc.blocks) {
+        if let BlockSlice::Item(slice) = slice {
+            let ptr = doc.materialize(slice);
+            // never redo structs in `insertions`: they were created and deleted in the same change
+            if in_scope(ptr) && !insertions.contains(ptr.id()) {
+                to_redo.insert(ptr);
+            }
+        }
+    }
+
+    for &ptr in to_redo.iter() {
+        let mut ptr = ptr;
+        change_performed |= ptr
+            .redo(doc, state, &to_redo, insertions, stack_a, stack_b)
+            .is_some();
+    }
+
+    // delete in reverse order so that children are deleted before parents,
+    // so more information is available when items are filtered
+    for &item in to_delete.iter().rev() {
+        state.delete(doc, item);
+        change_performed = true;
+    }
+    change_performed
 }
 
 impl<M: std::fmt::Debug> std::fmt::Debug for UndoManager<M> {

@@ -600,15 +600,12 @@ impl<'ds> Blocks<'ds> {
     }
 }
 
-impl<'ds> TxnIterator for Blocks<'ds> {
-    type Item = BlockSlice;
-
-    fn next<D: DocHandle>(&mut self, txn: &Transaction<D>) -> Option<Self::Item> {
+impl<'ds> Blocks<'ds> {
+    /// Like [TxnIterator::next], over a block `store` directly.
+    pub(crate) fn next_in(&mut self, store: &BlockStore) -> Option<BlockSlice> {
         if let Some(r) = self.current_range.clone() {
             let mut block = if let Some(idx) = self.current_index.as_mut() {
-                if let Some(block) = txn
-                    .doc()
-                    .blocks
+                if let Some(block) = store
                     .get_client(&self.current_client_id?)
                     .unwrap()
                     .get(*idx)
@@ -618,15 +615,11 @@ impl<'ds> TxnIterator for Blocks<'ds> {
                 } else {
                     self.current_range = None;
                     self.current_index = None;
-                    return self.next(txn);
+                    return self.next_in(store);
                 }
             } else {
                 // first block for a particular client
-                let list = txn
-                    .doc()
-                    .blocks
-                    .get_client(&self.current_client_id?)
-                    .unwrap();
+                let list = store.get_client(&self.current_client_id?).unwrap();
                 if let Some(idx) = list.find_index(r.start) {
                     let mut block = list[idx].as_slice();
                     let clock = block.clock_start();
@@ -640,7 +633,7 @@ impl<'ds> TxnIterator for Blocks<'ds> {
                 } else {
                     self.current_range = None;
                     self.current_index = None;
-                    return self.next(txn);
+                    return self.next_in(store);
                 }
             };
 
@@ -651,7 +644,7 @@ impl<'ds> TxnIterator for Blocks<'ds> {
                 // move to the next range
                 self.current_range = None;
                 self.current_index = None;
-                return self.next(txn);
+                return self.next_in(store);
             } else if clock < r.end && clock + block_len > r.end {
                 // we need to cut the last block
                 block.trim_end(clock + block_len - r.end);
@@ -687,8 +680,17 @@ impl<'ds> TxnIterator for Blocks<'ds> {
                 }
                 Some((r, _)) => Some(r.clone()),
             };
-            return self.next(txn);
+            return self.next_in(store);
         }
+    }
+}
+
+impl<'ds> TxnIterator for Blocks<'ds> {
+    type Item = BlockSlice;
+
+    #[inline]
+    fn next<D: DocHandle>(&mut self, txn: &Transaction<D>) -> Option<Self::Item> {
+        self.next_in(&txn.doc().blocks)
     }
 }
 
