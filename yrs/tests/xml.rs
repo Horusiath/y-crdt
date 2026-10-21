@@ -352,10 +352,7 @@ fn fragment_attributed_content() {
         );
     assert_eq!(actual, expected);
     // deleted nodes can't be reached with `Transaction::node`: check elem1 through a deep render
-    let deep = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let deep = DeltaOptions::deep();
     let actual = txn.node(frag).unwrap().formatted(&fmt).delta(&deep);
     let hello = Delta::out().insert_text_attributed("hello", None, deleted.clone());
     let elem1 =
@@ -395,10 +392,7 @@ fn element_attributed_content() {
     };
     let fmt = attribute_all(&ids);
     let txn = doc.transact();
-    let opts = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let opts = DeltaOptions::deep();
     let actual = txn.node("p").unwrap().formatted(&fmt).delta(&opts);
     let deleted = Some(Attribution::delete::<Attribute>([]));
     let inserted = Some(Attribution::insert::<Attribute>([]));
@@ -433,10 +427,7 @@ fn apply_delta_modify_nested_node() {
             .modify(Delta::new().insert_text("hello").insert_attr("id", "a"))
             .modify(Delta::new().insert_text("world")),
     ); // <xml><div id="a">hello</div><span>world</span></xml>
-    let actual = txn.node("xml").unwrap().delta(&DeltaOptions {
-        deep: true,
-        ..Default::default()
-    });
+    let actual = txn.node("xml").unwrap().delta(&DeltaOptions::deep());
     let expected = Delta::out()
         .insert(Out::node_with_delta(
             div,
@@ -454,10 +445,7 @@ fn apply_delta_modify_nested_node() {
 fn diff_render(base: &Doc, doc: &Doc, name: &str) -> Delta {
     let fmt = DiffFormatter::unattributed(&ContentIds::doc_diff(base, doc));
     let txn = doc.transact();
-    let deep = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let deep = DeltaOptions::deep();
     txn.node(name).unwrap().formatted(&fmt).delta(&deep)
 }
 
@@ -545,10 +533,7 @@ fn element_attributed_content_via_differ() {
     let expected = Delta::out()
         .insert_range([span, world])
         .insert_attr("key", "42"); // <p key="42"><span/>{"bigworld"}</p>
-    let deep = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let deep = DeltaOptions::deep();
     let actual = doc.transact().node(p).unwrap().formatted(&fmt).delta(&deep);
     assert_eq!(actual, expected);
     assert_eq!(actual.name, None);

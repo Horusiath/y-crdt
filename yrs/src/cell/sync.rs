@@ -145,6 +145,9 @@ impl<T> Clone for ArcCell<T> {
     }
 }
 
+pub type Ref<'a, T> = async_lock::RwLockReadGuard<'a, T>;
+pub type Mut<'a, T> = async_lock::RwLockWriteGuard<'a, T>;
+
 impl<T> Acquire for ArcCell<T> {
     type Ref<'a>
     where

@@ -135,6 +135,11 @@ impl ItemSlice {
         id
     }
 
+    /// Returns [BlockRange] representing part of the item covered by current slice.
+    pub fn range(&self) -> BlockRange {
+        BlockRange::new(self.id(), self.end - self.start + 1)
+    }
+
     /// Trim a number of countable elements from the beginning of a current slice.
     pub(crate) fn trim_start(&mut self, count: u32) {
         debug_assert!(count <= self.len());

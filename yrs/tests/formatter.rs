@@ -33,10 +33,7 @@ fn render(doc: &Doc, base: &ContentIds) -> Delta {
     let fmt = diff_formatter(base, doc);
     let txn = doc.transact();
     let root = txn.node("root").unwrap();
-    let opts = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let opts = DeltaOptions::deep();
     root.formatted(&fmt).delta(&opts)
 }
 
@@ -778,10 +775,7 @@ fn suggestions(base: &Doc, sdoc: &Doc) -> DiffFormatter {
 
 fn render_deep<F: DeltaFormatter>(doc: &Doc, node: &str, fmt: &F) -> Delta {
     let txn = doc.transact();
-    let opts = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let opts = DeltaOptions::deep();
     txn.node(node).unwrap().formatted(fmt).delta(&opts)
 }
 
@@ -987,10 +981,7 @@ fn apply_delta_invisible_deleted_silent_null() {
         fix.is_empty(),
         "invisible deleted type: silent drop, no fix"
     );
-    let opts = DeltaOptions {
-        deep: true,
-        ..Default::default()
-    };
+    let opts = DeltaOptions::deep();
     let root = txn.node("prosemirror").unwrap().delta(&opts);
     assert_eq!(root, Delta::out(), "nothing was applied");
 }
@@ -1008,10 +999,7 @@ fn apply_delta_direct_guard_on_deleted_type() {
         let mut par = txn.node_mut(par.node_id().unwrap()).unwrap();
         par.txn_mut().node_mut("prosemirror").unwrap().remove(0, 1);
         let fmt = suggestions(&doc, par.txn().doc());
-        let opts = DeltaOptions {
-            deep: true,
-            ..Default::default()
-        };
+        let opts = DeltaOptions::deep();
         let root_before = par
             .txn()
             .node("prosemirror")
@@ -1129,4 +1117,68 @@ fn apply_delta_fix_is_inverse_of_deep_render() {
         .insert_attr_attributed("title", "t", Some(deleted()))
         .remove_attr("k");
     assert_eq!(fix, Delta::new().retain(1).modify(q_fix));
+}
+
+/// A `remove` inverse re-inserts struck content with the format attribution of a struck base
+/// format, like the deep render shows it (Yjs `inverse(d, toDeltaDeep())`).
+#[test]
+fn apply_delta_remove_inverse_keeps_format_attribution() {
+    let init = vec![
+        Delta::new().insert(paragraph("hello world")),
+        Delta::new().modify(Delta::new().retain(1).retain_fmt(4, &bold())),
+    ];
+    let (doc, mut sdoc) = suggestion_pair((1, 2), "prosemirror", init);
+    sdoc.transact_mut()
+        .node_mut("prosemirror")
+        .unwrap()
+        .remove(0, 1);
+    // <prosemirror>
+    //   ~<paragraph>h<b>ello</b> world</paragraph>~
+    // </prosemirror>
+    let fmt = suggestions(&doc, &sdoc);
+    let before = render_deep(&sdoc, "prosemirror", &fmt);
+    let d = Delta::new().modify(Delta::new().retain(2).remove(4));
+    let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+    let struck_bold = Attribution {
+        delete: Some(vec![]),
+        ..Attribution::format::<Attribute>("bold", [])
+    };
+    let reinsert = Delta::new()
+        .retain(2)
+        .insert_text_attributed("llo", None, Some(struck_bold))
+        .insert_text_attributed(" ", None, Some(deleted()));
+    assert_eq!(fix, Delta::new().modify(reinsert));
+    assert_reverted(&sdoc, "prosemirror", &fmt, &before);
+}
+
+#[test]
+fn attribution_renderer_active_changes_in_diff() {
+    let mut doc = Doc::with_options(Options {
+        skip_gc: true,
+        ..Options::default()
+    });
+    let edit =
+        |doc: &mut Doc, d: Delta<In>| doc.transact_mut().node_mut("text").unwrap().apply_delta(d);
+    edit(&mut doc, Delta::new().insert_text("hella"));
+    let state1 = ContentIds::from_doc(&doc);
+    edit(&mut doc, Delta::new().retain(4).remove(1).insert_text("o!"));
+    let state2 = ContentIds::from_doc(&doc);
+    edit(
+        &mut doc,
+        Delta::new().retain(5).remove(1).insert_text(" world"),
+    );
+    // the visible content: inserts exclude deletes
+    let mut state3 = ContentIds::from_doc(&doc);
+    state3.inserts.diff_with(&state3.deletes);
+    edit(&mut doc, Delta::new().remove(11).insert_text("42"));
+    // render the active changes between state 1 and 2 within state 3
+    let active = state2.diff(&state1).intersect(&state3);
+    let attrs: ContentMap = ContentMap::from_content_ids(&active, vec![], vec![]);
+    let fmt = AttributionsFormatter::new(&attrs).with_rendered_content(state3.inserts);
+    let expected = Delta::out()
+        .insert_text("hell")
+        .insert_text_attributed("a", None, Some(deleted()))
+        .insert_text_attributed("o", None, Some(Attribution::insert::<Attribute>([])))
+        .insert_text(" world");
+    assert_eq!(render_text(&doc, &fmt), expected);
 }

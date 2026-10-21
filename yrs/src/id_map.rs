@@ -37,7 +37,7 @@ impl<A: PartialEq> PartialEq for ContentAttributes<A> {
     }
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> Merge for ContentAttributes<A> {
+impl<A: PartialEq + Eq + Hash> Merge for ContentAttributes<A> {
     fn merge(&mut self, other: &Self) {
         for attr in &other.0 {
             if !self.0.contains(attr) {
@@ -68,13 +68,22 @@ impl<A> ContentAttributes<A> {
 // IdMap<A>
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct IdMap<A: PartialEq + Eq + Hash + Clone> {
+#[derive(Debug)]
+pub struct IdMap<A: PartialEq + Eq + Hash> {
     attrs: HashSet<ContentAttribute<A>>,
     inner: IdMapInner<ContentAttributes<A>>,
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
+impl<A: PartialEq + Eq + Hash> Clone for IdMap<A> {
+    fn clone(&self) -> Self {
+        IdMap {
+            attrs: self.attrs.clone(),
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<A: PartialEq + Eq + Hash> IdMap<A> {
     pub fn new() -> Self {
         IdMap {
             inner: IdMapInner::new(),
@@ -83,13 +92,13 @@ impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
     }
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> Default for IdMap<A> {
+impl<A: PartialEq + Eq + Hash> Default for IdMap<A> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
+impl<A: PartialEq + Eq + Hash> IdMap<A> {
     pub fn from_set(id_set: &IdSet, attrs: Vec<ContentAttribute<A>>) -> Self {
         let mut id_map = IdMap::new();
         let mut attrs: SmallVec<[ContentAttribute<A>; 2]> = attrs.into();
@@ -237,7 +246,6 @@ impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
     pub fn filter<F>(&self, predicate: F) -> Self
     where
         F: Fn(&[ContentAttribute<A>]) -> bool,
-        A: Clone,
     {
         let mut filtered = IdMap::new();
         for (client, ranges) in self.inner.iter() {
@@ -283,13 +291,13 @@ impl<A: PartialEq + Eq + Hash + Clone> IdMap<A> {
     }
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> PartialEq for IdMap<A> {
+impl<A: PartialEq + Eq + Hash> PartialEq for IdMap<A> {
     fn eq(&self, other: &Self) -> bool {
         self.inner == other.inner
     }
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> Diff<IdSet> for IdMap<A> {
+impl<A: PartialEq + Eq + Hash> Diff<IdSet> for IdMap<A> {
     fn diff_with(&mut self, other: &IdSet) {
         self.inner.diff_with(&other.0);
     }
@@ -297,8 +305,8 @@ impl<A: PartialEq + Eq + Hash + Clone> Diff<IdSet> for IdMap<A> {
 
 impl<A, U> Diff<IdMap<U>> for IdMap<A>
 where
-    A: Eq + Hash + Clone,
-    U: Eq + Hash + Clone,
+    A: Eq + Hash,
+    U: Eq + Hash,
 {
     fn diff_with(&mut self, other: &IdMap<U>) {
         self.inner.diff_with(&other.inner);
@@ -316,13 +324,13 @@ impl<'a, A> Iterator for Slices<'a, A> {
     }
 }
 
-pub struct Iter<'a, A: PartialEq + Eq + Hash + Clone> {
+pub struct Iter<'a, A: PartialEq + Eq + Hash> {
     inner: std::collections::btree_map::Iter<'a, ClientID, IdRanges<ContentAttributes<A>>>,
     current_client: Option<ClientID>,
     current_iter: Option<std::slice::Iter<'a, (Range<u32>, ContentAttributes<A>)>>,
 }
 
-impl<'a, A: PartialEq + Eq + Hash + Clone> Iter<'a, A> {
+impl<'a, A: PartialEq + Eq + Hash> Iter<'a, A> {
     fn new(id_map: &'a IdMap<A>) -> Self {
         Iter {
             inner: id_map.inner.clients().iter(),
@@ -332,7 +340,7 @@ impl<'a, A: PartialEq + Eq + Hash + Clone> Iter<'a, A> {
     }
 }
 
-impl<'a, A: PartialEq + Eq + Hash + Clone> Iterator for Iter<'a, A> {
+impl<'a, A: PartialEq + Eq + Hash> Iterator for Iter<'a, A> {
     type Item = (ClientID, AttrRange<A>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -355,7 +363,7 @@ impl<'a, A: PartialEq + Eq + Hash + Clone> Iterator for Iter<'a, A> {
     }
 }
 
-impl<A: PartialEq + Eq + Hash + Clone> From<IdMap<A>> for IdSet {
+impl<A: PartialEq + Eq + Hash> From<IdMap<A>> for IdSet {
     fn from(value: IdMap<A>) -> Self {
         let mut set = IdSet::default();
         for (client, ranges) in value.inner.clients() {
@@ -368,7 +376,7 @@ impl<A: PartialEq + Eq + Hash + Clone> From<IdMap<A>> for IdSet {
     }
 }
 
-impl<A: Serialize + PartialEq + Eq + Hash + Clone> Encode for IdMap<A> {
+impl<A: Serialize + PartialEq + Eq + Hash> Encode for IdMap<A> {
     fn encode<E: Encoder>(&self, encoder: &mut E) {
         encoder.write_var(self.inner.len() as u32);
         let mut last_written_client_id: u64 = 0;
@@ -420,7 +428,7 @@ impl<A: Serialize + PartialEq + Eq + Hash + Clone> Encode for IdMap<A> {
     }
 }
 
-impl<A: DeserializeOwned + PartialEq + Eq + Hash + Clone> Decode for IdMap<A> {
+impl<A: DeserializeOwned + PartialEq + Eq + Hash> Decode for IdMap<A> {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let mut id_map = IdMap::new();
         let num_clients: u32 = decoder.read_var()?;

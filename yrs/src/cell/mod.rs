@@ -1,7 +1,7 @@
 #[cfg(feature = "sync")]
 pub mod sync;
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{RefCell, RefMut};
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
@@ -165,6 +165,9 @@ impl<T: 'static> Drop for OwnedMut<T> {
         unsafe { ManuallyDrop::drop(&mut self.guard) }
     }
 }
+
+pub type Ref<'a, T> = std::cell::Ref<'a, T>;
+pub type Mut<'a, T> = std::cell::RefMut<'a, T>;
 
 impl<T> Clone for RcCell<T> {
     fn clone(&self) -> Self {

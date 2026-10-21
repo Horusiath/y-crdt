@@ -10,8 +10,20 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
-/// What the delta builder needs from an attribute value: who, and when.
-pub trait AttributeValue: Clone + Eq + Hash {
+/// What the delta builder needs from an attribute value: who, and when. Values are owned by the
+/// attribution maps and may travel into doc observers (see [crate::Suggestion]), hence the bounds.
+#[cfg(feature = "sync")]
+pub trait AttributeValue: Eq + Hash + Send + Sync + 'static {
+    /// User id for `insert`/`delete` attributes.
+    fn attributor(&self) -> Option<Arc<str>>;
+    /// Timestamp for `insertAt`/`deleteAt` attributes. `0` means not set.
+    fn timestamp(&self) -> u64;
+}
+
+/// What the delta builder needs from an attribute value: who, and when. Values are owned by the
+/// attribution maps and may travel into doc observers (see [crate::Suggestion]), hence the bounds.
+#[cfg(not(feature = "sync"))]
+pub trait AttributeValue: Eq + Hash + 'static {
     /// User id for `insert`/`delete` attributes.
     fn attributor(&self) -> Option<Arc<str>>;
     /// Timestamp for `insertAt`/`deleteAt` attributes. `0` means not set.
@@ -305,7 +317,6 @@ fn covered_len(
 /// Content covered by the attributions always renders, carrying its attribution. Content in
 /// `rendered_content` renders normally, even if deleted (restoring deleted content requires
 /// `skip_gc`). By default, it's the alive content of the doc.
-#[derive(Debug, Clone)]
 pub struct AttributionsFormatter<A: AttributeValue = AttrValue> {
     /// Inserts and deletes merged.
     render_as: IdMap<A>,
@@ -365,7 +376,7 @@ impl<A: AttributeValue> DeltaFormatter for AttributionsFormatter<A> {
     type Attr = A;
 
     fn contains(&self, item: &Item) -> bool {
-        let range = BlockRange::new(item.id, item.len());
+        let range = item.range();
         if self.attributed.intersects(&range) {
             return true;
         }
@@ -666,6 +677,28 @@ impl<A: AttributeValue> DiffFormatter<A> {
                 content,
             );
         }
+    }
+
+    /// Content inserted since the base doc.
+    #[inline]
+    pub(crate) fn inserts(&self) -> &IdMap<A> {
+        &self.inserts
+    }
+
+    /// Content deleted since the base doc, minus `inserts`.
+    #[inline]
+    pub(crate) fn deletes(&self) -> &IdMap<A> {
+        &self.deletes
+    }
+
+    /// Copies of the restored content within a `range`, each with the clock it starts at.
+    pub(crate) fn restored_in(&self, range: &BlockRange, mut f: impl FnMut(u32, ItemContent)) {
+        let clocks = range.clock..range.clock + range.len;
+        self.gc_slices(range.client, clocks, |r, kind| {
+            if let AttributedFragmentKind::Restored { content, offset } = kind {
+                f(r.start, slice_content(content, offset, r.end - r.start));
+            }
+        });
     }
 
     /// Splits a gc'd `range` into restored and opaque parts.

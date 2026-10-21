@@ -925,6 +925,16 @@ pub struct DeltaOptions {
     pub modified: Option<Modified>,
 }
 
+impl DeltaOptions {
+    /// Delta options with deep node rendering turned on.
+    pub fn deep() -> Self {
+        DeltaOptions {
+            deep: true,
+            ..Default::default()
+        }
+    }
+}
+
 /// Nodes that should be formatter as modified children, mapped onto the keys changed within them.
 /// A `None` key marks a change made to node's children.
 pub type Modified = HashMap<NodePtr, HashSet<Option<Arc<str>>>>;
@@ -1047,10 +1057,7 @@ impl XmlFormat {
         D: DocHandle,
     {
         XmlFormat {
-            delta: node.delta(&DeltaOptions {
-                deep: true,
-                ..Default::default()
-            }),
+            delta: node.delta(&DeltaOptions::deep()),
         }
     }
 
@@ -1170,28 +1177,109 @@ struct WalkState {
     changed: Attrs,
     /// The value before changes
     prev: Attrs,
-    /// Logic for format attribution
-    /// Everything that comes after a format is formatted by the user that created it.
-    /// Two exceptions:
-    /// - the user resets formatting to the previously known formatting that is not attributed
-    /// - the user deletes a format and hence restores the previously known formatting
-    ///   that is not attributed.
+    fmt_attribution: FormatAttribution,
+}
+
+/// Logic for format attribution.
+/// Everything that comes after a format is formatted by the user that created it.
+/// Two exceptions:
+/// - the user resets formatting to the previously known formatting that is not attributed
+/// - the user deletes a format and hence restores the previously known formatting
+///   that is not attributed.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FormatAttribution {
     prev_unattributed: Attrs,
-    used_attribution: Option<Attribution>,
+    /// Format attribution of the content that follows.
+    pub used: Option<Attribution>,
+}
+
+impl FormatAttribution {
+    /// Tracks a format marker of a `key` before it updates the `current` formats.
+    pub fn before(
+        &mut self,
+        key: &Arc<str>,
+        value: &Any,
+        attribution: Option<&Attribution>,
+        deleted: bool,
+        current: &Attrs,
+    ) {
+        if attribution.is_some() && (deleted || !self.prev_unattributed.contains_key(key)) {
+            let previous = if deleted {
+                value.clone()
+            } else {
+                current.get(key).cloned().unwrap_or(Any::Null)
+            };
+            self.prev_unattributed.insert(key.clone(), previous);
+        }
+    }
+
+    /// Tracks a format marker of a `key` after it updated the `current` formats. With `explicit`,
+    /// an attributed marker ending an attributed range ends it with a per-key clear.
+    pub fn after(
+        &mut self,
+        key: &Arc<str>,
+        attribution: Option<&Attribution>,
+        deleted: bool,
+        current: &Attrs,
+        explicit: bool,
+    ) {
+        if attribution.is_none() && !self.prev_unattributed.contains_key(key) {
+            return;
+        }
+        let mut formatting = self.used.clone().unwrap_or_default();
+        let mut changed = formatting.format.take().unwrap_or_default();
+        let current = current.get(key).unwrap_or(&Any::Null);
+        let same_as_previous = self.prev_unattributed.get(key) == Some(current);
+        match attribution {
+            None if !same_as_previous => { /* skip */ }
+            Some(a) if !same_as_previous => {
+                // an attributed marker opens attributed formatting of a key
+                let by = changed.entry(key.clone()).or_insert(None);
+                let mut list = by.take().unwrap_or_default();
+                let attributors = if deleted { &a.delete } else { &a.insert };
+                list.extend(attributors.iter().flatten().cloned());
+                *by = Some(list);
+                let at = if deleted { a.delete_at } else { a.insert_at };
+                if at != 0 {
+                    formatting.format_at = at;
+                }
+            }
+            _ => {
+                // an unattributed marker, or one resetting to the previous unattributed value,
+                // ends the attributed range. A rendered one ends it explicitly in change renders.
+                if attribution.is_some() && explicit {
+                    changed.insert(key.clone(), None);
+                } else {
+                    changed.remove(key);
+                }
+                self.prev_unattributed.remove(key);
+            }
+        }
+        if changed.is_empty() {
+            self.used = None;
+        } else if let Some(a) = attribution {
+            let at = if deleted { a.delete_at } else { a.insert_at };
+            if at != 0 {
+                formatting.format_at = at;
+            }
+            formatting.format = Some(changed);
+            self.used = Some(formatting);
+        }
+    }
 }
 
 impl WalkState {
     fn data(&self, own: Option<&Attribution>) -> Option<Attribution> {
-        Attribution::combine_data(self.used_attribution.as_ref(), own)
+        Attribution::combine_data(self.fmt_attribution.used.as_ref(), own)
     }
 
     fn instr(&self, own: Option<&Attribution>) -> Option<Attribution> {
-        Attribution::combine(self.used_attribution.as_ref(), own)
+        Attribution::combine(self.fmt_attribution.used.as_ref(), own)
     }
 
     /// Attribution of an instruction which clears its own former attribution when it has none.
     fn instr_or_clear(&self, own: Option<Attribution>) -> Option<Attribution> {
-        match (own, &self.used_attribution) {
+        match (own, &self.fmt_attribution.used) {
             (Some(own), _) => self.instr(Some(&own)),
             (None, None) => Some(Attribution::default()),
             // lib0 emits `{ insert: null, delete: null, .. }` over the ambient attribution,
@@ -1772,14 +1860,9 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         retain: bool,
     ) {
         let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
-        if attribution.is_some() && (p.deleted || !st.prev_unattributed.contains_key(key)) {
-            let previous = if p.deleted {
-                value.clone()
-            } else {
-                st.current.get(key).cloned().unwrap_or(Any::Null)
-            };
-            st.prev_unattributed.insert(key.clone(), previous);
-        }
+        let attribution = attribution.as_ref();
+        st.fmt_attribution
+            .before(key, value, attribution, p.deleted, &st.current);
 
         // update formats
         if render {
@@ -1804,49 +1887,9 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         }
 
         // update attributions
-        if attribution.is_none() && !st.prev_unattributed.contains_key(key) {
-            return;
-        }
-        let mut formatting = st.used_attribution.clone().unwrap_or_default();
-        let mut changed = formatting.format.take().unwrap_or_default();
-        let current = st.current.get(key).unwrap_or(&Any::Null);
-        let same_as_previous = st.prev_unattributed.get(key) == Some(current);
-        match &attribution {
-            None if !same_as_previous => { /* skip */ }
-            Some(a) if !same_as_previous => {
-                // an attributed marker opens attributed formatting of a key
-                let by = changed.entry(key.clone()).or_insert(None);
-                let mut list = by.take().unwrap_or_default();
-                let attributors = if p.deleted { &a.delete } else { &a.insert };
-                list.extend(attributors.iter().flatten().cloned());
-                *by = Some(list);
-                let at = if p.deleted { a.delete_at } else { a.insert_at };
-                if at != 0 {
-                    formatting.format_at = at;
-                }
-            }
-            _ => {
-                // an unattributed marker, or one resetting to the previous unattributed value,
-                // ends the attributed range. A rendered one ends it explicitly in change renders.
-                let explicit = attribution.is_some() && self.items.is_some() && (render || p.fresh);
-                if explicit {
-                    changed.insert(key.clone(), None);
-                } else {
-                    changed.remove(key);
-                }
-                st.prev_unattributed.remove(key);
-            }
-        }
-        if changed.is_empty() {
-            st.used_attribution = None;
-        } else if let Some(a) = &attribution {
-            let at = if p.deleted { a.delete_at } else { a.insert_at };
-            if at != 0 {
-                formatting.format_at = at;
-            }
-            formatting.format = Some(changed);
-            st.used_attribution = Some(formatting);
-        }
+        let explicit = self.items.is_some() && (render || p.fresh);
+        st.fmt_attribution
+            .after(key, attribution, p.deleted, &st.current, explicit);
     }
 
     /// Emits insert ops for a `len` elements long slice of `content`, starting at `offset`.

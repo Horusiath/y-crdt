@@ -5,6 +5,7 @@ use crate::formatter::{
     clock_len, formatted_len, native_len,
 };
 use crate::node::{Attrs, Node, NodePtr, TypePtr};
+use crate::node_ref::FormatAttribution;
 use crate::transaction::TransactionState;
 use crate::utils::OptionExt;
 use crate::{Any, Doc, IdSet, In, OffsetKind, Out};
@@ -26,6 +27,8 @@ pub(crate) struct Cursor<'f, F: DeltaFormatter = DefaultFormatter> {
     index: u32,
     /// Formatting attributes active at the cursor position.
     attrs: Option<Box<Attrs>>,
+    /// Format attribution at the cursor position, set once an attributed marker was passed.
+    fmt_attribution: Option<Box<FormatAttribution>>,
     encoding: OffsetKind,
     fmt: &'f F,
 }
@@ -40,6 +43,7 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
             offset: 0,
             index: 0,
             attrs: None,
+            fmt_attribution: None,
             encoding,
             fmt,
         }
@@ -57,6 +61,18 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         fmt.read_content(&mut fragments, item, item.range(), RenderMode::Retain);
         fragments.retain(|p| !p.deleted || p.attrs.is_some());
         fragments
+    }
+
+    /// Attribution of a format marker `item`, as a render resolves it.
+    fn marker_attribution(&self, item: &Item) -> Option<Attribution> {
+        if !self.fmt.contains(item) {
+            return None;
+        }
+        let mut fragments = Vec::new();
+        let fmt: &'f F = self.fmt;
+        fmt.read_content(&mut fragments, item, item.range(), RenderMode::Visible);
+        let p = fragments.first()?;
+        Attribution::resolve(p.attrs.as_ref(), p.deleted)
     }
 
     /// Maps an `offset` inside of an `item` expressed in `lib0` units onto clock units.
@@ -145,8 +161,19 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         };
         match &right.content {
             ItemContent::Format(key, value) => {
-                if !right.is_deleted() {
-                    update_attrs(self.attrs.get_or_init(), key, value);
+                let deleted = right.is_deleted();
+                let attribution = self.marker_attribution(&right);
+                let attrs = self.attrs.get_or_init();
+                if attribution.is_some() || self.fmt_attribution.is_some() {
+                    // same as in a render (see: DeltaWalk::process_format)
+                    let a = self.fmt_attribution.get_or_init();
+                    a.before(key, value, attribution.as_ref(), deleted, attrs);
+                    if !deleted {
+                        update_attrs(attrs, key, value);
+                    }
+                    a.after(key, attribution.as_ref(), deleted, attrs, false);
+                } else if !deleted {
+                    update_attrs(attrs, key, value);
                 }
             }
             _ => {
@@ -679,6 +706,7 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                 break;
             }
             let format = self.attrs.as_deref();
+            let current_attribution = self.fmt_attribution.as_ref().and_then(|a| a.used.as_ref());
             if !self.fmt.contains(&item) {
                 let start = clock_offset(item, self.offset, self.encoding);
                 let end = clock_offset(item, self.offset + n, self.encoding);
@@ -687,7 +715,7 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                     offset: start,
                     clock_len: end - start,
                     len: n,
-                    attribution: None,
+                    attribution: Attribution::combine_data(current_attribution, None),
                     format,
                 });
             } else {
@@ -718,7 +746,10 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
                         offset: base + start,
                         clock_len,
                         len: k,
-                        attribution: Attribution::resolve(p.attrs.as_ref(), p.deleted),
+                        attribution: Attribution::combine_data(
+                            current_attribution,
+                            Attribution::resolve(p.attrs.as_ref(), p.deleted).as_ref(),
+                        ),
                         format,
                     });
                     (skip, take) = (0, take - k);

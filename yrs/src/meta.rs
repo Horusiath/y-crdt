@@ -90,13 +90,23 @@ impl Decode for ContentIds {
 }
 
 /// Attributed inserted and deleted content.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContentMap<A: Eq + Hash + Clone = AttrValue> {
+#[derive(Debug, PartialEq)]
+pub struct ContentMap<A: Eq + Hash = AttrValue> {
     pub inserts: IdMap<A>,
     pub deletes: IdMap<A>,
 }
 
-impl<A: Eq + Hash + Clone> Default for ContentMap<A> {
+// attributes are `Arc`s: cloning a map never clones `A`
+impl<A: Eq + Hash> Clone for ContentMap<A> {
+    fn clone(&self) -> Self {
+        ContentMap {
+            inserts: self.inserts.clone(),
+            deletes: self.deletes.clone(),
+        }
+    }
+}
+
+impl<A: Eq + Hash> Default for ContentMap<A> {
     fn default() -> Self {
         ContentMap {
             inserts: IdMap::new(),
@@ -105,7 +115,7 @@ impl<A: Eq + Hash + Clone> Default for ContentMap<A> {
     }
 }
 
-impl<A: Eq + Hash + Clone> ContentMap<A> {
+impl<A: Eq + Hash> ContentMap<A> {
     pub fn new(inserts: IdMap<A>, deletes: IdMap<A>) -> Self {
         ContentMap { inserts, deletes }
     }
@@ -167,14 +177,14 @@ impl From<ContentMap> for ContentIds {
     }
 }
 
-impl<A: Serialize + Eq + Hash + Clone> Encode for ContentMap<A> {
+impl<A: Serialize + Eq + Hash> Encode for ContentMap<A> {
     fn encode<E: Encoder>(&self, encoder: &mut E) {
         self.inserts.encode(encoder);
         self.deletes.encode(encoder);
     }
 }
 
-impl<A: DeserializeOwned + Eq + Hash + Clone> Decode for ContentMap<A> {
+impl<A: DeserializeOwned + Eq + Hash> Decode for ContentMap<A> {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, crate::lib0::Error> {
         let inserts = IdMap::decode(decoder)?;
         let deletes = IdMap::decode(decoder)?;

@@ -638,6 +638,7 @@ mod out;
 mod slice;
 mod state_vector;
 mod sticky_index;
+mod suggestion;
 pub mod sync;
 #[doc(hidden)]
 pub mod test_utils;
@@ -683,6 +684,7 @@ pub use crate::sticky_index::Assoc;
 pub use crate::sticky_index::IndexScope;
 pub use crate::sticky_index::Offset;
 pub use crate::sticky_index::StickyIndex;
+pub use crate::suggestion::Suggestion;
 pub use crate::transact::TransactionAcqError;
 pub use crate::transaction::DocHandle;
 pub use crate::transaction::Origin;
@@ -703,13 +705,23 @@ pub type Cell<T> = crate::cell::RcCell<T>;
 pub type OwnedRef<T> = crate::cell::OwnedRef<T>;
 #[cfg(not(feature = "sync"))]
 pub type OwnedMut<T> = crate::cell::OwnedMut<T>;
+#[cfg(not(feature = "sync"))]
+pub type Ref<'a, T> = crate::cell::Ref<'a, T>;
+#[cfg(not(feature = "sync"))]
+pub type Mut<'a, T> = crate::cell::Mut<'a, T>;
 
 #[cfg(feature = "sync")]
 pub type Cell<T> = crate::cell::sync::ArcCell<T>;
 #[cfg(feature = "sync")]
+pub type Ref<'a, T> = crate::cell::sync::Ref<'a, T>;
+#[cfg(feature = "sync")]
 pub type OwnedRef<T> = crate::cell::sync::OwnedRef<T>;
 #[cfg(feature = "sync")]
 pub type OwnedMut<T> = crate::cell::sync::OwnedMut<T>;
+#[cfg(feature = "sync")]
+pub type Ref<'a, T> = crate::cell::sync::Ref<'a, T>;
+#[cfg(feature = "sync")]
+pub type Mut<'a, T> = crate::cell::sync::Mut<'a, T>;
 
 #[deprecated(since = "0.19.0", note = "Use `yrs::Out` instead")]
 pub type Value = Out;
