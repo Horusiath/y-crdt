@@ -49,6 +49,14 @@ harness = false
 name = "id_set"
 harness = false
 
+[[bench]]
+name = "serialization"
+harness = false
+
+[[bench]]
+name = "formatter"
+harness = false
+
 [lib]
 doctest = true
 bench = true

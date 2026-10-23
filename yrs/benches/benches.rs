@@ -4,8 +4,7 @@ use rand::prelude::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use std::cell::Cell;
 use std::collections::HashMap;
-use yrs::lib0::read::{Cursor, Read};
-use yrs::updates::decoder::Decode;
+use yrs::lib0::{Cursor, Decode, Read};
 use yrs::{Doc, In, TransactionMut, Update};
 
 const N: usize = 6000;
@@ -402,7 +401,10 @@ fn b3_4(c: &mut Criterion, name: &str) {
 }
 
 fn b4_1(c: &mut Criterion, name: &str) {
-    let input = read_input("./assets/bench-input/b4-editing-trace.bin");
+    let input = read_input(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/bench-input/b4-editing-trace.bin"
+    ));
 
     c.bench_with_input(BenchmarkId::new(name, input.len()), &input, |b, input| {
         b.iter(|| {
@@ -421,7 +423,11 @@ fn b4_1(c: &mut Criterion, name: &str) {
 
 fn b4_2(c: &mut Criterion, name: &str) {
     let mut buf = Vec::with_capacity(400 * 1024);
-    let mut f = std::fs::File::open("./assets/bench-input/b4-update.bin").unwrap();
+    let mut f = std::fs::File::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/bench-input/b4-update.bin"
+    ))
+    .unwrap();
     std::io::Read::read_to_end(&mut f, &mut buf).unwrap();
 
     c.bench_with_input(BenchmarkId::new(name, buf.len()), &buf, |b, buf| {
@@ -435,7 +441,7 @@ fn b4_2(c: &mut Criterion, name: &str) {
 
 fn read_input(fpath: &str) -> Vec<TextOp> {
     use std::fs::File;
-    use yrs::updates::decoder::DecoderV1;
+    use yrs::lib0::DecoderV1;
 
     let mut f = File::open(fpath).unwrap();
     let mut buf = Vec::new();

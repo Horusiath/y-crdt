@@ -1,7 +1,6 @@
 use criterion::{Criterion, SamplingMode, black_box, criterion_group, criterion_main};
 use yrs::Any;
-use yrs::lib0::read::{Cursor, Read};
-use yrs::lib0::write::Write;
+use yrs::lib0::{Cursor, Read, Write};
 
 const BENCHMARK_SIZE: u32 = 100000;
 
