@@ -2,7 +2,7 @@ use crate::block::{BlockRange, ID, ItemContent, ItemPtr, split_str};
 use crate::cursor::{Chunk, Cursor};
 use crate::delta::{AttrOp, Attribution, Op};
 use crate::formatter::{
-    AttributedFragment, DefaultFormatter, DeltaFormatter, RenderMode, formatted_len,
+    AttributedFragment, DefaultFormatter, DeltaFormatter, Last, RenderMode, formatted_len,
 };
 use crate::lib0;
 use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRef};
@@ -1527,11 +1527,11 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         if !self.fmt.contains(item) {
             return Some((item.is_deleted(), None, Some(&item.content)));
         }
-        let mut pieces = Vec::new();
+        let mut last = Last::default();
         let fmt: &'a F = self.fmt;
         let range = BlockRange::new(item.id, item.len());
-        fmt.read_content(&mut pieces, item, range, RenderMode::Visible);
-        let p = pieces.pop()?;
+        fmt.read_content(&mut last, item, range, RenderMode::Visible);
+        let p = last.0?;
         let attribution = Attribution::resolve(p.attrs.as_ref(), p.deleted);
         let content = p.content(item).map(|(content, _)| content);
         Some((p.deleted, attribution, content))

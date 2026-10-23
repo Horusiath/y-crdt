@@ -200,6 +200,24 @@ pub enum AttributedFragmentKind<'f> {
     Opaque,
 }
 
+/// A [DeltaFormatter::read_content] sink keeping only the last fragment: a throw-away buffer for
+/// single-unit items (format markers, map values), which yield at most one.
+pub(crate) struct Last<'f, A>(pub Option<AttributedFragment<'f, A>>);
+
+impl<'f, A> Default for Last<'f, A> {
+    fn default() -> Self {
+        Last(None)
+    }
+}
+
+impl<'f, A> Extend<AttributedFragment<'f, A>> for Last<'f, A> {
+    fn extend<I: IntoIterator<Item = AttributedFragment<'f, A>>>(&mut self, iter: I) {
+        if let Some(last) = iter.into_iter().last() {
+            self.0 = Some(last);
+        }
+    }
+}
+
 /// Decides how the content of a node is rendered.
 pub trait DeltaFormatter {
     /// Attribute value type carried by fragments.
@@ -207,14 +225,10 @@ pub trait DeltaFormatter {
     /// Whether any part of `item` is formatted non-generically; `false` takes the fast path.
     fn contains(&self, item: &Item) -> bool;
     /// Splits a `range` of `item` into fragments, each with its own deleted flag, attributes and
-    /// render decision.
-    fn read_content<'f>(
-        &'f self,
-        out: &mut Vec<AttributedFragment<'f, Self::Attr>>,
-        item: &Item,
-        range: BlockRange,
-        mode: RenderMode,
-    );
+    /// render decision, pushed into `out` (ex. a `Vec`, or [Last] for single-unit items).
+    fn read_content<'f, E>(&'f self, out: &mut E, item: &Item, range: BlockRange, mode: RenderMode)
+    where
+        E: Extend<AttributedFragment<'f, Self::Attr>>;
     /// Formatted length of a claimed item, measured in `kind` units of the formatted doc.
     fn content_len(&self, item: &Item, kind: OffsetKind) -> u32;
 
@@ -234,13 +248,15 @@ impl DeltaFormatter for DefaultFormatter {
     }
 
     #[inline]
-    fn read_content<'f>(
+    fn read_content<'f, E>(
         &'f self,
-        _out: &mut Vec<AttributedFragment<'f, ()>>,
+        _out: &mut E,
         _item: &Item,
         _range: BlockRange,
         _mode: RenderMode,
-    ) {
+    ) where
+        E: Extend<AttributedFragment<'f, ()>>,
+    {
     }
 
     #[inline(always)]
@@ -351,8 +367,8 @@ impl<A: AttributeValue> AttributionsFormatter<A> {
         self
     }
 
-    fn push<'f>(
-        out: &mut Vec<AttributedFragment<'f, A>>,
+    fn push<'f, E: Extend<AttributedFragment<'f, A>>>(
+        out: &mut E,
         range: Range<u32>,
         deleted: bool,
         in_rc: bool,
@@ -360,14 +376,10 @@ impl<A: AttributeValue> AttributionsFormatter<A> {
         mode: RenderMode,
     ) {
         if in_rc || attrs.is_some() {
-            out.push(AttributedFragment::new(
-                range,
-                deleted && !in_rc,
-                attrs.cloned(),
-                mode,
-            ));
+            let fragment = AttributedFragment::new(range, deleted && !in_rc, attrs.cloned(), mode);
+            out.extend(Some(fragment));
         } else if deleted && mode != RenderMode::Retain && mode != RenderMode::Fresh {
-            out.push(AttributedFragment::new(range, true, None, mode));
+            out.extend(Some(AttributedFragment::new(range, true, None, mode)));
         }
     }
 }
@@ -387,13 +399,10 @@ impl<A: AttributeValue> DeltaFormatter for AttributionsFormatter<A> {
         }
     }
 
-    fn read_content<'f>(
-        &'f self,
-        out: &mut Vec<AttributedFragment<'f, A>>,
-        item: &Item,
-        range: BlockRange,
-        mode: RenderMode,
-    ) {
+    fn read_content<'f, E>(&'f self, out: &mut E, item: &Item, range: BlockRange, mode: RenderMode)
+    where
+        E: Extend<AttributedFragment<'f, A>>,
+    {
         let deleted = item.is_deleted();
         match &self.rendered_content {
             // alive content renders normally
@@ -490,9 +499,9 @@ impl SnapshotFormatter {
     }
 
     /// Pushes a frag e t of `range`. Returns `false` if the range is future content.
-    fn push(
-        &self,
-        out: &mut Vec<AttributedFragment<'_, ()>>,
+    fn push<'f, E: Extend<AttributedFragment<'f, ()>>>(
+        &'f self,
+        out: &mut E,
         client: ClientID,
         range: Range<u32>,
         changed: bool,
@@ -504,7 +513,7 @@ impl SnapshotFormatter {
         let deleted = self.next.delete_set.contains(&ID::new(client, range.start));
         if mode != RenderMode::Retain || !deleted || changed {
             let attrs = changed.then(ContentAttributes::new);
-            out.push(AttributedFragment::new(range, deleted, attrs, mode));
+            out.extend(Some(AttributedFragment::new(range, deleted, attrs, mode)));
         }
         true
     }
@@ -520,13 +529,10 @@ impl DeltaFormatter for SnapshotFormatter {
             || self.attributed.intersects(&range)
     }
 
-    fn read_content<'f>(
-        &'f self,
-        out: &mut Vec<AttributedFragment<'f, ()>>,
-        _item: &Item,
-        range: BlockRange,
-        mode: RenderMode,
-    ) {
+    fn read_content<'f, E>(&'f self, out: &mut E, _item: &Item, range: BlockRange, mode: RenderMode)
+    where
+        E: Extend<AttributedFragment<'f, ()>>,
+    {
         let client = range.client;
         if self.next_clock(&client) <= range.clock {
             return; // future content
@@ -735,9 +741,9 @@ impl<A: AttributeValue> DiffFormatter<A> {
         }
     }
 
-    fn push<'f>(
+    fn push<'f, E: Extend<AttributedFragment<'f, A>>>(
         &'f self,
-        out: &mut Vec<AttributedFragment<'f, A>>,
+        out: &mut E,
         item: &Item,
         range: Range<u32>,
         attrs: Option<&ContentAttributes<A>>,
@@ -747,11 +753,11 @@ impl<A: AttributeValue> DiffFormatter<A> {
             self.gc_slices(item.id.client, range, |range, content| {
                 let mut fragment = AttributedFragment::new(range, true, attrs.cloned(), mode);
                 fragment.content = content;
-                out.push(fragment);
+                out.extend(Some(fragment));
             });
         } else {
             let fragment = AttributedFragment::new(range, item.is_deleted(), attrs.cloned(), mode);
-            out.push(fragment);
+            out.extend(Some(fragment));
         }
     }
 }
@@ -778,13 +784,10 @@ impl<A: AttributeValue> DeltaFormatter for DiffFormatter<A> {
         self.attributed.intersects(&item.range())
     }
 
-    fn read_content<'f>(
-        &'f self,
-        out: &mut Vec<AttributedFragment<'f, A>>,
-        item: &Item,
-        range: BlockRange,
-        mode: RenderMode,
-    ) {
+    fn read_content<'f, E>(&'f self, out: &mut E, item: &Item, range: BlockRange, mode: RenderMode)
+    where
+        E: Extend<AttributedFragment<'f, A>>,
+    {
         let deleted = item.is_deleted();
         let gc = matches!(item.content, ItemContent::Deleted(_));
         let map = if deleted {

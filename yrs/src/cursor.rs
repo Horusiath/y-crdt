@@ -1,7 +1,7 @@
 use crate::block::{BlockRange, ID, Item, ItemContent, ItemPtr};
 use crate::delta::Attribution;
 use crate::formatter::{
-    AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, RenderMode,
+    AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, Last, RenderMode,
     clock_len, formatted_len, native_len,
 };
 use crate::node::{Attrs, Node, NodePtr, TypePtr};
@@ -68,10 +68,10 @@ impl<'f, F: DeltaFormatter> Cursor<'f, F> {
         if !self.fmt.contains(item) {
             return None;
         }
-        let mut fragments = Vec::new();
+        let mut last = Last::default();
         let fmt: &'f F = self.fmt;
-        fmt.read_content(&mut fragments, item, item.range(), RenderMode::Visible);
-        let p = fragments.first()?;
+        fmt.read_content(&mut last, item, item.range(), RenderMode::Visible);
+        let p = last.0?;
         Attribution::resolve(p.attrs.as_ref(), p.deleted)
     }
 
