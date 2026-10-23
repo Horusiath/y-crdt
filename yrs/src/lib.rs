@@ -684,7 +684,6 @@ pub use crate::sticky_index::Assoc;
 pub use crate::sticky_index::IndexScope;
 pub use crate::sticky_index::Offset;
 pub use crate::sticky_index::StickyIndex;
-pub use crate::suggestion::Suggestion;
 pub use crate::transact::TransactionAcqError;
 pub use crate::transaction::DocHandle;
 pub use crate::transaction::Origin;
