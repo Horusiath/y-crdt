@@ -41,6 +41,7 @@ impl Error {
 pub enum MalformedKind {
     Utf8,
     EmptyBlock,
+    ClientID,
 }
 
 impl Display for MalformedKind {
@@ -48,6 +49,7 @@ impl Display for MalformedKind {
         match self {
             MalformedKind::Utf8 => write!(f, "invalid UTF-8 sequence"),
             MalformedKind::EmptyBlock => write!(f, "block cannot have 0 length"),
+            MalformedKind::ClientID => write!(f, "invalid client ID"),
         }
     }
 }

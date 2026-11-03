@@ -126,8 +126,9 @@ impl Decode for StateVector {
         let mut i = 0;
         while i < len {
             let client: u64 = decoder.read_var()?;
+            let client = ClientID::new_checked(client)?;
             let clock = decoder.read_var()?;
-            sv.insert(ClientID::new(client), clock);
+            sv.insert(client, clock);
             i += 1;
         }
         Ok(StateVector(sv))

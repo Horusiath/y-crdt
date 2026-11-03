@@ -1,7 +1,7 @@
 use crate::block_store::BlockStore;
 use crate::branch::{Branch, BranchPtr};
 use crate::doc::{DocAddr, OffsetKind};
-use crate::encoding::read::Error;
+use crate::encoding::read::{Error, MalformedKind};
 use crate::gc::GCCollector;
 use crate::slice::{BlockSlice, ItemSlice};
 use crate::store::Store;
@@ -82,6 +82,17 @@ pub struct ClientID(CID);
 
 impl ClientID {
     const MASK: u64 = u64::MAX << 53; // all 1 shifted by 53 bit
+    const MAX: u64 = 1 << 53 - 1; // all 1 shifted by 53 bit
+
+    #[inline]
+    pub fn new_checked(value: u64) -> Result<Self, Error> {
+        if value > Self::MAX {
+            Err(Error::Malformed(MalformedKind::ClientID))
+        } else {
+            Ok(Self::new(value))
+        }
+    }
+
     /// Creates a [ClientID] from a yjs-compatible client identifier value.
     #[inline]
     pub const fn new(value: u64) -> Self {
