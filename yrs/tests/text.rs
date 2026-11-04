@@ -1018,14 +1018,15 @@ fn diff_with_embedded_items() {
     text.insert_text_fmt(0, "hello world", &italic); // "<i>hello world</i>"
     text.format(6, 5, &bold); // "<i>hello <b>world</b></i>"
     let image = Any::Buffer(vec![0, 0, 0, 0].into());
+    // like Yjs v14 insertContent, an insert without attrs unsets formats active at the position
     text.insert(5, image.clone()); // insert binary after "hello"
     let array = text.insert(5, In::Node(Box::new(Delta::new()))); // insert array ref after "hello"
 
     let italic_and_bold = Attrs::from([("b".into(), true.into()), ("i".into(), true.into())]);
     let expected = Delta::out()
         .insert_text_fmt("hello", &italic)
-        .insert_fmt(array, &italic)
-        .insert_fmt(image, &italic)
+        .insert(array)
+        .insert(image)
         .insert_text_fmt(" ", &italic)
         .insert_text_fmt("world", &italic_and_bold);
     assert_eq!(text.delta(&DeltaOptions::default()), expected);
