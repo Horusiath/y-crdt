@@ -638,7 +638,6 @@ mod out;
 mod slice;
 mod state_vector;
 mod sticky_index;
-mod suggestion;
 pub mod sync;
 #[doc(hidden)]
 pub mod test_utils;

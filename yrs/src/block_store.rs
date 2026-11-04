@@ -289,6 +289,7 @@ pub(crate) type IterMut<'a> = std::collections::hash_map::IterMut<'a, ClientID, 
 impl BlockStore {
     /// Checks if block store is empty. Empty block store doesn't contain any blocks, neither active
     /// nor tombstoned.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()
     }
@@ -297,6 +298,7 @@ impl BlockStore {
         id.clock >= self.get_clock(&id.client) || self.skips.contains(id)
     }
 
+    #[allow(dead_code)]
     pub fn contains(&self, id: &ID) -> bool {
         if let Some(clients) = self.clients.get(&id.client) {
             id.clock < clients.clock()

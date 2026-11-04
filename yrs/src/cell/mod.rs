@@ -179,9 +179,9 @@ impl<T> Clone for RcCell<T> {
 
 impl<T> Acquire for RcCell<T> {
     type Ref<'a>
+        = std::cell::Ref<'a, T>
     where
-        Self: 'a,
-    = std::cell::Ref<'a, T>;
+        Self: 'a;
 
     fn acquire(&self) -> Self::Ref<'_> {
         self.inner.borrow()
@@ -194,9 +194,9 @@ impl<T> Acquire for RcCell<T> {
 
 impl<T> AcquireMut for RcCell<T> {
     type Mut<'a>
+        = std::cell::RefMut<'a, T>
     where
-        Self: 'a,
-    = std::cell::RefMut<'a, T>;
+        Self: 'a;
 
     fn acquire_mut(&self) -> Self::Mut<'_> {
         self.inner.borrow_mut()

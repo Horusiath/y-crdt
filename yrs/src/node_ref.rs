@@ -9,10 +9,9 @@ use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRe
 use crate::slice::BlockSlice;
 use crate::transaction::DocHandle;
 use crate::{
-    Any, Assoc, ContentIds, Delta, Doc, IdSet, In, NodeID, OffsetKind, Options, Out, StickyIndex,
+    Any, Assoc, ContentIds, Delta, Doc, IdSet, In, NodeID, OffsetKind, Out, StickyIndex,
     Transaction, TransactionState,
 };
-use serde::Deserialize;
 use serde::de::value::{MapDeserializer, SeqDeserializer};
 use serde::de::{
     DeserializeOwned, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, Visitor,
@@ -174,7 +173,7 @@ where
 
     /// Returns the element at the given index.
     pub fn get(&self, index: u32) -> Option<Out> {
-        let mut cursor = self.seek(index)?;
+        let cursor = self.seek(index)?;
         cursor.get()
     }
 

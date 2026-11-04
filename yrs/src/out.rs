@@ -1,8 +1,7 @@
 use crate::block::ItemPtr;
-use crate::{Any, Delta, Doc, Event, In, NodeID, Options, Uuid};
+use crate::{Any, Delta, Doc, In, NodeID, Options, Uuid};
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
-use std::fmt::Formatter;
 use std::sync::Arc;
 
 /// Node output can take shape of one of the two variants. Usually that depends, on if flat or deep

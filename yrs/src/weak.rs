@@ -8,8 +8,7 @@ use thiserror::Error;
 
 use crate::block::{ItemContent, ItemPtr};
 use crate::iter::{
-    AsIter, BlockIter, BlockIterator, BlockSliceIterator, IntoBlockIter, RangeIter, TxnIterator,
-    Values,
+    AsIter, BlockIter, BlockIterator, BlockSliceIterator, IntoBlockIter, RangeIter, Values,
 };
 use crate::node::{Node, NodePtr, TypeRef};
 use crate::transaction::{DocHandle, TransactionState};
@@ -353,7 +352,7 @@ where
     let encoding = doc.options.offset_kind;
     let mut start_index = 0;
     let mut remaining = start_index;
-    let mut curr = None;
+    let mut curr;
     let mut i = this.start.to_iter();
 
     let start = if let Some((start_i, assoc_start)) = start {
@@ -438,7 +437,6 @@ pub enum QuoteError {
 }
 
 pub(crate) fn join_linked_range(mut block: ItemPtr, doc: &mut Doc) {
-    let block_copy = block.clone();
     let item = block.deref_mut();
     // this item may exists within a quoted range
     item.info.set_linked();

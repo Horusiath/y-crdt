@@ -3,9 +3,10 @@ use yrs::node::Attrs;
 use yrs::test_utils::{clone_doc, exchange_updates};
 use yrs::{
     Acquire, AcquireMut, Any, Attribute, Attribution, Cell, ClientID, ContentIds, ContentMap,
-    Delta, DeltaOptions, DiffFormatter, Doc, ID, IdSet, In, Options, StateVector, Suggestion,
-    Update, any,
+    Delta, DeltaOptions, DiffFormatter, Doc, ID, IdSet, In, Options, StateVector, Update, any,
 };
+
+use yrs::suggestion::Suggestion;
 
 fn docs(base: u64, sugg: u64) -> (Cell<Doc>, Cell<Doc>) {
     let prev = Doc::with_options(Options {

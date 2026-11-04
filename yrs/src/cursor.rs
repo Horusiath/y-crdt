@@ -1,4 +1,4 @@
-use crate::block::{BlockRange, ID, Item, ItemContent, ItemPtr};
+use crate::block::{ID, Item, ItemContent, ItemPtr};
 use crate::delta::Attribution;
 use crate::formatter::{
     AttributedFragment, AttributedFragmentKind, DefaultFormatter, DeltaFormatter, Last, RenderMode,

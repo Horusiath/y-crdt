@@ -12,7 +12,7 @@ use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryFrom;
 use std::fmt::Formatter;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -830,7 +830,7 @@ impl TypeRef {
                 encoder.write_var(id.client.get());
                 encoder.write_var(id.clock);
             }
-            IndexScope::Relative(id) => {
+            IndexScope::Relative(_) => {
                 // for single element id is the same as start so we can infer it
             }
             IndexScope::Absolute(NodeID::Nested(id)) => {

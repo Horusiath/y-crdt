@@ -282,6 +282,7 @@ where
 }
 
 pub struct AsIter<'a, D: DocHandle, I> {
+    #[allow(dead_code)]
     txn: &'a Transaction<D>,
     iter: I,
 }

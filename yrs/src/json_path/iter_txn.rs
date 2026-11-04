@@ -1,7 +1,6 @@
 use crate::any::AnyArrayIter;
 use crate::json_path::JsonPathToken;
-use crate::out::OutNode;
-use crate::{Any, DocHandle, JsonPath, JsonPathEval, NodeID, Out, Transaction};
+use crate::{Any, DocHandle, JsonPath, JsonPathEval, Out, Transaction};
 
 impl<D> JsonPathEval for Transaction<D>
 where

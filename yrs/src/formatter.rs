@@ -1,5 +1,4 @@
 use crate::block::{BlockRange, Item, ItemContent, SplittableString, split_str};
-use crate::delta::Attribution;
 use crate::id_map::{ContentAttribute, ContentAttributes, Diff, IdMap};
 use crate::meta::{ContentIds, ContentMap};
 use crate::slice::BlockSlice;

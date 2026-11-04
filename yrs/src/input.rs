@@ -1,4 +1,4 @@
-use crate::{Any, Delta, Doc, Out};
+use crate::{Any, Delta, Doc};
 use serde::{Deserialize, Serialize};
 
 /// A wrapper around [Out] type that enables it to be used as a type to be inserted into

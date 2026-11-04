@@ -1,9 +1,6 @@
-use crate::block::Block;
 use crate::cell::{Acquire, AcquireMut};
 use async_lock::{RwLock, RwLockReadGuardArc, RwLockWriteGuardArc};
-use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
 use std::sync::Arc;
 
 #[repr(transparent)]
@@ -150,9 +147,9 @@ pub type Mut<'a, T> = async_lock::RwLockWriteGuard<'a, T>;
 
 impl<T> Acquire for ArcCell<T> {
     type Ref<'a>
+        = async_lock::RwLockReadGuard<'a, T>
     where
-        Self: 'a,
-    = async_lock::RwLockReadGuard<'a, T>;
+        Self: 'a;
 
     fn acquire(&self) -> Self::Ref<'_> {
         self.inner.read_blocking()
@@ -165,9 +162,9 @@ impl<T> Acquire for ArcCell<T> {
 
 impl<T> AcquireMut for ArcCell<T> {
     type Mut<'a>
+        = async_lock::RwLockWriteGuard<'a, T>
     where
-        Self: 'a,
-    = async_lock::RwLockWriteGuard<'a, T>;
+        Self: 'a;
 
     fn acquire_mut(&self) -> Self::Mut<'_> {
         self.inner.write_blocking()

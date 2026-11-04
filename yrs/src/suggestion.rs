@@ -1,4 +1,4 @@
-use crate::block::{BlockRange, Item, ItemContent, ItemPtr};
+use crate::block::{Item, ItemContent};
 use crate::cell::{Acquire, AcquireMut};
 use crate::formatter::{AttrValue, AttributeValue, DiffFormatter};
 use crate::lib0::{Decode, Encode, Encoder, EncoderV1};
@@ -206,7 +206,7 @@ impl<A: AttributeValue> Inner<A> {
 
     fn unregister(&self) {
         for cell in [&self.prev, &self.next] {
-            if let Some(mut doc) = cell.try_acquire_mut() {
+            if let Some(doc) = cell.try_acquire_mut() {
                 doc.unobserve_before_observer_calls(self.origin.clone());
                 doc.unobserve_update_v1(self.origin.clone());
                 doc.unobserve_after_transaction(self.origin.clone());

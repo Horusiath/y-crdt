@@ -1,5 +1,4 @@
 use crate::block::{ID, Item, ItemContent, ItemPtr};
-use crate::cursor::Cursor;
 use crate::doc::DocEvents;
 use crate::event::SubdocsEvent;
 use crate::gc::GCCollector;
@@ -291,7 +290,7 @@ impl<D: DocHandle> Transaction<D> {
     }
 
     /// Returns an iterator over top level (root) shared types available in current [Doc].
-    pub fn root_refs(&self) -> RootRefs {
+    pub fn root_refs(&self) -> RootRefs<'_> {
         let store = self.doc();
         RootRefs(store.types.iter())
     }
@@ -1313,7 +1312,7 @@ impl TransactionState {
     }
     pub(crate) fn add_changed_type(
         &mut self,
-        doc: &Doc,
+        _doc: &Doc,
         parent: NodePtr,
         parent_sub: Option<Arc<str>>,
     ) {

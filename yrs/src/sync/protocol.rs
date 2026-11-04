@@ -2,9 +2,6 @@ use crate::lib0::{Cursor, Decode, Decoder, DecoderV1, Encode, Encoder};
 use crate::sync::{Awareness, AwarenessUpdate, awareness};
 use crate::{StateVector, Update};
 use smallvec::SmallVec;
-#[cfg(feature = "sync")]
-use smallvec::smallvec;
-use std::ops::Deref;
 use thiserror::Error;
 /*
  Core Yjs defines two message types:

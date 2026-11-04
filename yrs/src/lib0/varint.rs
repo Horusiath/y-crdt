@@ -290,7 +290,7 @@ pub trait SignedVarInt: Sized + Copy {
 /// compatibility, which recognizes differences between `0` and `-0`, which is used in some
 /// cases (eg. `UIntOptRleDecoder`).
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(super) struct Signed<T: Sized + Copy> {
+pub struct Signed<T: Sized + Copy> {
     value: T,
     is_negative: bool,
 }

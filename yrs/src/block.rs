@@ -2,7 +2,7 @@ use crate::block_store::BlockStore;
 use crate::doc::OffsetKind;
 use crate::gc::GCCollector;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
-use crate::node::{Attrs, Node, NodePtr, TypePtr, TypeRef};
+use crate::node::{Node, NodePtr, TypePtr, TypeRef};
 use crate::slice::{BlockSlice, ItemSlice};
 use crate::transaction::TransactionState;
 use crate::undo::UndoStack;
@@ -439,6 +439,7 @@ unsafe impl Sync for ItemPtr {}
 
 impl ItemPtr {
     /// Returns a raw mutable pointer to the underlying Item.
+    #[allow(dead_code)]
     pub(crate) fn as_ptr(self) -> *mut Item {
         self.0.as_ptr()
     }
@@ -492,7 +493,7 @@ impl ItemPtr {
             item.parent.as_node().unwrap()
         });
 
-        let mut left = None;
+        let mut left;
         let mut right = None;
         if let Some(sub) = item.parent_sub.as_ref() {
             if item.right.is_some() {
@@ -628,15 +629,6 @@ impl ItemPtr {
                 curr = item.parent.as_node().and_then(|b| b.item);
             }
         }
-    }
-
-    pub(crate) fn delete_as_cleanup(
-        &self,
-        doc: &mut Doc,
-        state: &mut TransactionState,
-        is_local: bool,
-    ) {
-        state.delete(doc, *self);
     }
 
     pub(crate) fn splice(&mut self, offset: u32, encoding: OffsetKind) -> Option<Box<Item>> {

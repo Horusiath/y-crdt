@@ -749,7 +749,7 @@ impl<M> Drop for UndoManager<M> {
         let origin = Origin::from(Arc::as_ptr(&self.state) as usize);
         if let Some(state) = Arc::get_mut(&mut self.state) {
             for cell in state.docs.values() {
-                let mut doc = cell.acquire_mut();
+                let doc = cell.acquire_mut();
                 doc.unobserve_destroy(origin.clone());
                 doc.unobserve_after_transaction(origin.clone());
             }
