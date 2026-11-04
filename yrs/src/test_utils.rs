@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use fastrand::Rng;
 
 use crate::block::{Block, ClientID};
-use crate::lib0::{Cursor, Decode, Decoder, DecoderV1, Encode, Encoder, EncoderV1, Read};
+use crate::block_store::ClientBlockList;
+use crate::lib0::{Cursor, Decode, Decoder, DecoderV1, Encode, Encoder, EncoderV1, Read, Write};
 use crate::update::BlockSet;
 use crate::{Doc, Options, StateVector, Update};
 
@@ -91,6 +92,7 @@ where
             let mut peer_state = peer.state();
             test(&mut peer_state.doc, rng);
         };
+        tc.broadcast_pending();
     }
 
     tc.assert_final_state();
@@ -98,13 +100,33 @@ where
 
 pub struct TestConnector(Arc<Mutex<Inner>>);
 
+impl TestConnector {
+    pub(crate) fn broadcast_pending(&self) {
+        let mut inner = self.0.lock().unwrap();
+        for idx in 0..inner.peers.len() {
+            let peer = &inner.peers[idx];
+            let client_id = peer.client_id();
+            let pending: Vec<_> = peer.outbox.lock().unwrap().drain(..).collect();
+            if !inner.online.contains_key(&client_id) {
+                continue;
+            }
+            for update in pending {
+                let mut encoder = EncoderV1::new();
+                encoder.write_var(MSG_SYNC_UPDATE);
+                encoder.write_buf(update);
+                Self::broadcast(&mut inner, client_id, &encoder.to_vec());
+            }
+        }
+    }
+}
+
 struct Inner {
     rng: Rng,
     peers: Vec<TestPeer>,
     /// Maps all Client IDs to indexes in the `docs` vector.
-    all: HashMap<ClientID, usize>,
+    all: BTreeMap<ClientID, usize>,
     /// Maps online Client IDs to indexes in the `docs` vector.
-    online: HashMap<ClientID, usize>,
+    online: BTreeMap<ClientID, usize>,
 }
 
 impl TestConnector {
@@ -113,8 +135,8 @@ impl TestConnector {
         TestConnector(Arc::new(Mutex::new(Inner {
             rng,
             peers: Vec::new(),
-            all: HashMap::new(),
-            online: HashMap::new(),
+            all: BTreeMap::new(),
+            online: BTreeMap::new(),
         })))
     }
 
@@ -140,12 +162,16 @@ impl TestConnector {
         } else {
             let rc = self.0.clone();
             let instance = TestPeer::new(client_id);
-            let _sub = {
-                let rc = rc.clone();
+            {
+                let outbox = instance.outbox.clone();
                 let mut peer_state = instance.state();
-                peer_state.doc.observe_update_v1(move |_, e| {
-                    let mut inner = rc.lock().unwrap();
-                    Self::broadcast(&mut inner, client_id, &e.update);
+
+                peer_state.doc.observe_update_v1("sub", move |tx, e| {
+                    if tx.origin() != Some(&EXCHANGE_UPDATES_ORIGIN.into()) {
+                        // only local
+                        let mut outbox = outbox.lock().unwrap();
+                        outbox.push_back(e.update.clone());
+                    }
                 })
             };
             let mut inner = rc.lock().unwrap();
@@ -391,7 +417,7 @@ impl TestConnector {
     }
 
     fn read_sync_step2<D: Decoder>(peer: &mut TestPeerState, decoder: &mut D) {
-        let mut txn = peer.doc.transact_mut();
+        let mut txn = peer.doc.transact_mut_with(EXCHANGE_UPDATES_ORIGIN);
 
         let update = Update::decode_v1(decoder.read_buf().unwrap()).unwrap();
         txn.apply_update(update).unwrap();
@@ -440,7 +466,7 @@ impl TestConnector {
 
             let astore = a.doc();
             let bstore = b.doc();
-            let mut all_clients = HashSet::new();
+            let mut all_clients = BTreeSet::new();
             for (&client, _) in astore.blocks.iter() {
                 all_clients.insert(client);
             }
@@ -448,11 +474,11 @@ impl TestConnector {
                 all_clients.insert(client);
             }
             for client in all_clients {
-                let al = astore.blocks.get_client(&client).unwrap();
-                let bl = bstore.blocks.get_client(&client).unwrap();
-                for (ablock, bblock) in al.iter().zip(bl.iter()) {
-                    assert_eq!(ablock.as_ref(), bblock.as_ref());
-                }
+                // Peers may split and squash blocks differently depending on the order in which
+                // they received updates, so compare block lists independently of block boundaries.
+                let al = block_runs(astore.blocks.get_client(&client).unwrap());
+                let bl = block_runs(bstore.blocks.get_client(&client).unwrap());
+                assert_eq!(al, bl, "block store mismatch for client {:?}", client);
             }
             assert_eq!(astore.pending_update(), bstore.pending_update());
             assert_eq!(astore.pending_ds(), bstore.pending_ds());
@@ -463,6 +489,40 @@ impl TestConnector {
         let inner = self.0.lock().unwrap();
         Peers::new(inner)
     }
+}
+
+/// Kind of a block, used to compare block stores of different peers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockKind {
+    Item { deleted: bool },
+    GC,
+    Skip,
+}
+
+/// Returns clock ranges `(start, end, kind)` of a given block list, where neighboring blocks of
+/// the same kind are joined together, so that the result doesn't depend on block boundaries.
+fn block_runs(blocks: &ClientBlockList) -> Vec<(u32, u32, BlockKind)> {
+    let mut runs: Vec<(u32, u32, BlockKind)> = Vec::new();
+    for block in blocks.iter() {
+        let block = block.as_ref();
+        let kind = match block {
+            Block::Item(item) => BlockKind::Item {
+                deleted: item.is_deleted(),
+            },
+            Block::GC(_) => BlockKind::GC,
+            Block::Skip(_) => BlockKind::Skip,
+        };
+        let range = block.range();
+        let start = range.clock;
+        let end = start + range.len;
+        match runs.last_mut() {
+            Some((_, last_end, last_kind)) if *last_end == start && *last_kind == kind => {
+                *last_end = end;
+            }
+            _ => runs.push((start, end, kind)),
+        }
+    }
+    runs
 }
 
 pub struct Peers<'a> {
@@ -490,16 +550,16 @@ impl<'a> Iterator for Peers<'a> {
     }
 }
 
-#[repr(transparent)]
 #[derive(Debug, Clone)]
 pub struct TestPeer {
     state: Arc<Mutex<TestPeerState>>,
+    outbox: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 #[derive(Debug)]
 struct TestPeerState {
     doc: Doc,
-    receiving: HashMap<ClientID, VecDeque<Vec<u8>>>,
+    receiving: BTreeMap<ClientID, VecDeque<Vec<u8>>>,
     updates: VecDeque<Vec<u8>>,
 }
 
@@ -508,9 +568,10 @@ impl TestPeer {
         TestPeer {
             state: Arc::new(Mutex::new(TestPeerState {
                 doc: Doc::with_options(Options::with_client_id(client_id)),
-                receiving: HashMap::new(),
+                receiving: BTreeMap::new(),
                 updates: VecDeque::new(),
             })),
+            outbox: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 

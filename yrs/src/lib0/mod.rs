@@ -10,7 +10,7 @@ mod write;
 
 pub use decoder::{Decode, Decoder, DecoderV1, DecoderV2};
 pub use encoder::{Encode, Encoder, EncoderV1, EncoderV2};
-pub use read::{Cursor, Read};
+pub use read::{Cursor, MalformedKind, Read};
 pub use varint::*;
 pub use write::Write;
 
@@ -41,6 +41,9 @@ pub enum Error {
 
     #[error("couldn't deserialize to target type of {0}")]
     TypeMismatch(&'static str),
+
+    #[error("malformed update: {0}")]
+    Malformed(MalformedKind),
 
     #[error("{0}")]
     Custom(String),

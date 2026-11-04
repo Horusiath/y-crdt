@@ -1,4 +1,4 @@
-use crate::block::{BlockRange, Item, ItemContent, split_str};
+use crate::block::{BlockRange, Item, ItemContent, SplittableString, split_str};
 use crate::delta::Attribution;
 use crate::id_map::{ContentAttribute, ContentAttributes, Diff, IdMap};
 use crate::meta::{ContentIds, ContentMap};
@@ -288,7 +288,7 @@ pub(crate) fn native_len(content: &ItemContent, offset: u32, len: u32, kind: Off
     match (content, kind) {
         (ItemContent::String(s), OffsetKind::Bytes) => {
             let (_, rest) = split_str(s.as_str(), offset as usize, OffsetKind::Utf16);
-            let (slice, _) = split_str(rest, len as usize, OffsetKind::Utf16);
+            let (slice, _) = split_str(&rest, len as usize, OffsetKind::Utf16);
             slice.len() as u32
         }
         _ => len,
@@ -301,7 +301,7 @@ pub(crate) fn clock_len(content: &ItemContent, offset: u32, len: u32, kind: Offs
     match (content, kind) {
         (ItemContent::String(s), OffsetKind::Bytes) => {
             let (_, rest) = split_str(s.as_str(), offset as usize, OffsetKind::Utf16);
-            let (slice, _) = split_str(rest, len as usize, OffsetKind::Bytes);
+            let (slice, _) = split_str(&rest, len as usize, OffsetKind::Bytes);
             slice.encode_utf16().count() as u32
         }
         _ => len,
@@ -857,8 +857,8 @@ fn slice_content(content: &ItemContent, offset: u32, len: u32) -> ItemContent {
     match content {
         ItemContent::String(s) => {
             let (_, rest) = split_str(s.as_str(), range.start, OffsetKind::Utf16);
-            let (slice, _) = split_str(rest, len as usize, OffsetKind::Utf16);
-            ItemContent::String(slice.into())
+            let (slice, _) = split_str(&rest, len as usize, OffsetKind::Utf16);
+            ItemContent::String(SplittableString::from(slice.as_ref()))
         }
         ItemContent::Any(values) => ItemContent::Any(values[range].to_vec()),
         ItemContent::JSON(values) => ItemContent::JSON(values[range].to_vec()),

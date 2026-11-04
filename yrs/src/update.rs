@@ -4,7 +4,7 @@ use crate::block::{
     HAS_PARENT_SUB, HAS_RIGHT_ORIGIN, Item, ItemContent,
 };
 use crate::id_set::IdSet;
-use crate::lib0::{Decode, Decoder, Encode, Encoder};
+use crate::lib0::{Decode, Decoder, Encode, Encoder, Error, MalformedKind};
 use crate::node::{NodePtr, TypePtr, TypeRef};
 use crate::transaction::TransactionState;
 use crate::utils::client_hasher::ClientHasher;
@@ -78,6 +78,9 @@ impl BlockSet {
         for client_id in client_ids {
             if let Some(id_range) = exclude.get(&client_id) {
                 if let Some(structs) = self.clients.get_mut(&client_id) {
+                    if structs.is_empty() {
+                        continue;
+                    }
                     let clock_start = structs.front().unwrap().clock_start();
                     let clock_end = structs.back().unwrap().next_clock();
                     for (range, _) in id_range.iter() {
@@ -543,11 +546,19 @@ impl Update {
         match info {
             BLOCK_SKIP_REF_NUMBER => {
                 let len: u32 = decoder.read_var()?;
-                Ok(Some(Block::Skip(BlockRange::new(id, len))))
+                if len == 0 {
+                    Err(Error::Malformed(MalformedKind::EmptyBlock))
+                } else {
+                    Ok(Some(Block::Skip(BlockRange::new(id, len))))
+                }
             }
             BLOCK_GC_REF_NUMBER => {
                 let len: u32 = decoder.read_len()?;
-                Ok(Some(Block::GC(BlockRange::new(id, len))))
+                if len == 0 {
+                    Err(Error::Malformed(MalformedKind::EmptyBlock))
+                } else {
+                    Ok(Some(Block::GC(BlockRange::new(id, len))))
+                }
             }
             info => {
                 let cant_copy_parent_info = info & (HAS_ORIGIN | HAS_RIGHT_ORIGIN) == 0;
@@ -1273,9 +1284,9 @@ mod test {
     fn merge_pending_updates() {
         let mut d0 = Doc::with_client_id(0);
         let server_updates = Arc::new(Mutex::new(vec![]));
-        let sub = {
+        {
             let server_updates = server_updates.clone();
-            d0.observe_update_v1(move |_, update| {
+            d0.observe_update_v1("sub", move |_, update| {
                 let mut lock = server_updates.lock().unwrap();
                 lock.push(update.update.clone());
             })
@@ -1300,7 +1311,7 @@ mod test {
             .node_mut("textBlock")
             .unwrap()
             .apply_delta(Delta::new().insert("n".to_string()));
-        drop(sub);
+        d0.unobserve_update_v1("sub");
         drop(d0);
 
         let updates = Arc::into_inner(server_updates).unwrap();
@@ -1421,16 +1432,18 @@ mod test {
             .apply_update(Update::decode_v1(&d_state).unwrap())
             .unwrap();
         let updates = Arc::new(Mutex::new(vec![]));
-        let sub = {
+        {
             let updates = updates.clone();
-            c.observe_update_v1(move |_, e| updates.lock().unwrap().push(e.update.clone()))
+            c.observe_update_v1("sub", move |_, e| {
+                updates.lock().unwrap().push(e.update.clone())
+            })
         };
 
         c.transact_mut().node_mut("t").unwrap().insert_text(1, "a"); // C:0  "PaQ"    left D:0, right D:1
         c.transact_mut().node_mut("t").unwrap().insert_text(2, "b"); // C:1  "PabQ"   left C:0, right D:1
         c.transact_mut().node_mut("t").unwrap().insert_text(1, "c"); // C:2  "PcabQ"  left D:0, right C:0
         c.transact_mut().node_mut("t").unwrap().insert_text(5, "d"); // C:3  "PcabQd" left D:1, right none
-        drop(sub);
+        c.unobserve_update_v1("sub");
 
         let mut msgs = vec![d_state];
         msgs.extend(updates.lock().unwrap().iter().cloned());
@@ -1648,5 +1661,87 @@ mod test {
 
     fn decode_update(bin: &[u8]) -> Update {
         Update::decode(&mut DecoderV1::new(Cursor::new(bin))).unwrap()
+    }
+
+    mod malformed_input {
+        use crate::block::{BLOCK_GC_REF_NUMBER, BLOCK_SKIP_REF_NUMBER};
+        use crate::lib0::{Decode, Error, MalformedKind};
+        use crate::{Doc, StateVector, Update};
+        use std::assert_matches;
+
+        const TEXT: &str = "hello world, this is a yrs document";
+
+        fn valid_update() -> Vec<u8> {
+            let mut doc = Doc::new();
+            doc.transact_mut().node_mut("t").unwrap().push_text(TEXT);
+            doc.transact()
+                .encode_state_as_update_v1(&StateVector::default())
+        }
+
+        fn decode_and_apply(bytes: &[u8]) {
+            if let Ok(update) = Update::decode_v1(bytes) {
+                let mut doc = Doc::new();
+                let _ = doc.transact_mut().apply_update(update);
+            }
+        }
+
+        #[test]
+        fn invalid_utf8_in_string_content_returns_error() {
+            let mut bytes = valid_update();
+            let offset = bytes
+                .windows(TEXT.len())
+                .position(|window| window == TEXT.as_bytes())
+                .expect("text content must be encoded in the update");
+            bytes[offset] = 0xff;
+            assert!(Update::decode_v1(&bytes).is_err());
+        }
+
+        /// A corrupted update must not abort the process.
+        #[test]
+        fn no_single_byte_corruption_aborts() {
+            let good = valid_update();
+            for i in 0..good.len() {
+                for xor in [0x01u8, 0x7f, 0xff] {
+                    let mut bad = good.clone();
+                    bad[i] ^= xor;
+                    let _ = std::panic::catch_unwind(|| decode_and_apply(&bad));
+                }
+            }
+        }
+
+        #[test]
+        fn empty_client_listing() {
+            let mut doc = Doc::with_client_id(5);
+            doc.transact_mut()
+                .node_mut("text")
+                .unwrap()
+                .insert_text(0, "a");
+            // client 5 with no blocks, then with only a zero-length string item
+            let no_blocks = [1, 0, 5, 0, 0];
+            let zero_len = [1, 1, 5, 0, 0x04, 1, 4, b't', b'e', b'x', b't', 0, 0];
+            for bin in [&no_blocks[..], &zero_len[..]] {
+                let update = Update::decode_v1(bin).unwrap();
+                doc.transact_mut().apply_update(update).unwrap();
+            }
+            assert_eq!(doc.transact().node("text").unwrap().to_string(), "a");
+        }
+
+        #[test]
+        fn zero_length_gc_block_is_rejected() {
+            let bytes = [1, 1, 96, 0, BLOCK_GC_REF_NUMBER, 0, 0];
+            assert_matches!(
+                Update::decode_v1(&bytes),
+                Err(Error::Malformed(MalformedKind::EmptyBlock))
+            );
+        }
+
+        #[test]
+        fn zero_length_skip_block_is_rejected() {
+            let bytes = [1, 1, 96, 0, BLOCK_SKIP_REF_NUMBER, 0, 0];
+            assert_matches!(
+                Update::decode_v1(&bytes),
+                Err(Error::Malformed(MalformedKind::EmptyBlock))
+            );
+        }
     }
 }

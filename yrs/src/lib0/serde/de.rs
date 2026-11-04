@@ -1,4 +1,4 @@
-use crate::any::Any;
+use crate::any::{Any, Number};
 use crate::lib0::Error;
 use serde::de::value::{MapAccessDeserializer, MapDeserializer, SeqDeserializer};
 use serde::de::{IntoDeserializer, MapAccess, SeqAccess, Visitor};
@@ -36,7 +36,7 @@ impl<'de> Deserialize<'de> for Any {
             where
                 E: serde::de::Error,
             {
-                Ok(Any::Number(v as f64))
+                Ok(Any::Number(Number::Int(v as i64)))
             }
 
             fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
@@ -64,7 +64,7 @@ impl<'de> Deserialize<'de> for Any {
             where
                 E: serde::de::Error,
             {
-                Ok(Any::Number(v as f64))
+                Ok(Any::Number(Number::Int(v as i64)))
             }
 
             fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
@@ -236,8 +236,7 @@ impl serde::de::Error for Error {
 /// Returns an integer representation of `any`, which is about to be deserialized into type `T`.
 fn int_value<T>(any: &Any) -> Result<i64, Error> {
     match any {
-        Any::Number(i) if i.fract() == 0.0 => Ok(*i as i64),
-        Any::BigInt(i) => Ok(*i),
+        Any::Number(n) => n.as_i64().ok_or_else(Error::type_mismatch::<T>),
         _ => Err(Error::type_mismatch::<T>()),
     }
 }
@@ -285,8 +284,10 @@ macro_rules! deserialize_common {
             V: Visitor<'de>,
         {
             match &self {
-                Any::Number(f) => visitor.visit_f32(*f as f32),
-                Any::BigInt(f) => visitor.visit_f32(*f as f32),
+                Any::Number(f) => match f.as_f64() {
+                    Some(f) => visitor.visit_f32(f as f32),
+                    None => Err(Error::type_mismatch::<f32>()),
+                },
                 _ => Err(Error::type_mismatch::<f32>()),
             }
         }
@@ -296,8 +297,10 @@ macro_rules! deserialize_common {
             V: Visitor<'de>,
         {
             match &self {
-                Any::Number(f) => visitor.visit_f64(*f),
-                Any::BigInt(f) => visitor.visit_f64(*f as f64),
+                Any::Number(f) => match f.as_f64() {
+                    Some(f) => visitor.visit_f64(f),
+                    None => Err(Error::type_mismatch::<f64>()),
+                },
                 _ => Err(Error::type_mismatch::<f64>()),
             }
         }
@@ -417,8 +420,8 @@ impl<'de> Deserializer<'de> for &'de Any {
             Any::Null => self.deserialize_unit(visitor),
             Any::Undefined => self.deserialize_unit(visitor),
             Any::Bool(_) => self.deserialize_bool(visitor),
-            Any::Number(_) => self.deserialize_f64(visitor),
-            Any::BigInt(_) => self.deserialize_i64(visitor),
+            Any::Number(Number::Float(_)) => self.deserialize_f64(visitor),
+            Any::Number(Number::Int(_)) => self.deserialize_i64(visitor),
             Any::String(_) => self.deserialize_string(visitor),
             Any::Buffer(_) => self.deserialize_byte_buf(visitor),
             Any::Array(_) => self.deserialize_seq(visitor),
@@ -520,8 +523,8 @@ impl<'de> Deserializer<'de> for Any {
             Any::Null => self.deserialize_unit(visitor),
             Any::Undefined => self.deserialize_unit(visitor),
             Any::Bool(_) => self.deserialize_bool(visitor),
-            Any::Number(_) => self.deserialize_f64(visitor),
-            Any::BigInt(_) => self.deserialize_i64(visitor),
+            Any::Number(Number::Int(_)) => self.deserialize_i64(visitor),
+            Any::Number(Number::Float(_)) => self.deserialize_f64(visitor),
             Any::String(_) => self.deserialize_string(visitor),
             Any::Buffer(_) => self.deserialize_byte_buf(visitor),
             Any::Array(_) => self.deserialize_seq(visitor),
@@ -616,7 +619,7 @@ impl<'de> Deserializer<'de> for Any {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::any::Any;
+    use crate::any::{Any, Number};
     use serde::Deserialize;
     use std::collections::HashMap;
 
@@ -892,7 +895,7 @@ mod test {
             test: i8,
         }
 
-        let any: Any = HashMap::from([("test".to_string(), Any::BigInt(1000))]).into();
+        let any: Any = HashMap::from([("test".to_string(), Any::Number(Number::Int(1000)))]).into();
 
         assert!(matches!(
             from_any::<Test>(&any).unwrap_err(),
@@ -907,7 +910,8 @@ mod test {
             test: i8,
         }
 
-        let any: Any = HashMap::from([("test".to_string(), Any::Number(1000.1f64))]).into();
+        let any: Any =
+            HashMap::from([("test".to_string(), Any::Number(Number::Float(1000.1)))]).into();
 
         let error = from_any::<Test>(&any).unwrap_err();
         match error {

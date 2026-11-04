@@ -7,7 +7,7 @@ use yrs::lib0::Decode;
 use yrs::node::{DeepObservable, Observable, Path, PathSegment};
 use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Attribute, Cell, Delta, Doc, DocHandle, In, NodeRef, Out,
+    Acquire, AcquireMut, Any, Attribute, Cell, ClientID, Delta, Doc, DocHandle, In, NodeRef, Out,
     StateVector, Transaction, Update, any,
 };
 
@@ -314,11 +314,11 @@ fn insert_and_remove_events() {
     let delta1 = delta.clone();
     let delta2 = delta.clone();
     let delta = || delta.acquire().clone();
-    let _sub = {
+    {
         let mut txn = d1.transact_mut();
         txn.node_mut("map")
             .unwrap()
-            .observe(move |e| *delta1.acquire_mut() = e.delta(false))
+            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(false))
     };
 
     // insert new entry
@@ -371,11 +371,11 @@ fn insert_and_remove_events() {
 
     // copy updates over
     let mut d2 = Doc::with_client_id(2);
-    let _sub = {
+    {
         let mut txn = d2.transact_mut();
         txn.node_mut("map")
             .unwrap()
-            .observe(move |e| *delta2.acquire_mut() = e.delta(false))
+            .observe("sub", move |e| *delta2.acquire_mut() = e.delta(false))
     };
 
     {
@@ -442,9 +442,9 @@ fn observe_deep() {
     let calls = Arc::new(AtomicU32::new(0));
     let paths_copy = paths.clone();
     let calls_copy = calls.clone();
-    let _sub = {
+    {
         let mut txn = doc.transact_mut();
-        txn.node_mut("map").unwrap().observe_deep(move |e| {
+        txn.node_mut("map").unwrap().observe_deep("sub", move |e| {
             let path: Vec<Path> = e.iter().map(|e| e.path()).collect();
             paths_copy.lock().unwrap().push(path);
             calls_copy.fetch_add(1, Ordering::Relaxed);
@@ -798,4 +798,129 @@ fn attributed_content() {
     let deleted = Some(Attribution::delete::<Attribute>([]));
     let expected = Delta::out().insert_attr_attributed("test", "fourtytwo", deleted);
     assert_eq!(render(&doc, &ids), expected, "delete value");
+}
+
+/// A value whose author's earlier blocks were missing is integrated behind a skip in an
+/// earlier transaction. A later transaction that touches its key must not take it for a
+/// value added now: it is deleted, and reading its (deleted) content as the new value
+/// panicked.
+#[test]
+fn key_event_over_a_value_integrated_after_a_clock_gap() {
+    let mut a = Doc::with_client_id(20);
+    let mut b = Doc::with_client_id(10);
+    let mut r = Doc::with_client_id(30);
+
+    a.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .insert_attr("k", "a"); // 20:0
+    let first = a
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+    for doc in [&mut b, &mut r] {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(Update::decode_v1(&first).unwrap())
+            .unwrap();
+    }
+
+    a.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .insert_attr("filler", "f"); // 20:1, never reaches r
+    a.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .insert_attr("k", "b"); // 20:2
+    a.transact_mut().node_mut("map").unwrap().remove_attr("k");
+    let after_gap = a
+        .transact()
+        .encode_state_as_update_v1(&StateVector::from_iter([(ClientID::new(20), 2)]));
+    r.transact_mut()
+        .apply_update(Update::decode_v1(&after_gap).unwrap())
+        .unwrap();
+    assert_eq!(r.transact().node("map").unwrap().attr("k"), None);
+
+    // Concurrent with 20:2 and ordered before it, so 20:2 stays the key's last entry.
+    b.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .insert_attr("k", "c");
+    let delta = Arc::new(Mutex::new(None));
+    let delta_c = delta.clone();
+    r.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .observe("sub", move |e| {
+            *delta_c.lock().unwrap() = Some(e.delta(false))
+        });
+    let from_b = b
+        .transact()
+        .encode_state_as_update_v1(&StateVector::from_iter([(ClientID::new(20), 1)]));
+    r.transact_mut()
+        .apply_update(Update::decode_v1(&from_b).unwrap())
+        .unwrap();
+
+    assert_eq!(r.transact().node("map").unwrap().attr("k"), None);
+    // the value of "k" didn't change: 20:2 (deleted) is still its latest entry
+    assert_eq!(*delta.lock().unwrap(), Some(Delta::out()));
+}
+
+/// A nested map integrated behind a skip (its author's earlier blocks missing) was taken
+/// for a type created in every later transaction, so changes to it raised no event.
+#[test]
+fn nested_map_integrated_after_a_clock_gap_reports_its_changes() {
+    let mut a = Doc::with_client_id(1);
+    let mut r = Doc::with_client_id(2);
+
+    a.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .insert_attr("filler", 1); // 1:0, never reaches r
+    let nested_a = {
+        let mut txn = a.transact_mut();
+        let Out::Node(nested) = txn
+            .node_mut("map")
+            .unwrap()
+            .insert_attr("nested", In::Node(Box::new(Delta::new())))
+        // 1:1
+        else {
+            panic!("expected a nested map")
+        };
+        nested.id
+    };
+    let with_nested = a
+        .transact()
+        .encode_state_as_update_v1(&StateVector::from_iter([(ClientID::new(1), 1)]));
+    r.transact_mut()
+        .apply_update(Update::decode_v1(&with_nested).unwrap())
+        .unwrap();
+    let nested_r = match r.transact().node("map").unwrap().attr("nested") {
+        Some(Out::Node(map)) => map.id,
+        other => panic!("expected a nested map, got {:?}", other),
+    };
+
+    let events = Arc::new(AtomicU32::new(0));
+    let events_c = events.clone();
+    r.transact_mut()
+        .node_mut(nested_r.clone())
+        .unwrap()
+        .observe("sub", move |_| {
+            events_c.fetch_add(1, Ordering::SeqCst);
+        });
+    a.transact_mut()
+        .node_mut(nested_a)
+        .unwrap()
+        .insert_attr("y", 2); // 1:2
+    let change = a
+        .transact()
+        .encode_state_as_update_v1(&StateVector::from_iter([(ClientID::new(1), 2)]));
+    r.transact_mut()
+        .apply_update(Update::decode_v1(&change).unwrap())
+        .unwrap();
+
+    assert_eq!(
+        r.transact().node(nested_r).unwrap().attr("y"),
+        Some(Out::Any(Any::from(2)))
+    );
+    assert_eq!(events.load(Ordering::SeqCst), 1);
 }

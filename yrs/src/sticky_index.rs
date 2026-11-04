@@ -179,10 +179,17 @@ impl StickyIndex {
                             // adjust position based on left association if necessary
                             index = if formatted_len(fmt, &right.ptr, kind) == 0 {
                                 0
-                            } else if self.assoc == Assoc::After {
-                                right.start
                             } else {
-                                right.start + 1
+                                // `start` is a clock offset (UTF-16), map it onto the doc encoding
+                                let start = if self.assoc == Assoc::After {
+                                    right.start
+                                } else {
+                                    right.start + 1
+                                };
+                                match &right.ptr.content {
+                                    ItemContent::String(s) => s.from_block_offset(start, kind),
+                                    _ => start,
+                                }
                             };
                             let mut n = right.ptr.left;
                             while let Some(item) = n.as_deref() {
@@ -259,7 +266,14 @@ impl StickyIndex {
         }
         let mut cursor = Cursor::at(branch, txn.doc().options.offset_kind, fmt, index)?;
         let context = match cursor.next_id() {
-            Some(id) => IndexScope::Relative(id),
+            Some(mut id) => {
+                if assoc == Assoc::Before && cursor.index() > index {
+                    // `Assoc::Before` stepped one byte back and landed inside a multi-byte
+                    // character; the cursor rounded up past it, so stick to that character
+                    id.clock -= 1;
+                }
+                IndexScope::Relative(id)
+            }
             None if assoc == Assoc::Before => IndexScope::Absolute(branch.id()),
             None => return None,
         };
@@ -629,7 +643,7 @@ mod test {
     use crate::block::ClientID;
     use crate::lib0::{Decode, Encode};
     use crate::sticky_index::Assoc;
-    use crate::{Delta, Doc, ID, IndexScope, NodeID, StickyIndex};
+    use crate::{Delta, Doc, ID, IndexScope, NodeID, OffsetKind, Options, StickyIndex};
     use serde::{Deserialize, Serialize};
 
     fn check_sticky_indexes(doc: &Doc, text: impl Into<NodeID>) {
@@ -832,5 +846,40 @@ mod test {
         let json: StickyIndex =
             serde_json::from_value(serde_json::to_value(&end).unwrap()).unwrap();
         assert_eq!(json.get_offset(&txn).unwrap().index, 5);
+    }
+    #[test]
+    fn sticky_index_round_trip_with_byte_offsets() {
+        let mut doc = Doc::with_options(Options {
+            offset_kind: OffsetKind::Bytes,
+            ..Options::default()
+        });
+        let mut txn = doc.transact_mut();
+        let mut text = txn.node_mut("text").unwrap();
+        text.insert_text(0, "déjà vu"); // é and à are 2 bytes each
+        text.insert_text(9, "!"); // a second item after the first
+        let s = text.to_string();
+
+        let sticky_index_roundtrip = |i: u32, assoc: Assoc| {
+            text.sticky_index(i, assoc)
+                .and_then(|pos| pos.get_offset(text.txn()))
+                .map(|offset| offset.index)
+        };
+
+        for index in 0..s.len() as u32 {
+            if !s.is_char_boundary(index as usize) {
+                continue;
+            }
+            for assoc in [Assoc::After, Assoc::Before] {
+                let resolved = sticky_index_roundtrip(index, assoc);
+                assert_eq!(resolved, Some(index), "sticky index {:?}", assoc);
+            }
+        }
+
+        // index at string length differs depending on assoc
+        let resolved = sticky_index_roundtrip(s.len() as u32, Assoc::Before);
+        assert_eq!(resolved, Some(s.len() as u32));
+
+        let resolved = sticky_index_roundtrip(s.len() as u32, Assoc::After);
+        assert_eq!(resolved, None);
     }
 }

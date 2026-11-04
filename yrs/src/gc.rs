@@ -47,7 +47,9 @@ impl GCCollector {
                                 break;
                             } else {
                                 if let Block::Item(item) = block {
-                                    item.gc(self, false);
+                                    if !item.info.is_keep() {
+                                        item.gc(self, false);
+                                    }
                                     if let Some(merge_blocks) = merge_blocks.as_deref_mut() {
                                         merge_blocks.push(item.id);
                                     }
@@ -66,7 +68,9 @@ impl GCCollector {
             for mut block in client_blocks.iter() {
                 if let Block::Item(item) = block.as_mut() {
                     if item.is_deleted() {
-                        item.gc(self, false);
+                        if !item.info.is_keep() {
+                            item.gc(self, false);
+                        }
                         state.merge_blocks.push(item.id);
                     }
                 }
@@ -88,7 +92,7 @@ impl GCCollector {
                 if let Some(index) = client.find_index(clock) {
                     let block = unsafe { client.get(index).unwrap_unchecked() }.as_mut();
                     if let Block::Item(item) = block {
-                        if item.is_deleted() && !item.info.is_keep() {
+                        if item.is_deleted() {
                             let gc = Block::GC(item.block_range());
                             *block = gc;
                         }

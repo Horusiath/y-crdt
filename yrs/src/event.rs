@@ -221,9 +221,9 @@ mod test {
         };
         let deltas = Cell::new(vec![]);
         let deltas_c = deltas.clone();
-        let _sub = {
+        {
             let txn = doc.transact();
-            txn.node("map").unwrap().observe(move |e| {
+            txn.node("map").unwrap().observe("sub", move |e| {
                 let delta = (e.delta(false), e.delta(true));
                 deltas_c.acquire_mut().push(delta)
             })
@@ -245,9 +245,9 @@ mod test {
         let mut doc = Doc::with_client_id(1);
         let flags = Cell::new([(false, false); 2]);
         let flags_c = flags.clone();
-        let _sub = {
+        {
             let mut txn = doc.transact_mut();
-            txn.node_mut("array").unwrap().observe(move |e| {
+            txn.node_mut("array").unwrap().observe("sub", move |e| {
                 let ids = [ID::new(ClientID::new(1), 0), ID::new(ClientID::new(1), 1)];
                 *flags_c.acquire_mut() = ids.map(|id| (e.is_added(&id), e.is_deleted(&id)));
             })
@@ -267,12 +267,14 @@ mod test {
         let mut doc = Doc::with_client_id(1);
         let targets = Cell::new(vec![]);
         let targets_c = targets.clone();
-        let _sub = {
+        {
             let mut txn = doc.transact_mut();
-            txn.node_mut("a").unwrap().observe_deep(move |events| {
-                let ids = events.iter().map(|e| e.target().id());
-                targets_c.acquire_mut().extend(ids);
-            })
+            txn.node_mut("a")
+                .unwrap()
+                .observe_deep("sub", move |events| {
+                    let ids = events.iter().map(|e| e.target().id());
+                    targets_c.acquire_mut().extend(ids);
+                })
         };
         {
             let mut txn = doc.transact_mut();
@@ -287,9 +289,9 @@ mod test {
         let mut doc = Doc::new();
         let origin = Cell::new(None);
         let origin_c = origin.clone();
-        let _sub = {
+        {
             let mut txn = doc.transact_mut();
-            txn.node_mut("map").unwrap().observe(move |e| {
+            txn.node_mut("map").unwrap().observe("sub", move |e| {
                 *origin_c.acquire_mut() = e.transaction().origin().cloned();
             })
         };

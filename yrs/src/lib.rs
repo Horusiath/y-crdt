@@ -303,7 +303,7 @@
 //! Among very popular features of many user-facing applications is an ability to revert/reapply
 //! operations performed by user. This becomes even more complicated, once we consider multiple peers
 //! collaborating on the same document, as we may need to skip over the changes synchronized from
-//! remote peers - even thou they could have happened later - in order to only undo our own actions.
+//! remote peers - even though they could have happened later - in order to only undo our own actions.
 //! [UndoManager] is a Yrs response for these needs, supporting wide variety of options:
 //!
 //! ```rust
@@ -651,7 +651,7 @@ pub use crate::alt::{
     diff_updates_v1, diff_updates_v2, encode_state_vector_from_update_v1,
     encode_state_vector_from_update_v2, merge_updates_v1, merge_updates_v2,
 };
-pub use crate::any::Any;
+pub use crate::any::{Any, Number};
 pub use crate::block::ClientID;
 use crate::block::ContentKind;
 pub use crate::block::ID;
@@ -676,7 +676,7 @@ pub use crate::node_ref::DeltaOptions;
 pub use crate::node_ref::Formatted;
 pub use crate::node_ref::Modified;
 pub use crate::node_ref::NodeRef;
-pub use crate::observer::{Observer, Subscription};
+pub use crate::observer::Observer;
 pub use crate::out::Out;
 pub use crate::state_vector::Snapshot;
 pub use crate::state_vector::StateVector;

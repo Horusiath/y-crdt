@@ -117,11 +117,6 @@ pub type Doc = yrs::Doc;
 /// the same branch may result in undefined behavior.
 pub type Node = yrs::node::Node;
 
-/// Subscription to any kind of observable events, like `ymap_observe`, `ydoc_observe_updates_v1` etc.
-/// This subscription can be destroyed by calling `yunobserve` function, which will cause to unsubscribe
-/// correlated callback.
-pub type Subscription = yrs::Subscription;
-
 /// Iterator structure used by shared array data type.
 #[repr(transparent)]
 pub struct ArrayIter(NativeArrayIter<'static>);
@@ -518,78 +513,171 @@ impl CallbackState {
     }
 }
 
+/// Builds an observer key out of a raw byte sequence. Empty (`len == 0`) keys are allowed.
+unsafe fn origin(len: u32, ptr: *const c_char) -> Origin {
+    let bytes: &[u8] = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(ptr as *const u8, len as usize)
+    };
+    Origin::from(bytes)
+}
+
+/// Returns a read-write transaction, panicking on read-only ones.
+unsafe fn txn_mut<'a>(txn: *mut Transaction) -> &'a mut yrs::TransactionMut<'static> {
+    txn.as_mut()
+        .unwrap()
+        .as_mut()
+        .expect("read-write transaction expected")
+}
+
+/// Subscribes a callback `cb` under a given `key` to updates (lib0 v1 encoded) produced by
+/// the document this transaction belongs to. Use `ytransaction_unobserve_updates_v1` to unsubscribe.
 #[no_mangle]
-pub unsafe extern "C" fn ydoc_observe_updates_v1(
-    doc: *mut Doc,
+pub unsafe extern "C" fn ytransaction_observe_updates_v1(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, u32, *const c_char),
-) -> *mut Subscription {
+) {
     let state = CallbackState::new(state);
-    let doc = doc.as_mut().unwrap();
-    let subscription = doc.observe_update_v1(move |_, e| {
+    let key = origin(key_len, key);
+    txn_mut(txn).observe_update_v1(key, move |_, e| {
         let bytes = &e.update;
         let len = bytes.len() as u32;
         cb(state.0, len, bytes.as_ptr() as *const c_char)
     });
-    Box::into_raw(Box::new(subscription))
 }
 
+/// Unsubscribes a callback registered under a given `key` via `ytransaction_observe_updates_v1`.
+/// Returns 1 if a callback was removed, 0 otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn ydoc_observe_updates_v2(
-    doc: *mut Doc,
+pub unsafe extern "C" fn ytransaction_unobserve_updates_v1(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let key = origin(key_len, key);
+    txn_mut(txn).unobserve_update_v1(key) as u8
+}
+
+/// Subscribes a callback `cb` under a given `key` to updates (lib0 v2 encoded) produced by
+/// the document this transaction belongs to. Use `ytransaction_unobserve_updates_v2` to unsubscribe.
+#[no_mangle]
+pub unsafe extern "C" fn ytransaction_observe_updates_v2(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, u32, *const c_char),
-) -> *mut Subscription {
+) {
     let state = CallbackState::new(state);
-    let doc = doc.as_mut().unwrap();
-    let subscription = doc.observe_update_v2(move |_, e| {
+    let key = origin(key_len, key);
+    txn_mut(txn).observe_update_v2(key, move |_, e| {
         let bytes = &e.update;
         let len = bytes.len() as u32;
         cb(state.0, len, bytes.as_ptr() as *const c_char)
     });
-    Box::into_raw(Box::new(subscription))
 }
 
+/// Unsubscribes a callback registered under a given `key` via `ytransaction_observe_updates_v2`.
+/// Returns 1 if a callback was removed, 0 otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn ydoc_observe_after_transaction(
-    doc: *mut Doc,
+pub unsafe extern "C" fn ytransaction_unobserve_updates_v2(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let key = origin(key_len, key);
+    txn_mut(txn).unobserve_update_v2(key) as u8
+}
+
+/// Subscribes a callback `cb` under a given `key` to be called at the end of every transaction
+/// committed on this document. Use `ytransaction_unobserve_after_transaction` to unsubscribe.
+#[no_mangle]
+pub unsafe extern "C" fn ytransaction_observe_after_transaction(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *mut YAfterTransactionEvent),
-) -> *mut Subscription {
+) {
     let state = CallbackState::new(state);
-    let doc = doc.as_mut().unwrap();
-    let subscription = doc.observe_transaction_cleanup(move |_, e| {
+    let key = origin(key_len, key);
+    txn_mut(txn).observe_transaction_cleanup(key, move |_, e| {
         let mut event = YAfterTransactionEvent::new(e);
         cb(state.0, (&mut event) as *mut _);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
+/// Unsubscribes a callback registered under a given `key` via
+/// `ytransaction_observe_after_transaction`. Returns 1 if a callback was removed, 0 otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn ydoc_observe_subdocs(
-    doc: *mut Doc,
+pub unsafe extern "C" fn ytransaction_unobserve_after_transaction(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let key = origin(key_len, key);
+    txn_mut(txn).unobserve_transaction_cleanup(key) as u8
+}
+
+/// Subscribes a callback `cb` under a given `key` to changes in the set of subdocuments of
+/// this document. Use `ytransaction_unobserve_subdocs` to unsubscribe.
+#[no_mangle]
+pub unsafe extern "C" fn ytransaction_observe_subdocs(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *mut YSubdocsEvent),
-) -> *mut Subscription {
+) {
     let state = CallbackState::new(state);
-    let doc = doc.as_mut().unwrap();
-    let subscription = doc.observe_subdocs(move |_, e| {
+    let key = origin(key_len, key);
+    txn_mut(txn).observe_subdocs(key, move |_, e| {
         let mut event = YSubdocsEvent::new(e);
         cb(state.0, (&mut event) as *mut _);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
+/// Unsubscribes a callback registered under a given `key` via `ytransaction_observe_subdocs`.
+/// Returns 1 if a callback was removed, 0 otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn ydoc_observe_clear(
-    doc: *mut Doc,
+pub unsafe extern "C" fn ytransaction_unobserve_subdocs(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let key = origin(key_len, key);
+    txn_mut(txn).unobserve_subdocs(key) as u8
+}
+
+/// Subscribes a callback `cb` under a given `key` to be called when this document is destroyed.
+/// Use `ytransaction_unobserve_clear` to unsubscribe.
+#[no_mangle]
+pub unsafe extern "C" fn ytransaction_observe_clear(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *mut Doc),
-) -> *mut Subscription {
+) {
     let state = CallbackState::new(state);
-    let doc = doc.as_mut().unwrap();
-    let subscription = doc.observe_destroy(move |_, e| cb(state.0, e as *const Doc as *mut _));
-    Box::into_raw(Box::new(subscription))
+    let key = origin(key_len, key);
+    txn_mut(txn).observe_destroy(key, move |_, e| cb(state.0, e as *const Doc as *mut _));
+}
+
+/// Unsubscribes a callback registered under a given `key` via `ytransaction_observe_clear`.
+/// Returns 1 if a callback was removed, 0 otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn ytransaction_unobserve_clear(
+    txn: *mut Transaction,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let key = origin(key_len, key);
+    txn_mut(txn).unobserve_destroy(key) as u8
 }
 
 /// Manually send a load request to a parent document of this subdoc.
@@ -674,6 +762,70 @@ pub unsafe extern "C" fn ytransaction_subdocs(
     let out = subdocs.into_boxed_slice();
     *len = out.len() as u32;
     Box::into_raw(out) as *mut _
+}
+
+/// A root-level shared type of a document: its name paired with a pointer to its branch.
+/// Returned by `ytransaction_root_refs`, released via `yroot_refs_destroy`.
+#[repr(C)]
+pub struct YRootRef {
+    /// Null-terminated UTF-8 name of a root-level type. Owned by the array it was returned in.
+    pub name: *mut c_char,
+    /// Branch of a root-level type. Its lifecycle is bound to the document, it must not be released.
+    pub branch: *mut Branch,
+}
+
+/// Returns an array of all root-level shared types defined in a current document, including the
+/// ones that were received from remote peers but never defined locally. Number of returned elements
+/// is written into `len`. Returned array must be released using `yroot_refs_destroy`.
+///
+/// Branches of root types defined only remotely have no concrete type yet: use `ytype_kind` to
+/// check them.
+#[no_mangle]
+pub unsafe extern "C" fn ytransaction_root_refs(
+    txn: *const Transaction,
+    len: *mut u32,
+) -> *mut YRootRef {
+    assert!(!txn.is_null());
+    assert!(!len.is_null());
+
+    let txn = txn.as_ref().unwrap();
+    let roots: Vec<_> = txn
+        .root_refs()
+        .filter_map(|(name, value)| {
+            let branch = match value {
+                Out::YText(v) => v.into_raw_branch(),
+                Out::YArray(v) => v.into_raw_branch(),
+                Out::YMap(v) => v.into_raw_branch(),
+                Out::YXmlElement(v) => v.into_raw_branch(),
+                Out::YXmlFragment(v) => v.into_raw_branch(),
+                Out::YXmlText(v) => v.into_raw_branch(),
+                Out::YWeakLink(v) => v.into_raw_branch(),
+                Out::UndefinedRef(v) => v.as_ref() as *const Branch as *mut Branch,
+                // root types are always branches
+                Out::Any(_) | Out::YDoc(_) => return None,
+            };
+            Some(YRootRef {
+                name: CString::new(name).unwrap().into_raw(),
+                branch,
+            })
+        })
+        .collect();
+    let out = roots.into_boxed_slice();
+    *len = out.len() as u32;
+    Box::into_raw(out) as *mut YRootRef
+}
+
+/// Releases an array of root references returned by `ytransaction_root_refs`. `len` must be the
+/// same value that was written by that call. Branches pointed to by the array are not released.
+#[no_mangle]
+pub unsafe extern "C" fn yroot_refs_destroy(roots: *mut YRootRef, len: u32) {
+    if roots.is_null() {
+        return;
+    }
+    let roots = Box::from_raw(std::ptr::slice_from_raw_parts_mut(roots, len as usize));
+    for root in roots.iter() {
+        ystring_destroy(root.name);
+    }
 }
 
 /// Commit and dispose provided read-write transaction. This operation releases allocated resources,
@@ -1269,6 +1421,9 @@ pub const ERR_TYPE_MISMATCH: u8 = 8;
 /// Error code: miscellaneous error coming from serde, not covered by other error codes.
 pub const ERR_CUSTOM: u8 = 9;
 
+/// Error code: malformed update.
+pub const ERR_MALFORMED: u8 = 10;
+
 /// Error code: update block assigned to parent that is not a valid shared ref of deleted block.
 pub const ERR_INVALID_PARENT: u8 = 9;
 
@@ -1281,6 +1436,7 @@ fn err_code(e: Error) -> u8 {
         Error::NotEnoughMemory(_) => ERR_NOT_ENOUGH_MEMORY,
         Error::TypeMismatch(_) => ERR_TYPE_MISMATCH,
         Error::Custom(_) => ERR_CUSTOM,
+        Error::Malformed(_) => ERR_MALFORMED,
     }
 }
 fn update_err_code(e: UpdateError) -> u8 {
@@ -2712,8 +2868,8 @@ impl YInput {
                 }
                 Y_JSON_NULL => Any::Null,
                 Y_JSON_UNDEF => Any::Undefined,
-                Y_JSON_INT => Any::BigInt(self.value.integer),
-                Y_JSON_NUM => Any::Number(self.value.num),
+                Y_JSON_INT => Any::Number(Number::Int(self.value.integer)),
+                Y_JSON_NUM => Any::Number(Number::Float(self.value.num)),
                 Y_JSON_BOOL => Any::Bool(if self.value.flag == 0 { false } else { true }),
                 Y_JSON_BUF => Any::from(std::slice::from_raw_parts(
                     self.value.buf as *mut u8,
@@ -3054,6 +3210,16 @@ impl From<f64> for YOutput {
     }
 }
 
+impl From<Number> for YOutput {
+    #[inline]
+    fn from(value: Number) -> Self {
+        match value {
+            Number::Int(value) => YOutput::from(value),
+            Number::Float(value) => YOutput::from(value),
+        }
+    }
+}
+
 impl From<i64> for YOutput {
     #[inline]
     fn from(value: i64) -> Self {
@@ -3134,7 +3300,6 @@ impl<'a> From<&'a Any> for YOutput {
                 Any::Undefined => YOutput::undefined(),
                 Any::Bool(v) => YOutput::from(*v),
                 Any::Number(v) => YOutput::from(*v),
-                Any::BigInt(v) => YOutput::from(*v),
                 Any::String(v) => YOutput::from(v.as_ref()),
                 Any::Buffer(v) => YOutput::from(v.as_ref()),
                 Any::Array(v) => YOutput::from(v.as_ref()),
@@ -3152,7 +3317,6 @@ impl From<Any> for YOutput {
                 Any::Undefined => YOutput::undefined(),
                 Any::Bool(v) => YOutput::from(v),
                 Any::Number(v) => YOutput::from(v),
-                Any::BigInt(v) => YOutput::from(v),
                 Any::String(v) => YOutput::from(v.as_ref()),
                 Any::Buffer(v) => YOutput::from(v.as_ref()),
                 Any::Array(v) => YOutput::from(v.as_ref()),
@@ -3733,142 +3897,159 @@ pub unsafe extern "C" fn youtput_read_yweak(val: *const YOutput) -> *mut Node {
     }
 }
 
-/// Unsubscribe callback from the oberver event it was previously subscribed to.
+/// Unsubscribes a shallow observer callback registered under a given `key` on any shared type.
+/// Returns 1 if a callback was removed, 0 otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn yunobserve(subscription: *mut Subscription) {
-    drop(unsafe { Box::from_raw(subscription) })
+pub unsafe extern "C" fn yunobserve(branch: *const Branch, key_len: u32, key: *const c_char) -> u8 {
+    assert!(!branch.is_null());
+    let key = origin(key_len, key);
+    let branch = (branch as *mut Branch).as_mut().unwrap();
+    branch.unobserve(&key) as u8
 }
 
-/// Subscribes a given callback function `cb` to changes made by this `YText` instance. Callbacks
-/// are triggered whenever a `ytransaction_commit` is called.
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Unsubscribes a deep observer callback registered under a given `key` on any shared type.
+/// Returns 1 if a callback was removed, 0 otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn yunobserve_deep(
+    branch: *const Branch,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    assert!(!branch.is_null());
+    let key = origin(key_len, key);
+    let branch = (branch as *mut Branch).as_mut().unwrap();
+    branch.unobserve_deep(&key) as u8
+}
+
+/// Subscribes a given callback function `cb` under a `key` to changes made by this `YText`
+/// instance. Callbacks are triggered whenever a `ytransaction_commit` is called.
+/// Use `yunobserve` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn ytext_observe(
-    txt: *const Node,
+    txt: *const Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *const YTextEvent),
-) -> *mut Subscription {
+) {
     assert!(!txt.is_null());
     let state = CallbackState::new(state);
 
     let txt = TextRef::from_raw_node(txt);
-    let subscription = txt.observe(move |txn, e| {
+    txt.observe(origin(key_len, key), move |txn, e| {
         let e = YTextEvent::new(e, txn);
         cb(state.0, &e as *const YTextEvent);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Subscribes a given callback function `cb` to changes made by this `YMap` instance. Callbacks
-/// are triggered whenever a `ytransaction_commit` is called.
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Subscribes a given callback function `cb` under a `key` to changes made by this `YMap`
+/// instance. Callbacks are triggered whenever a `ytransaction_commit` is called.
+/// Use `yunobserve` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn ymap_observe(
-    map: *const Node,
+    map: *const Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *const YMapEvent),
-) -> *mut Subscription {
+) {
     assert!(!map.is_null());
     let state = CallbackState::new(state);
 
     let map = MapRef::from_raw_node(map);
-    let subscription = map.observe(move |txn, e| {
+    map.observe(origin(key_len, key), move |txn, e| {
         let e = YMapEvent::new(e, txn);
         cb(state.0, &e as *const YMapEvent);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Subscribes a given callback function `cb` to changes made by this `YArray` instance. Callbacks
-/// are triggered whenever a `ytransaction_commit` is called.
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Subscribes a given callback function `cb` under a `key` to changes made by this `YArray`
+/// instance. Callbacks are triggered whenever a `ytransaction_commit` is called.
+/// Use `yunobserve` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yarray_observe(
-    array: *const Node,
+    array: *const Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *const YArrayEvent),
-) -> *mut Subscription {
+) {
     assert!(!array.is_null());
     let state = CallbackState::new(state);
 
     let array = ArrayRef::from_raw_node(array);
-    let subscription = array.observe(move |txn, e| {
+    array.observe(origin(key_len, key), move |txn, e| {
         let e = YArrayEvent::new(e, txn);
         cb(state.0, &e as *const YArrayEvent);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Subscribes a given callback function `cb` to changes made by this `YXmlElement` instance.
-/// Callbacks are triggered whenever a `ytransaction_commit` is called.
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Subscribes a given callback function `cb` under a `key` to changes made by this `YXmlElement`
+/// instance. Callbacks are triggered whenever a `ytransaction_commit` is called.
+/// Use `yunobserve` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yxmlelem_observe(
-    xml: *const Node,
+    xml: *const Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *const YXmlEvent),
-) -> *mut Subscription {
+) {
     assert!(!xml.is_null());
     let state = CallbackState::new(state);
 
     let xml = XmlElementRef::from_raw_node(xml);
-    let subscription = xml.observe(move |txn, e| {
+    xml.observe(origin(key_len, key), move |txn, e| {
         let e = YXmlEvent::new(e, txn);
         cb(state.0, &e as *const YXmlEvent);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Subscribes a given callback function `cb` to changes made by this `YXmlText` instance. Callbacks
-/// are triggered whenever a `ytransaction_commit` is called.
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Subscribes a given callback function `cb` under a `key` to changes made by this `YXmlText`
+/// instance. Callbacks are triggered whenever a `ytransaction_commit` is called.
+/// Use `yunobserve` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yxmltext_observe(
-    xml: *const Node,
+    xml: *const Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *const YXmlTextEvent),
-) -> *mut Subscription {
+) {
     assert!(!xml.is_null());
 
     let state = CallbackState::new(state);
     let xml = XmlTextRef::from_raw_node(xml);
-    let subscription = xml.observe(move |txn, e| {
+    xml.observe(origin(key_len, key), move |txn, e| {
         let e = YXmlTextEvent::new(e, txn);
         cb(state.0, &e as *const YXmlTextEvent);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Subscribes a given callback function `cb` to changes made by this shared type instance as well
-/// as all nested shared types living within it. Callbacks are triggered whenever a
-/// `ytransaction_commit` is called.
-///
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Subscribes a given callback function `cb` under a `key` to changes made by this shared type
+/// instance as well as all nested shared types living within it. Callbacks are triggered whenever
+/// a `ytransaction_commit` is called. Use `yunobserve_deep` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yobserve_deep(
-    ytype: *mut Node,
+    ytype: *mut Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, u32, *const YEvent),
-) -> *mut Subscription {
+) {
     assert!(!ytype.is_null());
 
     let state = CallbackState::new(state);
+    let key = origin(key_len, key);
     let branch = ytype.as_mut().unwrap();
-    let subscription = branch.observe_deep(move |txn, events| {
+    branch.observe_deep(key, move |txn, events| {
         let events: Vec<_> = events.iter().map(|e| YEvent::new(txn, e)).collect();
         let len = events.len() as u32;
         cb(state.0, len, events.as_ptr());
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Event generated for callbacks subscribed using `ydoc_observe_after_transaction`. It contains
+/// Event generated for callbacks subscribed using `ytransaction_observe_after_transaction`. It contains
 /// snapshot of changes made within any committed transaction.
 #[repr(C)]
 pub struct YAfterTransactionEvent {
@@ -4786,20 +4967,20 @@ pub unsafe extern "C" fn yundo_manager_redo_stack_len(mgr: *mut YUndoManager) ->
     mgr.redo_stack().len() as u32
 }
 
-/// Subscribes a `callback` function pointer to a given undo manager event. This event will be
-/// triggered every time a new undo/redo stack item is added.
-///
-/// Returns a subscription pointer that can be used to cancel current callback registration via
-/// `yunobserve`.
+/// Subscribes a `callback` function pointer under a `key` to a given undo manager event. This event
+/// will be triggered every time a new undo/redo stack item is added.
+/// Use `yundo_manager_unobserve_added` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yundo_manager_observe_added(
     mgr: *mut YUndoManager,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     callback: extern "C" fn(*mut c_void, *const YUndoEvent),
-) -> *mut Subscription {
+) {
     let state = CallbackState::new(state);
     let mgr = mgr.as_mut().unwrap();
-    let subscription = mgr.observe_item_added(move |_, e| {
+    mgr.observe_item_added(origin(key_len, key), move |_, e| {
         let meta_ptr = {
             let event = YUndoEvent::new(e);
             callback(state.0, &event as *const YUndoEvent);
@@ -4807,33 +4988,53 @@ pub unsafe extern "C" fn yundo_manager_observe_added(
         };
         e.meta().store(meta_ptr, Ordering::Release);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
-/// Subscribes a `callback` function pointer to a given undo manager event. This event will be
-/// triggered every time a undo/redo operation was called.
-///
-/// Returns a subscription pointer that can be used to cancel current callback registration via
-/// `yunobserve`.
+/// Unsubscribes a callback registered under a given `key` via `yundo_manager_observe_added`.
+/// Returns 1 if a callback was removed, 0 otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn yundo_manager_unobserve_added(
+    mgr: *mut YUndoManager,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let mgr = mgr.as_mut().unwrap();
+    mgr.unobserve_item_added(origin(key_len, key)) as u8
+}
+
+/// Subscribes a `callback` function pointer under a `key` to a given undo manager event. This event
+/// will be triggered every time a undo/redo operation was called.
+/// Use `yundo_manager_unobserve_popped` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yundo_manager_observe_popped(
     mgr: *mut YUndoManager,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     callback: extern "C" fn(*mut c_void, *const YUndoEvent),
-) -> *mut Subscription {
+) {
     let mgr = mgr.as_mut().unwrap();
     let state = CallbackState::new(state);
-    let subscription = mgr
-        .observe_item_popped(move |_, e| {
-            let meta_ptr = {
-                let event = YUndoEvent::new(e);
-                callback(state.0, &event as *const YUndoEvent);
-                event.meta
-            };
-            e.meta().store(meta_ptr, Ordering::Release);
-        })
-        .into();
-    Box::into_raw(Box::new(subscription))
+    mgr.observe_item_popped(origin(key_len, key), move |_, e| {
+        let meta_ptr = {
+            let event = YUndoEvent::new(e);
+            callback(state.0, &event as *const YUndoEvent);
+            event.meta
+        };
+        e.meta().store(meta_ptr, Ordering::Release);
+    });
+}
+
+/// Unsubscribes a callback registered under a given `key` via `yundo_manager_observe_popped`.
+/// Returns 1 if a callback was removed, 0 otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn yundo_manager_unobserve_popped(
+    mgr: *mut YUndoManager,
+    key_len: u32,
+    key: *const c_char,
+) -> u8 {
+    let mgr = mgr.as_mut().unwrap();
+    mgr.unobserve_item_popped(origin(key_len, key)) as u8
 }
 
 pub const Y_KIND_UNDO: c_char = 0;
@@ -5661,25 +5862,25 @@ pub unsafe extern "C" fn yweak_xml_string(
     CString::new(str).unwrap().into_raw()
 }
 
-/// Subscribes a given callback function `cb` to changes made by this `YText` instance. Callbacks
-/// are triggered whenever a `ytransaction_commit` is called.
-/// Returns a subscription ID which can be then used to unsubscribe this callback by using
-/// `yunobserve` function.
+/// Subscribes a given callback function `cb` under a `key` to changes made by this `YWeakRef`
+/// instance. Callbacks are triggered whenever a `ytransaction_commit` is called.
+/// Use `yunobserve` with the same key to unsubscribe.
 #[no_mangle]
 pub unsafe extern "C" fn yweak_observe(
-    weak: *const Node,
+    weak: *const Branch,
+    key_len: u32,
+    key: *const c_char,
     state: *mut c_void,
     cb: extern "C" fn(*mut c_void, *const YWeakLinkEvent),
-) -> *mut Subscription {
+) {
     assert!(!weak.is_null());
 
     let state = CallbackState::new(state);
-    let txt: WeakRef<NodePtr> = WeakRef::from_raw_node(weak);
-    let subscription = txt.observe(move |txn, e| {
+    let txt: WeakRef<BranchPtr> = WeakRef::from_raw_node(weak);
+    txt.observe(origin(key_len, key), move |txn, e| {
         let e = YWeakLinkEvent::new(e, txn);
         cb(state.0, &e as *const YWeakLinkEvent);
     });
-    Box::into_raw(Box::new(subscription))
 }
 
 #[no_mangle]

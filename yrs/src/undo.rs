@@ -20,43 +20,27 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 macro_rules! define_undo_observer {
     (
         $(#[doc = $doc:literal])*
-        $observe:ident, $observe_with:ident, $unobserve:ident,
+        $observe:ident, $unobserve:ident,
         $field:ident, $($bound:tt)+
     ) => {
         $(#[doc = $doc])*
         #[cfg(feature = "sync")]
-        pub fn $observe<F>(&mut self, f: F) -> crate::Subscription
+        pub fn $observe<K, F>(&mut self, key: K, f: F)
         where
+            K: Into<Origin>,
             F: $($bound)+ + Send + Sync + 'static,
         {
-            self.inner_mut().$field.subscribe(Box::new(f))
+            self.inner_mut().$field.subscribe(key.into(), Box::new(f))
         }
 
         $(#[doc = $doc])*
         #[cfg(not(feature = "sync"))]
-        pub fn $observe<F>(&mut self, f: F) -> crate::Subscription
-        where
-            F: $($bound)+ + 'static,
-        {
-            self.inner_mut().$field.subscribe(Box::new(f))
-        }
-
-        #[cfg(feature = "sync")]
-        pub fn $observe_with<K, F>(&mut self, key: K, f: F)
-        where
-            K: Into<Origin>,
-            F: $($bound)+ + Send + Sync + 'static,
-        {
-            self.inner_mut().$field.subscribe_with(key.into(), Box::new(f))
-        }
-
-        #[cfg(not(feature = "sync"))]
-        pub fn $observe_with<K, F>(&mut self, key: K, f: F)
+        pub fn $observe<K, F>(&mut self, key: K, f: F)
         where
             K: Into<Origin>,
             F: $($bound)+ + 'static,
         {
-            self.inner_mut().$field.subscribe_with(key.into(), Box::new(f))
+            self.inner_mut().$field.subscribe(key.into(), Box::new(f))
         }
 
         pub fn $unobserve<K>(&mut self, key: K) -> bool
@@ -185,13 +169,13 @@ where
             let cell = txn.doc.cell().clone();
             // document is already borrowed by `txn`, register observers through it
             let doc_mut = txn.doc_mut();
-            doc_mut.observe_destroy_with(origin.clone(), move |txn, _| {
+            doc_mut.observe_destroy(origin.clone(), move |txn, _| {
                 let ptr = ptr1.load(Ordering::Acquire);
                 let inner = unsafe { ptr.as_mut().unwrap() };
                 Self::handle_destroy(txn, inner)
             });
 
-            doc_mut.observe_after_transaction_with(origin, move |txn| {
+            doc_mut.observe_after_transaction(origin, move |txn| {
                 let ptr = ptr2.load(Ordering::Acquire);
                 let inner = unsafe { ptr.as_mut().unwrap() };
                 Self::handle_after_transaction(inner, txn);
@@ -346,27 +330,27 @@ where
 
     define_undo_observer!(
         /// Registers a callback to be called every time a new [StackItem] is created.
-        observe_item_added, observe_item_added_with, unobserve_item_added,
+        observe_item_added, unobserve_item_added,
         observer_added, FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time an existing [StackItem] is extended.
-        observe_item_updated, observe_item_updated_with, unobserve_item_updated,
+        observe_item_updated, unobserve_item_updated,
         observer_updated, FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time a [StackItem] is popped
         /// via [UndoManager::undo] or [UndoManager::redo].
-        observe_item_popped, observe_item_popped_with, unobserve_item_popped,
+        observe_item_popped, unobserve_item_popped,
         observer_popped, FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time undo/redo stacks are cleared.
         /// The callback receives two booleans: `(undo_stack_cleared, redo_stack_cleared)`.
-        observe_stack_cleared, observe_stack_cleared_with, unobserve_stack_cleared,
+        observe_stack_cleared, unobserve_stack_cleared,
         observer_cleared, FnMut(&StackClearedEvent)
     );
 
@@ -1022,10 +1006,53 @@ mod test {
     use crate::test_utils::exchange_updates;
     use crate::undo::{Options, StackItem};
     use crate::{
-        Any, Cell, Delta, DeltaOptions, Doc, In, NodeID, NodeRef, Origin, Out, OwnedMut,
+        Any, Cell, Delta, DeltaOptions, Doc, ID, In, NodeID, NodeRef, Origin, Out, OwnedMut,
         StateVector, Transaction, UndoManager, Update, any,
     };
     use serde::Deserialize;
+
+    #[test]
+    fn selective_clear_preserves_other_stack_and_reports_actual_changes() {
+        use std::sync::{Arc, Mutex};
+
+        for (clear_undo, clear_redo) in [(true, false), (false, true), (true, true)] {
+            let doc = Cell::new(Doc::new());
+            let mut undo = UndoManager::new();
+            node(&doc, "text", |mut n| undo.expand_scope(&mut n));
+            node(&doc, "text", |mut n| n.insert_text(0, "a"));
+            undo.reset();
+            node(&doc, "text", |mut n| n.insert_text(1, "b"));
+            assert!(undo.undo_blocking());
+            assert!(undo.can_undo() && undo.can_redo());
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let observed = events.clone();
+            undo.observe_stack_cleared("selective-clear", move |event| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((event.undo_stack_cleared, event.redo_stack_cleared));
+            });
+            let text = || doc.acquire().transact().node("text").unwrap().to_string();
+            for _ in 0..2 {
+                match (clear_undo, clear_redo) {
+                    (true, false) => undo.clear_undo(),
+                    (false, true) => undo.clear_redo(),
+                    _ => undo.clear_all(),
+                }
+                assert_eq!(undo.can_undo(), !clear_undo);
+                assert_eq!(undo.can_redo(), !clear_redo);
+                assert_eq!(text(), "a");
+                assert_eq!(*events.lock().unwrap(), vec![(clear_undo, clear_redo)]);
+            }
+            if !clear_undo {
+                assert!(undo.undo_blocking());
+                assert_eq!(text(), "");
+            } else if !clear_redo {
+                assert!(undo.redo_blocking());
+                assert_eq!(text(), "ab");
+            }
+        }
+    }
 
     #[test]
     fn undo_text() {
@@ -1537,7 +1564,7 @@ mod test {
         let counter = AtomicUsize::new(1);
 
         let txt_clone = txt.clone();
-        let _sub1 = mgr.observe_item_added(move |_, e| {
+        mgr.observe_item_added("sub", move |_, e| {
             assert!(e.has_changed(&txt_clone));
             let c = counter.fetch_add(1, Ordering::SeqCst);
             let e = e.meta_mut().entry("test".to_string()).or_default();
@@ -1546,7 +1573,7 @@ mod test {
 
         let txt_clone = txt.clone();
         let result_clone = result.clone();
-        let _sub2 = mgr.observe_item_popped(move |_, e| {
+        mgr.observe_item_popped("sub", move |_, e| {
             assert!(e.has_changed(&txt_clone));
             if let Some(&v) = e.meta_mut().get("test") {
                 result_clone.store(v, Ordering::Relaxed);
@@ -1577,7 +1604,7 @@ mod test {
             let mut m1: UndoManager<Metadata> = UndoManager::new();
             node(&d1, "test", |mut n| m1.expand_scope(&mut n));
 
-            let _sub1 = m1.observe_item_added(move |_, e| {
+            m1.observe_item_added("sub", move |_, e| {
                 e.meta_mut().entry("test".to_string()).or_default();
             });
 
@@ -2462,6 +2489,60 @@ mod test {
     }
 
     #[test]
+    fn gc_collects_kept_children_of_a_collected_type() {
+        // #667, #676: clearing the redo stack un-keeps map "p" though "number", which the undo
+        // stack still holds, stays kept. Collecting "p" after a remote removal freed its branch
+        // and left "number" pointing into it, so encoding read freed memory.
+        let d1 = Cell::new(Doc::with_client_id(1));
+        let d2 = Cell::new(Doc::with_client_id(2));
+        let exchange = || {
+            let mut g1 = d1.acquire_mut();
+            let mut g2 = d2.acquire_mut();
+            exchange_updates(&mut [&mut *g1, &mut *g2]);
+        };
+        node(&d1, "styles", |mut styles| {
+            styles.insert_attr(
+                "p",
+                In::Node(Box::new(Delta::new().insert_attr("kind", "number"))),
+            );
+        });
+        exchange();
+        let number = ID::new(ClientID::new(1), 1);
+
+        let mut mgr = UndoManager::new();
+        node(&d2, "styles", |mut n| mgr.expand_scope(&mut n));
+        {
+            let mut txn = d2.transact_owned_mut();
+            let Some(Out::Node(p)) = txn.node("styles").unwrap().attr("p") else {
+                panic!("expected a nested map")
+            };
+            txn.node_mut(p.id).unwrap().insert_attr("kind", "bullet");
+        }
+        mgr.undo_blocking();
+        mgr.reset();
+        node(&d2, "styles", |mut n| {
+            n.insert_attr("q", In::Node(Box::new(Delta::new()))); // clears the redo stack
+        });
+
+        node(&d1, "styles", |mut n| {
+            n.remove_attr("p");
+        });
+        exchange();
+
+        // "number" went with its map, as in Yjs.
+        assert!(d2.acquire().blocks.get_item(&number).is_none());
+        d2.acquire()
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        while mgr.undo_blocking() {}
+        exchange();
+        assert_eq!(
+            d1.acquire().transact().node("styles").unwrap().to_json(),
+            d2.acquire().transact().node("styles").unwrap().to_json()
+        );
+    }
+
+    #[test]
     fn multi_doc_after_destroy() {
         let mut um = UndoManager::with_options({
             let mut o = Options::default();
@@ -2498,5 +2579,31 @@ mod test {
             d1.acquire().transact().node("text").unwrap().to_string(),
             ""
         );
+    }
+
+    #[test]
+    fn sticky_index_inside_redone_text_keeps_its_offset() {
+        use crate::Assoc;
+
+        let doc = Cell::new(Doc::with_client_id(1));
+        let mut mgr = UndoManager::new();
+        node(&doc, "test", |mut n| mgr.expand_scope(&mut n));
+        node(&doc, "test", |mut n| n.insert_text(0, "hello world"));
+        let pos = doc
+            .acquire()
+            .transact()
+            .node("test")
+            .unwrap()
+            .sticky_index(5, Assoc::After)
+            .unwrap();
+        let text = || doc.acquire().transact().node("test").unwrap().to_string();
+
+        mgr.undo_blocking();
+        assert_eq!(text(), "");
+        mgr.redo_blocking();
+        assert_eq!(text(), "hello world");
+
+        let offset = pos.get_offset(&doc.acquire().transact()).unwrap();
+        assert_eq!(offset.index, 5, "Yjs resolves the same position to 5");
     }
 }

@@ -90,11 +90,10 @@ fn attributed_events() {
 
     let deltas = Cell::new(vec![]);
     let deltas_c = deltas.clone();
-    let _sub = doc
-        .transact_mut()
+    doc.transact_mut()
         .node_mut("text")
         .unwrap()
-        .observe(move |e| {
+        .observe("sub", move |e| {
             // the formatter of a live diff knows about the content of this transaction
             let fmt = diff_formatter(&v1, e.transaction().doc());
             deltas_c.acquire_mut().push(e.delta_fmt(false, &fmt));
@@ -145,11 +144,10 @@ fn attributions() {
 
     let deltas = Cell::new(vec![]);
     let deltas_c = deltas.clone();
-    let _sub = doc
-        .transact_mut()
+    doc.transact_mut()
         .node_mut("txt")
         .unwrap()
-        .observe(move |e| {
+        .observe("sub", move |e| {
             let fmt = diff_formatter(&base, e.transaction().doc());
             let attributed = e.delta_fmt(false, &fmt);
             deltas_c.acquire_mut().push((attributed, e.delta(false)));
@@ -259,11 +257,10 @@ fn delta_fresh_range_after_item_merge() {
     let base_now = ContentIds::from_doc(&doc);
     let deltas = Cell::new(vec![]);
     let deltas_c = deltas.clone();
-    let _sub = sdoc
-        .transact_mut()
+    sdoc.transact_mut()
         .node_mut("t")
         .unwrap()
-        .observe(move |e| {
+        .observe("sub", move |e| {
             let fmt = diff_formatter(&base_now, e.transaction().doc());
             deltas_c.acquire_mut().push(e.delta_fmt(true, &fmt));
         });
@@ -562,11 +559,13 @@ fn child_list_content() {
     let mut updated = clone_doc(&start, None);
     let deltas = Cell::new(vec![]);
     let deltas_c = deltas.clone();
-    let _sub = updated
+    updated
         .transact_mut()
         .node_mut("array")
         .unwrap()
-        .observe_deep(move |events| deltas_c.acquire_mut().push(events[0].delta(true)));
+        .observe_deep("sub", move |events| {
+            deltas_c.acquire_mut().push(events[0].delta(true))
+        });
     let yf = Delta::with_name("test")
         .insert_text("test content")
         .insert_attr("k", "v"); // <test k="v">test content</test>
@@ -804,11 +803,10 @@ fn apply_delta_modify_into_tombstone_returns_inverse() {
         let before = render_deep(&sdoc, "prosemirror", &fmt);
         let fired = Cell::new(0);
         let fired_c = fired.clone();
-        let _sub = sdoc
-            .transact_mut()
+        sdoc.transact_mut()
             .node_mut("prosemirror")
             .unwrap()
-            .observe_deep(move |_| *fired_c.acquire_mut() += 1);
+            .observe_deep("sub", move |_| *fired_c.acquire_mut() += 1);
         let d = Delta::new().modify(Delta::new().retain(2).insert_text("XY"));
         let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
         assert_eq!(fix, Delta::new().modify(Delta::new().retain(2).remove(2)));
@@ -896,11 +894,10 @@ fn apply_delta_mixed_fix_coordinates() {
         let fmt = suggestions(&doc, &sdoc);
         let fired = Cell::new(0);
         let fired_c = fired.clone();
-        let _sub = sdoc
-            .transact_mut()
+        sdoc.transact_mut()
             .node_mut("prosemirror")
             .unwrap()
-            .observe_deep(move |_| *fired_c.acquire_mut() += 1);
+            .observe_deep("sub", move |_| *fired_c.acquire_mut() += 1);
         let d = Delta::new()
             .insert(paragraph("nn"))
             .retain(1)

@@ -331,9 +331,9 @@ fn insert_and_remove_events() {
     let mut d = Doc::with_client_id(1);
     let happened = Arc::new(AtomicBool::new(false));
     let happened_clone = happened.clone();
-    let _sub = {
+    {
         let mut txn = d.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |_| {
+        txn.node_mut("array").unwrap().observe("sub", move |_| {
             happened_clone.store(true, Ordering::Relaxed);
         })
     };
@@ -373,11 +373,11 @@ fn insert_and_remove_event_changes() {
 
     let delta1 = delta.clone();
     let delta2 = delta.clone();
-    let _sub = {
+    {
         let mut txn = d1.transact_mut();
         txn.node_mut("array")
             .unwrap()
-            .observe(move |e| *delta1.acquire_mut() = e.delta(false))
+            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(false))
     };
 
     let delta = || delta.acquire().clone();
@@ -402,11 +402,11 @@ fn insert_and_remove_event_changes() {
     assert_eq!(delta(), Delta::out().retain(1).insert(0.5));
 
     let mut d2 = Doc::with_client_id(2);
-    let _sub = {
+    {
         let mut txn = d2.transact_mut();
         txn.node_mut("array")
             .unwrap()
-            .observe(move |e| *delta2.acquire_mut() = e.delta(false))
+            .observe("sub", move |e| *delta2.acquire_mut() = e.delta(false))
     };
 
     {
@@ -430,7 +430,7 @@ fn target_on_local_and_remote() {
     let c1c = c1.clone();
     let _s1 = {
         let mut txn = d1.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |e| {
+        txn.node_mut("array").unwrap().observe("sub", move |e| {
             c1c.store(Some(Arc::new(e.target().id())));
         })
     };
@@ -438,7 +438,7 @@ fn target_on_local_and_remote() {
     let c2c = c2.clone();
     let _s2 = {
         let mut txn = d2.transact_mut();
-        txn.node_mut("array").unwrap().observe(move |e| {
+        txn.node_mut("array").unwrap().observe("sub", move |e| {
             c2c.store(Some(Arc::new(e.target().id())));
         })
     };
@@ -474,7 +474,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let len = rng.between(1, 4);
         let content: Vec<_> = (0..len)
             .into_iter()
-            .map(|_| Any::BigInt(unique_number))
+            .map(|_| Any::from(unique_number))
             .collect();
         let mut txn = doc.transact_mut();
         let mut yarray = txn.node_mut("array").unwrap();
@@ -498,7 +498,7 @@ fn array_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 4] {
         let Out::Node(array2) = yarray.insert(pos, In::Node(nested.into())) else {
             panic!("expected a nested node")
         };
-        let expected: Vec<Out> = (1..=4).map(|i| Out::Any(Any::Number(i as f64))).collect();
+        let expected: Vec<Out> = (1..=4).map(|i| Out::Any(Any::from(i))).collect();
         let actual: Vec<Out> = txn.node(array2.id).unwrap().iter().collect();
         assert_eq!(actual, expected);
     }
@@ -585,7 +585,7 @@ fn observe_deep_event_order() {
 
     let mut txn = doc.transact_mut();
     let mut array = txn.node_mut("array").unwrap();
-    let _sub = array.observe_deep(move |e| {
+    array.observe_deep("sub", move |e| {
         let path: Vec<Path> = e.iter().map(|e| e.path()).collect();
         paths_copy.lock().unwrap().push(path);
     });

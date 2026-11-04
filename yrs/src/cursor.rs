@@ -875,7 +875,13 @@ fn char_boundary(s: &str, offset: u32, encoding: OffsetKind) -> (usize, u32) {
                 if units >= offset {
                     return (i, units);
                 }
-                units += c.len_utf16() as u32;
+                let len = c.len_utf16() as u32;
+                if units + len > offset {
+                    // `offset` points in between the two halves of a surrogate pair: just like
+                    // Yjs, we allow splitting there (each half becomes U+FFFD, see `split_str`)
+                    return (i, offset);
+                }
+                units += len;
             }
             (s.len(), units)
         }
@@ -896,7 +902,19 @@ fn read_item(item: ItemPtr, offset: u32, buf: &mut [Out], encoding: OffsetKind) 
             let (start, boundary) = char_boundary(s, offset, encoding);
             let mut read = 0;
             let mut units = boundary - offset;
-            for c in s[start..].chars().take(buf.len()) {
+            let mut chars = s[start..].chars();
+            if encoding == OffsetKind::Utf16 && !buf.is_empty() {
+                let before = s[..start].encode_utf16().count() as u32;
+                if before < offset {
+                    // `offset` points at the low half of a surrogate pair: like Yjs, read that
+                    // half alone - as a replacement character, since it is no valid `str`
+                    let c = chars.next().unwrap();
+                    buf[read] = Out::Any(Any::String("\u{FFFD}".into()));
+                    read += 1;
+                    units += before + c.len_utf16() as u32 - offset;
+                }
+            }
+            for c in chars.take(buf.len() - read) {
                 buf[read] = Out::Any(Any::String(c.to_string().into()));
                 read += 1;
                 units += match encoding {
@@ -1025,7 +1043,9 @@ mod test {
         let (doc, state) = txn.split_mut();
         cursor(doc, 0).insert_text(doc, state, "a😀b", None);
         let mut c = cursor(doc, 2);
-        assert_eq!(c.index(), 3);
+        assert_eq!(c.index(), 2);
+        // like Yjs, the low half of the pair is visible on its own
+        assert_eq!(c.next(), Some(Out::from("\u{FFFD}")));
         assert_eq!(c.next(), Some(Out::from("b")));
         assert_eq!(c.next(), None);
     }

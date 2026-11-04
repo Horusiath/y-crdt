@@ -1457,8 +1457,8 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         match c.content {
             ItemContent::String(str) => {
                 // clock offsets are always UTF-16 based
-                let (_, str) = split_str(str, c.offset as usize, OffsetKind::Utf16);
-                let (str, _) = split_str(str, c.clock_len as usize, OffsetKind::Utf16);
+                let (_, str) = split_str(&str, c.offset as usize, OffsetKind::Utf16);
+                let (str, _) = split_str(&str, c.clock_len as usize, OffsetKind::Utf16);
                 fix.insert_text_attributed_with(str, c.format, c.attribution);
             }
             ItemContent::Node(node) => {
@@ -1909,8 +1909,8 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
             }
             ItemContent::String(str) => {
                 // clock offsets are always UTF-16 based
-                let (_, str) = split_str(str, offset as usize, OffsetKind::Utf16);
-                let (str, _) = split_str(str, len as usize, OffsetKind::Utf16);
+                let (_, str) = split_str(&str, offset as usize, OffsetKind::Utf16);
+                let (str, _) = split_str(&str, len as usize, OffsetKind::Utf16);
                 d.insert_text_attributed_with(str, Some(format), attribution);
             }
             _ => {

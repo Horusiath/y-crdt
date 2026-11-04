@@ -6,8 +6,9 @@ use yrs::node::{Attrs, Observable};
 use yrs::test_utils::{RngExt, attribute_all, exchange_updates, run_scenario};
 use yrs::{
     Acquire, AcquireMut, Any, Attribute, Attribution, AttributionsFormatter, Cell, ClientID,
-    ContentAttribute, ContentIds, ContentMap, Delta, DeltaOptions, Doc, IdMap, IdSet, In,
-    OffsetKind, Op, Options, Out, Snapshot, SnapshotFormatter, StateVector, Update, any,
+    ContentAttribute, ContentIds, ContentMap, Delta, DeltaOptions, Doc, IdMap, IdSet, In, NodeRef,
+    OffsetKind, Op, Options, Out, Snapshot, SnapshotFormatter, StateVector, Transaction, Update,
+    any,
 };
 
 #[test]
@@ -362,11 +363,11 @@ fn observer() {
     let mut doc = Doc::with_client_id(1);
     let delta = Cell::new(Delta::out());
     let delta1 = delta.clone();
-    let sub = {
+    {
         let mut txn = doc.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta1.acquire_mut() = e.delta(false))
+            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(false))
     };
     let delta = || std::mem::take(&mut *delta.acquire_mut());
 
@@ -403,7 +404,10 @@ fn observer() {
     assert_eq!(delta(), Delta::out().retain(1).retain_fmt(1, &attrs));
 
     // free the observer and make sure that callback is no longer called
-    drop(sub);
+    doc.transact_mut()
+        .node_mut("text")
+        .unwrap()
+        .unobserve("sub");
     {
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().insert_text(1, "fgh"); // => 'afghed'
@@ -417,11 +421,11 @@ fn insert_and_remove_event_changes() {
     let delta = Cell::new(Delta::out());
     let delta1 = delta.clone();
     let delta2 = delta.clone();
-    let _sub = {
+    {
         let mut txn = d1.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta1.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(true))
     };
     let delta = || std::mem::take(&mut *delta.acquire_mut());
 
@@ -448,11 +452,11 @@ fn insert_and_remove_event_changes() {
 
     // replicate data to another peer
     let mut d2 = Doc::with_client_id(2);
-    let _sub = {
+    {
         let mut txn = d2.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta2.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta2.acquire_mut() = e.delta(true))
     };
 
     {
@@ -506,20 +510,20 @@ fn basic_format() {
 
     let delta1 = Cell::new(Delta::out());
     let delta_clone = delta1.clone();
-    let _sub1 = {
+    {
         let mut txn = d1.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta_clone.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta_clone.acquire_mut() = e.delta(true))
     };
 
     let delta2 = Cell::new(Delta::out());
     let delta_clone = delta2.clone();
-    let _sub2 = {
+    {
         let mut txn = d2.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta_clone.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta_clone.acquire_mut() = e.delta(true))
     };
 
     let a: Attrs = HashMap::from([("bold".into(), Any::Bool(true))]);
@@ -677,15 +681,15 @@ fn embed_with_attributes() {
 
     let delta1 = Cell::new(Delta::out());
     let delta_clone = delta1.clone();
-    let _sub1 = {
+    {
         let mut txn = d1.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta_clone.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta_clone.acquire_mut() = e.delta(true))
     };
 
     let a1: Attrs = HashMap::from([("bold".into(), true.into())]);
-    let a2: Attrs = HashMap::from([("width".into(), Any::Number(100.0))]);
+    let a2: Attrs = HashMap::from([("width".into(), Any::from(100))]);
     let embed = any!({
         "image": "imageSrc.png"
     });
@@ -739,11 +743,11 @@ fn issue_101() {
         txn.node_mut("text").unwrap().insert_text(0, "abcd");
     }
 
-    let _sub = {
+    {
         let txn = d1.transact();
         txn.node("text")
             .unwrap()
-            .observe(move |e| *delta_copy.acquire_mut() = e.delta(false))
+            .observe("sub", move |e| *delta_copy.acquire_mut() = e.delta(false))
     };
     {
         let mut txn = d1.transact_mut();
@@ -791,7 +795,7 @@ fn yrs_delete() {
             let txn = doc.transact();
             txn.node("content")
                 .unwrap()
-                .observe(move |e| *delta_copy.acquire_mut() = e.delta(false))
+                .observe("sub", move |e| *delta_copy.acquire_mut() = e.delta(false))
         };
 
         {
@@ -1116,11 +1120,11 @@ fn delta_with_shared_ref() {
 
     let delta = Cell::new(Delta::out());
     let delta_copy = delta.clone();
-    let _sub = {
+    {
         let mut txn = d1.transact_mut();
         txn.node_mut("text")
             .unwrap()
-            .observe(move |e| *delta_copy.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta_copy.acquire_mut() = e.delta(true))
     };
 
     let update = {
@@ -1536,4 +1540,73 @@ fn attributions_formatter_renders_attributed_outside_rendered_content() {
         .insert_text_attributed(" World", None, Some(Attribution::delete(["bob"])))
         .insert_text("!");
     assert_eq!(render_with(&doc, &fmt), expected);
+}
+
+fn utf16_doc(client_id: ClientID) -> Doc {
+    Doc::with_options(Options {
+        client_id,
+        offset_kind: OffsetKind::Utf16,
+        ..Options::default()
+    })
+}
+
+#[test]
+fn utf16_split_surrogate_pair() {
+    // a=0, 😀=1..3 (surrogate pair), b=3; len = 4
+    // expected results match Yjs: broken halves of a pair become U+FFFD
+    type Op = fn(&mut NodeRef<&mut Transaction<&mut Doc>>);
+    let cases: [(&str, Op); 4] = [
+        ("a\u{FFFD}b", |t| t.remove(2, 1)),
+        ("a\u{FFFD}b", |t| t.remove(1, 1)),
+        ("a\u{FFFD}", |t| t.remove(2, 2)),
+        ("a\u{FFFD}Z\u{FFFD}b", |t| t.insert_text(2, "Z")),
+    ];
+    for (expected, op) in cases {
+        let mut d1 = utf16_doc(ClientID::new(1));
+        let mut d2 = utf16_doc(ClientID::new(2));
+        {
+            let mut txn = d1.transact_mut();
+            let mut t1 = txn.node_mut("text").unwrap();
+            t1.insert_text(0, "a😀b");
+            op(&mut t1);
+            assert_eq!(t1.to_string(), expected);
+            assert_eq!(t1.len(), expected.encode_utf16().count() as u32);
+        }
+        exchange_updates(&mut [&mut d1, &mut d2]);
+        assert_eq!(d2.transact().node("text").unwrap().to_string(), expected);
+    }
+}
+
+#[test]
+fn utf16_remove_low_surrogate_at_end() {
+    let mut doc = utf16_doc(ClientID::new(1));
+    let mut txn = doc.transact_mut();
+    let mut text = txn.node_mut("text").unwrap();
+    text.insert_text(0, "a😀");
+    text.remove(2, 1);
+    assert_eq!(text.to_string(), "a\u{FFFD}");
+}
+
+#[test]
+fn utf16_insert_after_split_surrogate_pair() {
+    // index-based edits find their position through each item's `content_len`, so a split
+    // inside a surrogate pair must leave both halves with exactly the length their `len` says
+    let mut d1 = utf16_doc(ClientID::new(1));
+    let mut d2 = utf16_doc(ClientID::new(2));
+    {
+        let mut txn = d1.transact_mut();
+        let mut t1 = txn.node_mut("text").unwrap();
+        t1.insert_text(0, "😀a");
+        t1.insert_text(1, "X");
+        t1.insert_text(2, "Y");
+        assert_eq!(t1.to_string(), "\u{FFFD}XY\u{FFFD}a");
+        t1.remove(3, 1);
+        assert_eq!(t1.to_string(), "\u{FFFD}XYa");
+        assert_eq!(t1.len(), 4);
+    }
+    exchange_updates(&mut [&mut d1, &mut d2]);
+    assert_eq!(
+        d2.transact().node("text").unwrap().to_string(),
+        "\u{FFFD}XYa"
+    );
 }

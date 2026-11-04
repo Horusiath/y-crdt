@@ -159,25 +159,25 @@ impl<A: AttributeValue> Inner<A> {
         {
             let mut next = this.next.acquire_mut();
             let w = Arc::downgrade(this);
-            next.observe_before_observer_calls_with(origin.clone(), move |txn| {
+            next.observe_before_observer_calls(origin.clone(), move |txn| {
                 if let Some(s) = w.upgrade() {
                     s.on_next_change(txn);
                 }
             });
             let w = Arc::downgrade(this);
-            next.observe_update_v1_with(origin.clone(), move |txn, e| {
+            next.observe_update_v1(origin.clone(), move |txn, e| {
                 if let Some(s) = w.upgrade() {
                     s.on_next_update(txn, &e.update);
                 }
             });
             let w = Arc::downgrade(this);
-            next.observe_after_transaction_with(origin.clone(), move |txn| {
+            next.observe_after_transaction(origin.clone(), move |txn| {
                 if let Some(s) = w.upgrade() {
                     s.on_next_commit(txn);
                 }
             });
             let w = Arc::downgrade(this);
-            next.observe_destroy_with(origin.clone(), move |_, _| {
+            next.observe_destroy(origin.clone(), move |_, _| {
                 if let Some(s) = w.upgrade() {
                     s.unregister();
                 }
@@ -185,19 +185,19 @@ impl<A: AttributeValue> Inner<A> {
         }
         let mut prev = this.prev.acquire_mut();
         let w = Arc::downgrade(this);
-        prev.observe_before_observer_calls_with(origin.clone(), move |txn| {
+        prev.observe_before_observer_calls(origin.clone(), move |txn| {
             if let Some(s) = w.upgrade() {
                 s.on_prev_change(txn);
             }
         });
         let w = Arc::downgrade(this);
-        prev.observe_update_v1_with(origin.clone(), move |txn, e| {
+        prev.observe_update_v1(origin.clone(), move |txn, e| {
             if let Some(s) = w.upgrade() {
                 s.on_prev_update(txn, &e.update);
             }
         });
         let w = Arc::downgrade(this);
-        prev.observe_destroy_with(origin.clone(), move |_, _| {
+        prev.observe_destroy(origin.clone(), move |_, _| {
             if let Some(s) = w.upgrade() {
                 s.unregister();
             }

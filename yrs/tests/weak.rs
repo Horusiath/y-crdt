@@ -367,12 +367,12 @@ fn observe_map_update() {
     };
 
     let target1 = Cell::new(None);
-    let _sub1 = {
+    {
         let target = target1.clone();
         let txn = d1.transact();
-        txn.node(link1.clone())
-            .unwrap()
-            .observe(move |e| *target.acquire_mut() = Some(e.target().id()))
+        txn.node(link1.clone()).unwrap().observe("sub", move |e| {
+            *target.acquire_mut() = Some(e.target().id())
+        })
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -388,12 +388,12 @@ fn observe_map_update() {
     assert_eq!(deref(&d2, &link2), Some("value".into()));
 
     let target2 = Cell::new(None);
-    let _sub2 = {
+    {
         let target = target2.clone();
         let txn = d2.transact();
-        txn.node(link2.clone())
-            .unwrap()
-            .observe(move |e| *target.acquire_mut() = Some(e.target().id()))
+        txn.node(link2.clone()).unwrap().observe("sub", move |e| {
+            *target.acquire_mut() = Some(e.target().id())
+        })
     };
 
     d1.transact_mut()
@@ -420,12 +420,12 @@ fn observe_map_delete() {
     };
 
     let target1 = Arc::new(ArcSwapOption::default());
-    let _sub1 = {
+    {
         let target = target1.clone();
         let txn = d1.transact();
-        txn.node(link1.clone())
-            .unwrap()
-            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
+        txn.node(link1.clone()).unwrap().observe("sub", move |e| {
+            target.store(Some(Arc::new(e.target().id())))
+        })
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -441,12 +441,12 @@ fn observe_map_delete() {
     assert_eq!(deref(&d2, &link2), Some("value".into()));
 
     let target2 = Arc::new(ArcSwapOption::default());
-    let _sub2 = {
+    {
         let target = target2.clone();
         let txn = d2.transact();
-        txn.node(link2.clone())
-            .unwrap()
-            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
+        txn.node(link2.clone()).unwrap().observe("sub", move |e| {
+            target.store(Some(Arc::new(e.target().id())))
+        })
     };
 
     d1.transact_mut().node_mut("map").unwrap().remove_attr("a");
@@ -472,12 +472,12 @@ fn observe_array() {
     };
 
     let target1 = Arc::new(ArcSwapOption::default());
-    let _sub1 = {
+    {
         let target = target1.clone();
         let txn = d1.transact();
-        txn.node(link1.clone())
-            .unwrap()
-            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
+        txn.node(link1.clone()).unwrap().observe("sub", move |e| {
+            target.store(Some(Arc::new(e.target().id())))
+        })
     };
 
     exchange_updates(&mut [&mut d1, &mut d2]);
@@ -493,12 +493,12 @@ fn observe_array() {
     assert_eq!(unquote(&d2, &link2), vec!["B".into(), "C".into()]);
 
     let target2 = Arc::new(ArcSwapOption::default());
-    let _sub2 = {
+    {
         let target = target2.clone();
         let txn = d2.transact();
-        txn.node(link2.clone())
-            .unwrap()
-            .observe(move |e| target.store(Some(Arc::new(e.target().id()))))
+        txn.node(link2.clone()).unwrap().observe("sub", move |e| {
+            target.store(Some(Arc::new(e.target().id())))
+        })
     };
 
     d1.transact_mut().node_mut("array").unwrap().remove(2, 1);
@@ -552,10 +552,10 @@ fn deep_observe_transitive() {
     };
 
     let events = Arc::new(Mutex::new(vec![]));
-    let _sub1 = {
+    {
         let events = events.clone();
         let txn = doc.transact();
-        txn.node(link2).unwrap().observe_deep(move |evts| {
+        txn.node(link2).unwrap().observe_deep("sub", move |evts| {
             let mut er = events.lock().unwrap();
             for e in evts.iter() {
                 er.push(e.target().id());
@@ -614,10 +614,10 @@ fn deep_observe_transitive2() {
     };
 
     let events = Arc::new(Mutex::new(vec![]));
-    let _sub1 = {
+    {
         let events = events.clone();
         let txn = doc.transact();
-        txn.node(link3).unwrap().observe_deep(move |evts| {
+        txn.node(link3).unwrap().observe_deep("sub", move |evts| {
             let mut er = events.lock().unwrap();
             for e in evts.iter() {
                 er.push(e.target().id());
@@ -649,10 +649,10 @@ fn deep_observe_map() {
     let mut doc = Doc::with_client_id(1);
 
     let events = Arc::new(Mutex::new(vec![]));
-    let _sub = {
+    {
         let events = events.clone();
         let mut txn = doc.transact_mut();
-        txn.node_mut("map").unwrap().observe_deep(move |e| {
+        txn.node_mut("map").unwrap().observe_deep("sub", move |e| {
             let mut rs = events.lock().unwrap();
             for e in e.iter_mut() {
                 rs.push((e.target().id(), e.delta(false)));
@@ -742,15 +742,17 @@ fn deep_observe_array() {
     };
 
     let events = Arc::new(Mutex::new(vec![]));
-    let _sub = {
+    {
         let events = events.clone();
         let mut txn = doc.transact_mut();
-        txn.node_mut("array").unwrap().observe_deep(move |e| {
-            let mut events = events.lock().unwrap();
-            for e in e.iter_mut() {
-                events.push((e.target().id(), e.delta(false)));
-            }
-        })
+        txn.node_mut("array")
+            .unwrap()
+            .observe_deep("sub", move |e| {
+                let mut events = events.lock().unwrap();
+                for e in e.iter_mut() {
+                    events.push((e.target().id(), e.delta(false)));
+                }
+            })
     };
     doc.transact_mut()
         .node_mut(nested.clone())
@@ -831,7 +833,7 @@ fn deep_observe_new_element_within_quoted_range() {
     let _s1 = {
         let events = e1.clone();
         let txn = d1.transact();
-        txn.node(l1).unwrap().observe_deep(move |e| {
+        txn.node(l1).unwrap().observe_deep("sub", move |e| {
             let mut events = events.lock().unwrap();
             events.clear();
             for e in e.iter_mut() {
@@ -852,7 +854,7 @@ fn deep_observe_new_element_within_quoted_range() {
     let _s2 = {
         let events = e2.clone();
         let txn = d2.transact();
-        txn.node(l2).unwrap().observe_deep(move |e| {
+        txn.node(l2).unwrap().observe_deep("sub", move |e| {
             let mut events = events.lock().unwrap();
             events.clear();
             for e in e.iter_mut() {
@@ -937,10 +939,10 @@ fn deep_observe_recursive() {
     };
 
     let events = Arc::new(Mutex::new(vec![]));
-    let _sub = {
+    {
         let events = events.clone();
         let mut txn = doc.transact_mut();
-        txn.node_mut(m0).unwrap().observe_deep(move |e| {
+        txn.node_mut(m0).unwrap().observe_deep("sub", move |e| {
             let mut rs = events.lock().unwrap();
             for e in e.iter_mut() {
                 rs.push((e.target().id(), e.delta(false)));

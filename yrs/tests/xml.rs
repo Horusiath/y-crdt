@@ -76,11 +76,11 @@ fn event_observers() {
     let delta1 = delta.clone();
     let delta2 = delta.clone();
     let delta = || delta.acquire().clone();
-    let _sub = {
+    {
         let txn = d1.transact();
         txn.node(xml.clone())
             .unwrap()
-            .observe(move |e| *delta1.acquire_mut() = e.delta(true))
+            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(true))
     };
 
     // insert attribute
@@ -149,9 +149,9 @@ fn event_observers() {
     );
 
     // copy updates over
-    let _sub = {
+    {
         let txn = d2.transact();
-        txn.node(xml2).unwrap().observe(move |e| {
+        txn.node(xml2).unwrap().observe("sub", move |e| {
             *delta2.acquire_mut() = e.delta(true);
         })
     };

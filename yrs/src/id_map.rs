@@ -838,7 +838,7 @@ mod test {
         let attributions = Cell::new(IdMap::<AttrValue>::new());
         let mut doc = Doc::with_client_id(1);
         let a = attributions.clone();
-        doc.observe_after_transaction_with("attr", move |txn| {
+        doc.observe_after_transaction("attr", move |txn| {
             let mut a = a.acquire_mut();
             let ins = vec![
                 ContentAttribute::insert("userX"),

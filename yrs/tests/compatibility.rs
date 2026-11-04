@@ -107,7 +107,7 @@ fn text_insert_delete() {
     let setter = visited.clone();
 
     let mut doc = Doc::new();
-    let _sub = doc.observe_update_v1(move |_, e| {
+    doc.observe_update_v1("sub", move |_, e| {
         let u = Update::decode_v1(&e.update).unwrap();
         let update_blocks = Blocks::new(&u.blocks);
         for (actual, expected) in update_blocks.zip(expected_blocks.as_slice()) {
