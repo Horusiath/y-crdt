@@ -1,30 +1,44 @@
 use crate::block::ItemPtr;
 use crate::{Any, Delta, Doc, In, NodeID, Options, Uuid};
-use serde::{Deserialize, Serialize};
+use serde::{Serialize, Serializer};
 use std::convert::TryFrom;
 use std::sync::Arc;
 
 /// Node output can take shape of one of the two variants. Usually that depends, on if flat or deep
 /// delta was used to generate node shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename = "delta")]
 pub struct OutNode {
     /// Unique node identifier.
     pub id: NodeID,
     /// Delta representation of state changes applied on a given node.
     /// This is optional field, which presence is driven through [Event::delta] `deep` parameter.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub delta: Option<Box<Delta<Out>>>,
 }
 
 /// Value that can be returned by Yrs data types. This includes [Any] which is an extension
 /// representation of JSON, but also nested complex collaborative structures specific to Yrs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum Out {
     /// Any value that it treated as a single element in its entirety.
     Any(Any),
     Node(OutNode),
     /// Subdocument identifier.
+    #[serde(serialize_with = "serialize_doc")]
     Doc(Uuid),
+}
+
+/// Serialized shape of [Out::Doc]: `{"type":"doc","guid":"..."}`.
+#[derive(Serialize)]
+#[serde(tag = "type", rename = "doc")]
+struct DocRef<'a> {
+    guid: &'a Uuid,
+}
+
+fn serialize_doc<S: Serializer>(guid: &Uuid, s: S) -> Result<S::Ok, S::Error> {
+    DocRef { guid }.serialize(s)
 }
 
 impl Default for Out {

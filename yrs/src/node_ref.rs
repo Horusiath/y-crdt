@@ -37,7 +37,7 @@ impl<T> DeepObservable for NodeRef<T> {}
 impl<T> Observable for NodeRef<T> {}
 
 impl<T> NodeRef<T> {
-    pub(crate) fn new(ptr: NodePtr, txn: T) -> Self {
+    pub fn new(ptr: NodePtr, txn: T) -> Self {
         NodeRef { ptr, txn }
     }
 

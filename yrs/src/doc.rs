@@ -931,6 +931,7 @@ impl DocEvents {
 
 /// Configuration options of [Doc] instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Options {
     /// Globally unique client identifier. This value must be unique across all active collaborating
     /// peers, otherwise a update collisions will happen, causing document store state to be corrupted.

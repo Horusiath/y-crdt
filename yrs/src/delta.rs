@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// 1. Describe changes made within a specific transaction scope.
 /// 2. Describe all the properties a specific node.
 /// 3. Describe changes yet to be made onto a node (applied via: [NodeRef::apply_delta]).
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct Delta<T = Out> {
     /// Optional node name (e.g. XML tag). `None` for text/array/map types.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,10 +31,12 @@ pub struct Delta<T = Out> {
 }
 
 /// A single operation on the ordered children axis of a [Delta].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum Op<T = Out> {
     /// Retain (skip over) a number of elements, optionally applying a formatting change.
     Retain {
+        #[serde(rename = "retain")]
         len: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
@@ -42,7 +44,9 @@ pub enum Op<T = Out> {
         attribution: Option<Box<Attribution>>,
     },
     /// Insert a text string with optional formatting.
+    #[serde(rename = "insert")]
     InsertText {
+        #[serde(rename = "insert")]
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
@@ -51,6 +55,7 @@ pub enum Op<T = Out> {
     },
     /// Insert one or more non-text content values with optional formatting.
     Insert {
+        #[serde(rename = "insert")]
         items: Vec<T>,
         #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
@@ -59,13 +64,16 @@ pub enum Op<T = Out> {
     },
     /// Delete a number of elements. `prev_value` captures the deleted content
     /// when produced by diff/undo operations.
+    #[serde(rename = "delete")]
     Remove {
+        #[serde(rename = "delete")]
         len: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         prev: Option<Box<Delta<T>>>,
     },
     /// Apply a nested delta to an embedded child node, optionally updating its formatting.
     Modify {
+        #[serde(rename = "value")]
         delta: Box<Delta<T>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<Box<Attrs>>,
@@ -84,10 +92,12 @@ impl<T> Op<T> {
 }
 
 /// A single operation on the key-value attributes axis of a [Delta].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum AttrOp<T = Out> {
     /// Update attribute value.
     /// `prev_value` captures the old value when produced by diff/undo operations.
+    #[serde(rename = "insert")]
     Update {
         value: T,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +107,7 @@ pub enum AttrOp<T = Out> {
     },
     /// Remove an attribute.
     /// `prev_value` captures the removed value when produced by diff/undo operations.
+    #[serde(rename = "delete")]
     Remove {
         #[serde(skip_serializing_if = "Option::is_none")]
         prev: Option<T>,
@@ -105,6 +116,7 @@ pub enum AttrOp<T = Out> {
     },
     /// Apply a nested delta to an attribute whose value is itself a node.
     Modify {
+        #[serde(rename = "value")]
         delta: Box<Delta<T>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         attribution: Option<Box<Attribution>>,
@@ -1041,4 +1053,66 @@ impl Debug for Attribution {
 #[inline]
 fn is_zero(v: &u64) -> bool {
     *v == 0
+}
+
+#[cfg(test)]
+mod test {
+    use crate::node::Attrs;
+    use crate::{Any, ClientID, Delta, ID, NodeID, Out, any};
+    use serde_json::{json, to_value};
+
+    fn bold() -> Attrs {
+        Attrs::from([("bold".into(), Any::Bool(true))])
+    }
+
+    #[test]
+    fn serialize_children_ops() {
+        let d = Delta::out()
+            .retain_fmt(1, &bold())
+            .insert_text("ab")
+            .insert(1)
+            .remove(2)
+            .modify(Delta::out().insert_text("x"));
+        let expected = json!({"children": [
+            {"type": "retain", "retain": 1, "format": {"bold": true}},
+            {"type": "insert", "insert": "ab"},
+            {"type": "insert", "insert": [1]},
+            {"type": "delete", "delete": 2},
+            {"type": "modify", "value": {"children": [{"type": "insert", "insert": "x"}]}},
+        ]});
+        assert_eq!(to_value(&d).unwrap(), expected);
+    }
+
+    #[test]
+    fn serialize_attr_ops() {
+        let d = Delta::out()
+            .insert_attr("a", 1)
+            .remove_attr("b")
+            .modify_attr("c", Delta::out().insert_attr("d", "x"));
+        let expected = json!({"attrs": {
+            "a": {"type": "insert", "value": 1},
+            "b": {"type": "delete"},
+            "c": {"type": "modify", "value": {"attrs": {"d": {"type": "insert", "value": "x"}}}},
+        }});
+        assert_eq!(to_value(&d).unwrap(), expected);
+    }
+
+    #[test]
+    fn serialize_out() {
+        let id = NodeID::Nested(ID::new(ClientID::new(1), 2));
+        assert_eq!(to_value(Out::Any(any!({"a": 1}))).unwrap(), json!({"a": 1}));
+        assert_eq!(
+            to_value(Out::node("root")).unwrap(),
+            json!({"type": "delta", "id": "root"})
+        );
+        let node = Out::node_with_delta(id, Delta::out().insert_text("x"));
+        let expected = json!({"type": "delta", "id": {"client": 1, "clock": 2},
+            "children": [{"type": "insert", "insert": "x"}]});
+        assert_eq!(to_value(node).unwrap(), expected);
+        let doc = Out::Doc("guid".into());
+        assert_eq!(
+            to_value(doc).unwrap(),
+            json!({"type": "doc", "guid": "guid"})
+        );
+    }
 }

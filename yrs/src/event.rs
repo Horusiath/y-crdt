@@ -3,6 +3,7 @@ use crate::node::{Node, NodePtr, Path};
 use crate::node_ref::get_delta;
 use crate::transaction::Subdocs;
 use crate::{Delta, Doc, ID, IdSet, NodeRef, Out, StateVector, Transaction, TransactionMut, Uuid};
+use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -45,7 +46,7 @@ impl TransactionCleanupEvent {
 }
 
 /// Event used to communicate load requests from the underlying subdocuments.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SubdocsEvent {
     pub(crate) added: HashSet<Uuid>,
     pub(crate) removed: HashSet<Uuid>,

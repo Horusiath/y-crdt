@@ -32,70 +32,14 @@ header = """
 #define YRS_FFI_H
 
 /**
- * A Yrs document type. Documents are the most important units of collaborative resources management.
- * All shared collections live within a scope of their corresponding documents. All updates are
- * generated on per-document basis (rather than individual shared type). All operations on shared
- * collections happen via `YTransaction`, which lifetime is also bound to a document.
- *
- * Document manages so-called root types, which are top-level shared types definitions (as opposed
- * to recursively nested types).
+ * A Yrs document. All nodes live within a document and are read and written via transactions.
  */
-typedef struct YDoc {} YDoc;
+typedef struct YDoc YDoc;
 
 /**
- * A common shared data type. All Yrs instances can be refered to using this data type (use
- * `ytype_kind` function if a specific type needs to be determined). Branch pointers are passed
- * over type-specific functions like `ytext_insert`, `yarray_insert` or `ymap_insert` to perform
- * a specific shared type operations.
- *
- * Using write methods of different shared types (eg. `ytext_insert` and `yarray_insert`) over
- * the same branch may result in undefined behavior.
+ * A collaborative node. Owned by its document.
  */
-typedef struct Branch {} Branch;
-
-typedef struct Transaction {} Transaction;
-typedef struct TransactionMut {} TransactionMut;
-
-/**
- * Iterator structure used by weak link unquote.
- */
-typedef struct YWeakIter {} YWeakIter;
-
-/**
- * Iterator structure used by shared array data type.
- */
-typedef struct YArrayIter {} YArrayIter;
-
-/**
- * Iterator structure used by shared map data type. Map iterators are unordered - there's no
- * specific order in which map entries will be returned during consecutive iterator calls.
- */
-typedef struct YMapIter {} YMapIter;
-
-/**
- * Iterator structure used by shared JSON Path expressions over document content.
- */
-typedef struct YJsonPathIter {} YJsonPathIter;
-
-/**
- * Iterator structure used by XML nodes (elements and text) to iterate over node's attributes.
- * Attribute iterators are unordered - there's no specific order in which map entries will be
- * returned during consecutive iterator calls.
- */
-typedef struct YXmlAttrIter {} YXmlAttrIter;
-
-/**
- * Iterator used to traverse over the complex nested tree structure of a XML node. XML node
- * iterator walks only over `YXmlElement` and `YXmlText` nodes. It does so in ordered manner (using
- * the order in which children are ordered within their parent nodes) and using **depth-first**
- * traverse.
- */
-typedef struct YXmlTreeWalker {} YXmlTreeWalker;
-
-typedef struct YUndoManager {} YUndoManager;
-typedef struct LinkSource {} LinkSource;
-typedef struct Unquote {} Unquote;
-typedef struct StickyIndex {} StickyIndex;
+typedef struct YNode YNode;
 """
 
 trailer = """
@@ -106,33 +50,9 @@ trailer = """
 parse_deps = false
 
 [export]
-exclude = [
-    "Doc",
-    "Branch",
-    "LinkSource",
-    "WeakIter",
-    "ArrayIter",
-    "MapIter",
-    "JsonPathIter",
-    "Attributes",
-    "TreeWalker",
-    "YUndoManager"
-]
+exclude = ["Doc", "Node"]
 
 [export.rename]
 "Doc" = "YDoc"
-"DocRef" = "YDocRef"
+"Node" = "YNode"
 "Transaction" = "YTransaction"
-"Array" = "YArray"
-"Map" = "YMap"
-"Text" = "YText"
-"XmlElement" = "YXmlElement"
-"XmlText" = "YXmlText"
-"MapIter" = "YMapIter"
-"ArrayIter" = "YArrayIter"
-"JsonPathIter" = "YJsonPathIter"
-"WeakIter" = "YWeakIter"
-"TreeWalker" = "YXmlTreeWalker"
-"Attributes" = "YXmlAttrIter"
-"Observer" = "YObserver"
-"UndoManager" = "YUndoManager"
