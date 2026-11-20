@@ -16,6 +16,7 @@ default = []
 weak = []
 sync = ["dep:async-lock"]
 small-client = []
+loud-report = []
 
 [dependencies]
 thiserror = "2"

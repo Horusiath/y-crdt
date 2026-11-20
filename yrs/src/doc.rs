@@ -242,8 +242,10 @@ impl Doc {
         /// changes are encoded using lib0 v1 lib0 and can be decoded using [Update::decode_v1]
         /// if necessary or passed to remote peers right away. This callback is triggered on
         /// function commit.
-        observe_update_v1, unobserve_update_v1,
-        update_v1_events, FnMut(&Transaction<&Doc>, &UpdateEvent)
+        observe_update_v1,
+        unobserve_update_v1,
+        update_v1_events,
+        FnMut(&Transaction<&Doc>, &UpdateEvent)
     );
 
     define_doc_observer!(
@@ -251,15 +253,19 @@ impl Doc {
         /// changes are encoded using lib0 v2 lib0 and can be decoded using [Update::decode_v2]
         /// if necessary or passed to remote peers right away. This callback is triggered on
         /// function commit.
-        observe_update_v2, unobserve_update_v2,
-        update_v2_events, FnMut(&Transaction<&Doc>, &UpdateEvent)
+        observe_update_v2,
+        unobserve_update_v2,
+        update_v2_events,
+        FnMut(&Transaction<&Doc>, &UpdateEvent)
     );
 
     define_doc_observer!(
         /// Subscribe callback function to updates on the `Doc`. The callback will receive state
         /// updates and deletions when a document transaction is committed.
-        observe_transaction_cleanup, unobserve_transaction_cleanup,
-        transaction_cleanup_events, FnMut(&Transaction<&Doc>, &TransactionCleanupEvent)
+        observe_transaction_cleanup,
+        unobserve_transaction_cleanup,
+        transaction_cleanup_events,
+        FnMut(&Transaction<&Doc>, &TransactionCleanupEvent)
     );
 
     define_doc_observer!(
@@ -273,22 +279,28 @@ impl Doc {
         /// Subscribe a callback that fires after the transaction body completes but before
         /// type-level observers are triggered. This is used by attribution managers to update
         /// their internal state before any observer reads attribution data.
-        observe_before_observer_calls, unobserve_before_observer_calls,
-        before_observer_calls_events, FnMut(&Transaction<&Doc>)
+        observe_before_observer_calls,
+        unobserve_before_observer_calls,
+        before_observer_calls_events,
+        FnMut(&Transaction<&Doc>)
     );
 
     define_doc_observer!(
         /// Subscribe callback function, that will be called whenever a subdocuments inserted in
         /// this [Doc] will request a load.
-        observe_subdocs, unobserve_subdocs,
-        subdocs_events, FnMut(&Transaction<&Doc>, &SubdocsEvent)
+        observe_subdocs,
+        unobserve_subdocs,
+        subdocs_events,
+        FnMut(&Transaction<&Doc>, &SubdocsEvent)
     );
 
     define_doc_observer!(
         /// Subscribe callback function, that will be called whenever a [Doc::destroy] has been
         /// called.
-        observe_destroy, unobserve_destroy,
-        destroy_events, FnMut(&Transaction<&Doc>, &Doc)
+        observe_destroy,
+        unobserve_destroy,
+        destroy_events,
+        FnMut(&Transaction<&Doc>, &Doc)
     );
 
     /// Sends a load request to a parent document. Works only if current document is a sub-document
@@ -1415,21 +1427,14 @@ mod test {
                 text.insert_text(0, "abc");
                 text.remove(1, 2);
             }
-            txn.commit();
+            // transaction state is cleared on commit, so compare with what a reporter received
+            let mut report = CleanupReport::default();
+            txn.commit(&mut report);
 
             // Compare values
-            assert_eq!(
-                before_state.swap(None),
-                Some(Arc::new(txn.before_state().clone()))
-            );
-            assert_eq!(
-                after_state.swap(None),
-                Some(Arc::new(txn.after_state().clone()))
-            );
-            assert_eq!(
-                delete_set.swap(None),
-                Some(Arc::new(txn.delete_set().clone()))
-            );
+            assert_eq!(before_state.swap(None), Some(Arc::new(report.before)));
+            assert_eq!(after_state.swap(None), Some(Arc::new(report.after)));
+            assert_eq!(delete_set.swap(None), Some(Arc::new(report.deletes)));
         }
 
         // Ensure that the callback is successfully unsubscribed.
@@ -1439,11 +1444,30 @@ mod test {
             let mut text = txn.node_mut("test").unwrap();
             text.insert_text(0, "should not update");
         }
-        txn.commit();
-        assert_ne!(
-            after_state.swap(None),
-            Some(Arc::new(txn.after_state().clone()))
-        );
+        txn.commit(&mut crate::NoReporter);
+        assert!(after_state.swap(None).is_none());
+    }
+
+    /// Captures the same data as [TransactionCleanupEvent].
+    #[derive(Default)]
+    struct CleanupReport {
+        before: StateVector,
+        after: StateVector,
+        deletes: IdSet,
+    }
+
+    impl crate::Reporter for CleanupReport {
+        type Encoder = crate::lib0::EncoderV1;
+
+        fn deletes(&mut self) -> Option<&mut IdSet> {
+            Some(&mut self.deletes)
+        }
+        fn before_state(&mut self) -> Option<&mut StateVector> {
+            Some(&mut self.before)
+        }
+        fn after_state(&mut self) -> Option<&mut StateVector> {
+            Some(&mut self.after)
+        }
     }
 
     #[test]

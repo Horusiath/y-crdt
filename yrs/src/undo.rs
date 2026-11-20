@@ -330,28 +330,36 @@ where
 
     define_undo_observer!(
         /// Registers a callback to be called every time a new [StackItem] is created.
-        observe_item_added, unobserve_item_added,
-        observer_added, FnMut(&TransactionMut, &mut Event<M>)
+        observe_item_added,
+        unobserve_item_added,
+        observer_added,
+        FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time an existing [StackItem] is extended.
-        observe_item_updated, unobserve_item_updated,
-        observer_updated, FnMut(&TransactionMut, &mut Event<M>)
+        observe_item_updated,
+        unobserve_item_updated,
+        observer_updated,
+        FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time a [StackItem] is popped
         /// via [UndoManager::undo] or [UndoManager::redo].
-        observe_item_popped, unobserve_item_popped,
-        observer_popped, FnMut(&TransactionMut, &mut Event<M>)
+        observe_item_popped,
+        unobserve_item_popped,
+        observer_popped,
+        FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time undo/redo stacks are cleared.
         /// The callback receives two booleans: `(undo_stack_cleared, redo_stack_cleared)`.
-        observe_stack_cleared, unobserve_stack_cleared,
-        observer_cleared, FnMut(&StackClearedEvent)
+        observe_stack_cleared,
+        unobserve_stack_cleared,
+        observer_cleared,
+        FnMut(&StackClearedEvent)
     );
 
     /// Extends a list of origins tracked by current undo manager by given `origin`. Origin markers
@@ -609,11 +617,9 @@ where
         while let Some(item) = stack.pop() {
             if let Some(cell) = state.docs.get(&item.doc) {
                 let mut doc = cell.acquire_mut();
-                let txn = doc.transact_mut_with(origin.clone());
-
                 if Self::try_process(
                     item,
-                    txn,
+                    &mut doc,
                     stack,
                     other,
                     &state.scope,
@@ -633,7 +639,7 @@ where
 
     fn try_process(
         item: StackItem<M>,
-        mut txn: TransactionMut,
+        doc: &mut Doc,
         stack: &mut UndoStack<M>,
         other: &UndoStack<M>,
         scope: &HashSet<NodePtr>,
@@ -641,9 +647,10 @@ where
         undoing: bool,
         origin: Origin,
     ) -> bool {
-        let (doc, state) = txn.split_mut();
+        let mut txn = doc.transact_mut_with(origin.clone());
+        let (doc_ref, state) = txn.split_mut();
         let change_performed = revert(
-            doc,
+            doc_ref,
             state,
             &item.insertions,
             &item.deletions,
@@ -651,13 +658,15 @@ where
             stack,
             other,
         );
-        txn.commit();
+        // changed parent types are computed during commit, after which the state is cleared
+        let mut parents = ParentTypes(Vec::new());
+        txn.commit(&mut parents);
         if change_performed {
-            txn.commit();
+            let txn = doc.transact_mut_with(origin.clone());
             let mut e = if undoing {
-                Event::undo(item.meta, Some(origin), txn.changed_parent_types().to_vec())
+                Event::undo(item.meta, Some(origin), parents.0)
             } else {
-                Event::redo(item.meta, Some(origin), txn.changed_parent_types().to_vec())
+                Event::redo(item.meta, Some(origin), parents.0)
             };
             if observer_popped.has_subscribers() {
                 observer_popped.trigger(|fun| fun(&txn, &mut e));
@@ -666,6 +675,16 @@ where
         } else {
             false
         }
+    }
+}
+
+struct ParentTypes(Vec<NodePtr>);
+
+impl crate::Reporter for ParentTypes {
+    type Encoder = crate::lib0::EncoderV1;
+
+    fn changed_parent_types(&mut self) -> Option<&mut Vec<NodePtr>> {
+        Some(&mut self.0)
     }
 }
 

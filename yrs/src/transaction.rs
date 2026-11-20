@@ -1,25 +1,27 @@
 use crate::block::{ID, Item, ItemContent, ItemPtr};
 use crate::doc::DocEvents;
 use crate::event::SubdocsEvent;
+use crate::formatter::{DefaultFormatter, DeltaFormatter};
 use crate::gc::GCCollector;
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::lib0::{Encode, Encoder, EncoderV1, EncoderV2};
 use crate::node::{Node, NodePtr, TypePtr, TypeRef};
+use crate::node_ref::get_delta;
+use crate::reporter::{NoReporter, Reporter};
 use crate::slice::BlockSlice;
 use crate::undo::UndoStack;
 use crate::update::Update;
 use crate::utils::OptionExt;
 use crate::{
-    Any, Doc, IdSet, In, NodeID, NodeRef, Out, Snapshot, StateVector, Uuid, merge_updates_v1,
-    merge_updates_v2,
+    Any, Delta, Doc, IdSet, In, NodeID, NodeRef, Out, Snapshot, StateVector, Uuid,
+    merge_updates_v1, merge_updates_v2,
 };
 use smallvec::SmallVec;
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Formatter;
 use std::hash::Hash;
-use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -200,6 +202,19 @@ impl TransactionState {
             for (client, ranges) in self.insert_set.iter() {
                 if let Some(clock) = ranges.clock_start() {
                     sv.set_min(*client, clock);
+                }
+            }
+            sv
+        })
+    }
+
+    /// State vector of a `doc` including all updates performed by current transaction.
+    pub(crate) fn after_state(&self, doc: &Doc) -> &StateVector {
+        self.after_state.get_or_init(|| {
+            let mut sv = doc.blocks.get_state_vector();
+            for (client, ranges) in self.insert_set.iter() {
+                if let Some(clock) = ranges.clock_end() {
+                    sv.set_max(*client, clock);
                 }
             }
             sv
@@ -393,19 +408,10 @@ impl<D: DocHandle> Transaction<D> {
 
     /// State vector of the transaction after [Transaction::commit] has been called.
     pub fn after_state(&self) -> &StateVector {
-        let state = self
-            .state
+        self.state
             .as_ref()
-            .expect("transaction state not initialized");
-        state.after_state.get_or_init(|| {
-            let mut sv = self.doc.blocks.get_state_vector();
-            for (client, ranges) in state.insert_set.iter() {
-                if let Some(clock) = ranges.clock_end() {
-                    sv.set_max(*client, clock);
-                }
-            }
-            sv
-        })
+            .expect("transaction state not initialized")
+            .after_state(&self.doc)
     }
 
     /// Checks if item with a given `id` has been added to a block store within this transaction.
@@ -422,6 +428,98 @@ impl<D: DocHandle> Transaction<D> {
             None => false,
             Some(state) => state.delete_set.contains(id),
         }
+    }
+
+    /// Encodes changes made within the scope of the current transaction using lib0 v1 lib0.
+    pub fn encode_update_v1(&self) -> Vec<u8> {
+        let mut encoder = EncoderV1::new();
+        self.encode_update(&mut encoder);
+        encoder.to_vec()
+    }
+
+    /// Encodes changes made within the scope of the current transaction using lib0 v2 lib0.
+    pub fn encode_update_v2(&self) -> Vec<u8> {
+        let mut encoder = EncoderV2::new();
+        self.encode_update(&mut encoder);
+        encoder.to_vec()
+    }
+
+    /// Encodes changes made within the scope of the current transaction.
+    pub fn encode_update<E: Encoder>(&self, encoder: &mut E) {
+        let store = &*self.doc;
+        store.write_blocks_from(self.before_state(), encoder);
+        self.delete_set().encode(encoder);
+    }
+
+    /// Nodes directly modified by this transaction, with their changed keys (`None` = children).
+    pub fn modified(&self) -> impl Iterator<Item = (NodeRef<&Self>, &HashSet<Option<Arc<str>>>)> {
+        let changed = self.state.as_deref().map(|s| s.changed.iter());
+        changed
+            .into_iter()
+            .flatten()
+            .map(move |(&node, keys)| (NodeRef::new(node, self), keys))
+    }
+
+    /// Keys changed within a `node`, if it was directly modified by this transaction.
+    fn changed_keys(&self, node: NodeID) -> Option<&HashSet<Option<Arc<str>>>> {
+        let state = self.state.as_deref()?;
+        if state.changed.is_empty() {
+            return None;
+        }
+        state.changed.get(&self.doc.node(node)?)
+    }
+
+    /// Checks if a `node` was modified by this transaction. With `deep` set, modifications of
+    /// nodes nested in it (weak links included) count as well.
+    pub fn is_modified<N: Into<NodeID>>(&self, node: N, deep: bool) -> bool {
+        if !deep {
+            self.changed_keys(node.into()).is_some()
+        } else {
+            let parents = self.changed_parent_types();
+            !parents.is_empty()
+                && self
+                    .doc
+                    .node(node.into())
+                    .is_some_and(|n| parents.contains(&n))
+        }
+    }
+
+    /// Attribute keys of a `node` changed by this transaction.
+    pub fn keys_changed<N: Into<NodeID>>(&self, node: N) -> impl Iterator<Item = &Arc<str>> {
+        self.changed_keys(node.into())
+            .into_iter()
+            .flatten()
+            .flatten()
+    }
+
+    /// Checks if children of a `node` were changed by this transaction.
+    pub fn children_changed<N: Into<NodeID>>(&self, node: N) -> bool {
+        self.changed_keys(node.into())
+            .is_some_and(|keys| keys.contains(&None))
+    }
+
+    /// Changes made to a `node` by this transaction, including nested nodes if `deep` is set.
+    pub fn delta<N: Into<NodeID>>(&self, node: N, deep: bool) -> Delta<Out> {
+        self.delta_fmt(node, deep, &DefaultFormatter)
+    }
+
+    /// Like [Transaction::delta], formatted via custom formatter `f`.
+    pub fn delta_fmt<N: Into<NodeID>, F: DeltaFormatter>(
+        &self,
+        node: N,
+        deep: bool,
+        f: &F,
+    ) -> Delta<Out> {
+        let node = node.into();
+        let (true, Some(state), Some(ptr)) = (
+            self.is_modified(node.clone(), deep),
+            self.state.as_deref(),
+            self.doc.node(node),
+        ) else {
+            return Delta::default();
+        };
+        // cleanup deletes only redundant format markers, which render as no change
+        get_delta(&self.doc, state, ptr, deep, f)
     }
 }
 
@@ -493,54 +591,12 @@ impl<D: DocHandle + DerefMut> Transaction<D> {
         }
     }
 
-    pub fn events(&self) -> Option<&DocEvents> {
+    pub fn doc_events(&self) -> Option<&DocEvents> {
         self.doc.events.as_deref()
     }
 
-    pub fn events_mut(&mut self) -> &mut DocEvents {
+    pub fn doc_events_mut(&mut self) -> &mut DocEvents {
         self.doc.events.get_or_init()
-    }
-
-    /// Encodes changes made within the scope of the current transaction using lib0 v1 lib0.
-    ///
-    /// Document updates are idempotent and commutative. Caveats:
-    /// * It doesn't matter in which order document updates are applied.
-    /// * As long as all clients receive the same document updates, all clients
-    ///   end up with the same content.
-    /// * Even if an update contains known information, the unknown information
-    ///   is extracted and integrated into the document structure.
-    pub fn encode_update_v1(&self) -> Vec<u8> {
-        let mut encoder = EncoderV1::new();
-        self.encode_update(&mut encoder);
-        encoder.to_vec()
-    }
-
-    /// Encodes changes made within the scope of the current transaction using lib0 v2 lib0.
-    ///
-    /// Document updates are idempotent and commutative. Caveats:
-    /// * It doesn't matter in which order document updates are applied.
-    /// * As long as all clients receive the same document updates, all clients
-    ///   end up with the same content.
-    /// * Even if an update contains known information, the unknown information
-    ///   is extracted and integrated into the document structure.
-    pub fn encode_update_v2(&self) -> Vec<u8> {
-        let mut encoder = EncoderV2::new();
-        self.encode_update(&mut encoder);
-        encoder.to_vec()
-    }
-
-    /// Encodes changes made within the scope of the current transaction.
-    ///
-    /// Document updates are idempotent and commutative. Caveats:
-    /// * It doesn't matter in which order document updates are applied.
-    /// * As long as all clients receive the same document updates, all clients
-    ///   end up with the same content.
-    /// * Even if an update contains known information, the unknown information
-    ///   is extracted and integrated into the document structure.
-    pub fn encode_update<E: Encoder>(&self, encoder: &mut E) {
-        let store = &*self.doc;
-        store.write_blocks_from(self.before_state(), encoder);
-        self.delete_set().encode(encoder);
     }
 
     /// Applies a deserialized [Update] contents into a document owning current transaction. Update
@@ -583,28 +639,23 @@ impl<D: DocHandle + DerefMut> Transaction<D> {
     /// events.
     ///
     /// This step is performed automatically when a transaction is about to be dropped (its life
-    /// scope comes to an end).
-    pub fn commit(&mut self) {
-        match self.state.as_deref() {
-            None => return,
-            Some(state) if state.committed => return,
-            _ => {}
-        }
-        // observers are given a `TransactionMut` view of this transaction. It's never dropped,
-        // since its state is moved back once commit is finished.
-        let mut view = ManuallyDrop::new(Transaction {
+    /// scope comes to an end). Outcome of the commit is passed to a `reporter`. Commit consumes
+    /// the transaction, so it cannot be committed twice.
+    pub fn commit<R: Reporter>(mut self, reporter: &mut R) {
+        // observers are given a `TransactionMut` view of this transaction. Its state is cleared
+        // by commit, so neither the view nor `self` commits again when dropped.
+        let mut view = Transaction {
             doc: &mut *self.doc,
             state: self.state.take(),
-        });
-        view.commit_view();
-        self.state = view.state.take();
+        };
+        view.commit_view(reporter);
     }
 }
 
 /// Commit path of read-write transactions. Committed transaction is represented as
 /// `Transaction<&mut Doc>` view, which is also passed to transaction observers.
 impl<'doc> Transaction<&'doc mut Doc> {
-    fn commit_view(&mut self) {
+    fn commit_view<R: Reporter>(&mut self, reporter: &mut R) {
         match self.state.as_ref() {
             None => return,
             Some(state) if state.committed => return,
@@ -631,6 +682,25 @@ impl<'doc> Transaction<&'doc mut Doc> {
         if let Some(mut events) = self.doc.events.take() {
             events.emit_after_transaction(self);
             self.doc.events = Some(events);
+        }
+
+        // report the transaction before GC, while its deleted content still renders
+        {
+            let tx = self.as_readonly();
+            reporter.fill(tx);
+            reporter.committing(tx);
+        }
+
+        // keep content deleted under reporter's scope from being GC'ed
+        if let Some(scope) = reporter.keep(self.as_readonly()) {
+            let state = self.state.as_deref().unwrap();
+            for slice in state.delete_set.iter_blocks(&self.doc.blocks) {
+                if let Some(item) = slice.as_item() {
+                    if scope.iter().any(|node| node.is_parent_of(Some(item))) {
+                        item.keep(true);
+                    }
+                }
+            }
         }
 
         // 5. try GC delete set
@@ -682,10 +752,15 @@ impl<'doc> Transaction<&'doc mut Doc> {
             self.doc.events = Some(events);
         }
 
+        reporter.encode(self.as_readonly());
+
         // 10. add and remove subdocs
         if let Some(subdocs) = self.state.as_mut().unwrap().subdocs.take() {
             self.handle_subdoc_events(subdocs);
         }
+
+        reporter.committed(self.as_readonly());
+        self.state = None;
     }
 
     fn call_type_observers(
@@ -1381,6 +1456,8 @@ impl<D: DocHandle> Drop for Transaction<D> {
     fn drop(&mut self) {
         if let Some(state) = self.state.as_deref()
             && !state.committed
+            && !std::thread::panicking()
+        // drop during panics should not trigger commit
         {
             self.commit_internal();
         }
@@ -1399,7 +1476,7 @@ impl<D: DocHandle> Transaction<D> {
                 doc,
                 state: self.state.take(),
             };
-            txn.commit_view();
+            txn.commit_view(&mut NoReporter);
         }
     }
 }
@@ -1418,11 +1495,29 @@ impl<'doc> Iterator for RootRefs<'doc> {
     }
 }
 
-#[derive(Default)]
+/// Guids of subdocuments added, removed and loaded within a transaction.
+#[derive(Default, Debug, Clone)]
 pub struct Subdocs {
     pub(crate) added: HashSet<crate::Uuid>,
     pub(crate) removed: HashSet<crate::Uuid>,
     pub(crate) loaded: HashSet<crate::Uuid>,
+}
+
+impl Subdocs {
+    /// Guids of subdocuments added to the document.
+    pub fn added(&self) -> &HashSet<crate::Uuid> {
+        &self.added
+    }
+
+    /// Guids of subdocuments removed from the document.
+    pub fn removed(&self) -> &HashSet<crate::Uuid> {
+        &self.removed
+    }
+
+    /// Guids of subdocuments which requested to be loaded.
+    pub fn loaded(&self) -> &HashSet<crate::Uuid> {
+        &self.loaded
+    }
 }
 
 /// A binary marker that can be assigned to a read-write transaction upon creation via

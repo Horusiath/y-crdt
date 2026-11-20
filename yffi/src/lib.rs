@@ -11,7 +11,7 @@ use std::sync::Arc;
 use yrs::lib0::{Decode, Encode};
 use yrs::node::{Attrs, NodePtr, PathSegment};
 use yrs::{
-    Any, Assoc, AttrOp, DefaultFormatter, Delta, DeltaOptions, In, JsonPath, JsonPathEval, LinkSource, NodeID,
+    Any, Assoc, AttrOp, Delta, DeltaOptions, In, JsonPath, JsonPathEval, LinkSource, NodeID,
     NodeRef, Op, Options, Origin, Snapshot, StateVector, StickyIndex, Update,
 };
 
@@ -1197,18 +1197,9 @@ pub unsafe extern "C" fn yevent_transaction(event: *const YEvent) -> *const Tran
 /// accepted by `ytransaction_json_path`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn yevent_path(event: *const YEvent) -> *mut c_char {
-    let txn = (*(*event).txn).read();
     let target = (*event).event().target();
-    let mut root = target.id();
-    while let NodeID::Nested(_) = root {
-        root = txn.node(root).and_then(|n| n.parent()).unwrap();
-    }
-    let NodeID::Root(name) = root else {
-        unreachable!()
-    };
     let mut path = String::from("$");
-    push_key(&mut path, &name);
-    for segment in target.formatted(&DefaultFormatter).path() {
+    for segment in target.path() {
         match segment {
             PathSegment::Key(key) => push_key(&mut path, &key),
             PathSegment::Index(i) => write!(path, "[{}]", i).unwrap(),

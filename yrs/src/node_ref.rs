@@ -5,7 +5,7 @@ use crate::formatter::{
     AttributedFragment, DefaultFormatter, DeltaFormatter, Last, RenderMode, formatted_len,
 };
 use crate::lib0;
-use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, TypeRef};
+use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, PathSegment, TypeRef};
 use crate::slice::BlockSlice;
 use crate::transaction::DocHandle;
 use crate::{
@@ -81,15 +81,23 @@ where
         StickyIndex::at_fmt(self.node.txn(), self.node.ptr, index, assoc, self.fmt)
     }
 
-    /// A path from the root type down to this node.
+    /// A path from the document down to this node, starting with the root type name.
     pub fn path(&self) -> Path {
-        let mut root = self.node.ptr;
-        while let Some(item) = root.item {
-            root = *item.parent.as_node().unwrap();
-        }
-        let kind = self.node.txn().doc().offset_kind();
-        Node::path(root, self.node.ptr, kind, self.fmt)
+        doc_path(self.node.ptr, self.node.txn().doc().offset_kind(), self.fmt)
     }
+}
+
+/// A path from the document down to `node`, starting with the root type name.
+fn doc_path<F: DeltaFormatter>(node: NodePtr, kind: OffsetKind, fmt: &F) -> Path {
+    let mut root = node;
+    while let Some(item) = root.item {
+        root = *item.parent.as_node().unwrap();
+    }
+    let mut path = Node::path(root, node, kind, fmt);
+    if let Some(name) = &root.name {
+        path.push_front(PathSegment::Key(name.clone()));
+    }
+    path
 }
 
 impl<'f, 'n, T, D, F> Formatted<'f, &'n mut NodeRef<T>, F>
@@ -138,6 +146,11 @@ where
             &DefaultFormatter,
             index,
         )
+    }
+
+    /// A path from the document down to this node, starting with the root type name.
+    pub fn path(&self) -> Path {
+        doc_path(self.ptr, self.txn.doc.offset_kind(), &DefaultFormatter)
     }
 
     /// The parent type, or `None` for root-level types.
@@ -1302,10 +1315,14 @@ impl WalkState {
     }
 }
 
-/// Piece-wise op sizes: string-ish content by length, other content one per piece.
+/// Piece-wise op sizes: string-ish and multi-value content by length, other content one per piece.
 fn piece_count(content: Option<&ItemContent>, len: u32) -> u32 {
     match content {
-        None | Some(ItemContent::String(_)) | Some(ItemContent::Deleted(_)) => len,
+        None
+        | Some(ItemContent::String(_))
+        | Some(ItemContent::Deleted(_))
+        | Some(ItemContent::Any(_))
+        | Some(ItemContent::JSON(_)) => len,
         _ => 1,
     }
 }

@@ -1539,7 +1539,6 @@ impl Item {
                 collector.mark(&self.id);
             } else {
                 self.content = ItemContent::Deleted(len);
-                self.info.clear_countable();
             }
         }
     }
