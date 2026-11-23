@@ -635,6 +635,7 @@ mod reporter;
 mod slice;
 mod state_vector;
 mod sticky_index;
+mod sync;
 #[doc(hidden)]
 pub mod test_utils;
 mod transact;
