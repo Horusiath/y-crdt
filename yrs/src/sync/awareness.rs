@@ -81,16 +81,15 @@ pub trait Awareness {
 
     /// Sets a current [Awareness] instance state to a corresponding JSON string. This state will
     /// be replicated to other clients as part of the [AwarenessUpdate]. The clock is bumped on
-    /// every call. Returns the previous state if the new one differs from it (`"null"` when there
-    /// was no previous state), or `None` if the state didn't change.
+    /// every call. Returns the previous state if the new one differs from it, or `None` if there
+    /// was no previous state or the state didn't change.
     fn insert_state(&mut self, client_id: ClientID, data: Self::State) -> Option<Self::State> {
         let timestamp = self.now();
         let state = self.state_or_default(client_id);
-        if state.clock == 0 || state.data.as_ref() != Some(&data) {
-            let prev = state.data.replace(data);
-            state.clock += 1;
-            state.last_updated = timestamp;
-            prev
+        state.clock += 1;
+        state.last_updated = timestamp;
+        if state.data.as_ref() != Some(&data) {
+            state.data.replace(data)
         } else {
             None
         }
@@ -153,6 +152,7 @@ pub trait Awareness {
         for (client_id, entry) in update.clients {
             let mut clock = entry.clock;
             let new: Option<Self::State> = serde_json::from_str(&entry.json)?;
+            let known = self.state(client_id).is_some();
             let state = self.state_or_default(client_id);
             let is_removed = state.clock == clock && new.is_none() && state.data.is_some();
             if state.clock < clock || is_removed {
@@ -165,13 +165,19 @@ pub trait Awareness {
                             clock += 1;
                         } else {
                             state.data = None;
-                            summary.removed.push(client_id);
+                            if known {
+                                summary.removed.push(client_id);
+                            }
                         }
                     }
                     new => {
-                        summary.updated.push(client_id);
-                        if state.data.is_some() && state.data != new {
-                            summary.changed.push(client_id);
+                        if !known {
+                            summary.added.push(client_id);
+                        } else {
+                            summary.updated.push(client_id);
+                            if state.data.is_some() && state.data != new {
+                                summary.changed.push(client_id);
+                            }
                         }
                         state.data = new;
                     }
@@ -367,8 +373,8 @@ mod test {
             )
             .unwrap();
         assert_eq!(summary.removed, &[ClientID::new(1)]);
-        assert!(local.state(ClientID::new(1)).is_none());
-        assert!(remote.state(ClientID::new(1)).is_none());
+        assert!(local.state(ClientID::new(1)).unwrap().data.is_none());
+        assert!(remote.state(ClientID::new(1)).unwrap().data.is_none());
 
         // stale update is ignored
         let summary = remote
@@ -380,6 +386,14 @@ mod test {
         assert!(summary.is_empty());
     }
 
+    /// Replicated part of each client state; `last_updated` is local to every replica.
+    fn replicated(states: &AwarenessMap<Any>) -> HashMap<ClientID, (u32, Option<Any>)> {
+        states
+            .iter()
+            .map(|(id, s)| (*id, (s.clock, s.data.clone())))
+            .collect()
+    }
+
     #[test]
     fn awareness_summary() -> Result<(), Box<dyn std::error::Error>> {
         const LOCAL_ID: ClientID = ClientID::new(1);
@@ -388,7 +402,7 @@ mod test {
         let mut local = AwarenessMap::<Any>::new();
         let mut remote = AwarenessMap::<Any>::new();
 
-        local.insert_state(LOCAL_ID, any!({"x":3})).unwrap();
+        assert_eq!(local.insert_state(LOCAL_ID, any!({"x":3})), None);
         let update = local.update_with_clients([LOCAL_ID])?;
         let summary = remote.apply_update(REMOTE_ID, update)?;
         assert_eq!(
@@ -422,9 +436,7 @@ mod test {
                 removed: vec![]
             }
         );
-        let local_states: HashMap<_, _> = local.iter().collect();
-        let remote_states: HashMap<_, _> = remote.iter().collect();
-        assert_eq!(local_states, remote_states);
+        assert_eq!(replicated(&local), replicated(&remote));
 
         local.remove_state(LOCAL_ID);
         let update = local.update_with_clients([LOCAL_ID])?;
@@ -438,10 +450,8 @@ mod test {
                 removed: vec![ClientID::new(1)]
             }
         );
-        assert!(local.state(ClientID::new(1)).is_none());
-        let local_states: HashMap<_, _> = local.iter().collect();
-        let remote_states: HashMap<_, _> = remote.iter().collect();
-        assert_eq!(local_states, remote_states);
+        assert!(local.state(ClientID::new(1)).unwrap().data.is_none());
+        assert_eq!(replicated(&local), replicated(&remote));
         Ok(())
     }
 }

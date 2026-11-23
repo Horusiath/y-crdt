@@ -422,8 +422,7 @@ mod test {
                 "color": "#30bced",
                 "colorLight": "#30bced33"
               }
-            }))
-            .unwrap();
+            }));
 
         let messages = [
             crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep1(
@@ -534,7 +533,7 @@ mod test {
         let mut a1 = DefaultProtocol::<Value>::new(Doc::with_client_id(1));
         let mut a2 = DefaultProtocol::<Value>::new(Doc::with_client_id(2));
 
-        a1.set_state(json!({"x":3})).unwrap();
+        a1.set_state(json!({"x":3}));
         let result = a1.handle_awareness_query().unwrap();
 
         assert_eq!(
@@ -553,7 +552,7 @@ mod test {
             .collect();
         assert_eq!(
             a2_clients,
-            HashMap::from([(&ClientID::new(1), "{\"x\":3}".into())])
+            HashMap::from([(&ClientID::new(1), json!({"x":3}))])
         );
     }
 }
