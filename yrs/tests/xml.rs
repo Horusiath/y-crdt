@@ -1,9 +1,9 @@
 use yrs::lib0::Decode;
-use yrs::node::{Attrs, Observable};
-use yrs::test_utils::exchange_updates;
+use yrs::node::Attrs;
+use yrs::test_utils::{exchange_updates, on_commit};
 use yrs::{
-    Acquire, AcquireMut, Any, Attribute, Attribution, Cell, ClientID, ContentIds, Delta,
-    DeltaOptions, DiffFormatter, Doc, In, Options, Out, StateVector, Update,
+    Any, Attribute, Attribution, ClientID, ContentIds, Delta, DeltaOptions, DiffFormatter, Doc, In,
+    Options, Out, StateVector, Update,
 };
 
 #[test]
@@ -72,16 +72,7 @@ fn event_observers() {
         xml2.id
     };
 
-    let delta = Cell::new(Delta::out());
-    let delta1 = delta.clone();
-    let delta2 = delta.clone();
-    let delta = || delta.acquire().clone();
-    {
-        let txn = d1.transact();
-        txn.node(xml.clone())
-            .unwrap()
-            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(true))
-    };
+    let mut delta = Delta::out();
 
     // insert attribute
     {
@@ -89,9 +80,10 @@ fn event_observers() {
         let mut node = txn.node_mut(xml.clone()).unwrap();
         node.insert_attr("key1", "value1");
         node.insert_attr("key2", "value2");
+        txn.commit(&mut on_commit(|t| delta = t.delta(xml.clone(), true)));
     }
     assert_eq!(
-        delta(),
+        delta,
         Delta::with_name("test")
             .insert_attr("key1", "value1")
             .insert_attr("key2", "value2")
@@ -103,9 +95,10 @@ fn event_observers() {
         let mut node = txn.node_mut(xml.clone()).unwrap();
         node.insert_attr("key1", "value11");
         node.remove_attr("key2");
+        txn.commit(&mut on_commit(|t| delta = t.delta(xml.clone(), true)));
     }
     assert_eq!(
-        delta(),
+        delta,
         Delta::with_name("test")
             .insert_attr("key1", "value11")
             .remove_attr("key2")
@@ -121,10 +114,11 @@ fn event_observers() {
         let Out::Node(n2) = node.insert(1, In::Node(Box::new(Delta::with_name("div")))) else {
             unreachable!()
         };
+        txn.commit(&mut on_commit(|t| delta = t.delta(xml.clone(), true)));
         (n1.id, n2.id)
     };
     assert_eq!(
-        delta(),
+        delta,
         Delta::with_name("test")
             .insert(Out::node(n1.clone()))
             .insert(Out::node_with_delta(n2.clone(), Delta::with_name("div")))
@@ -138,10 +132,11 @@ fn event_observers() {
         let Out::Node(n) = node.insert(1, In::Node(Box::new(Delta::with_name("p")))) else {
             unreachable!()
         };
+        txn.commit(&mut on_commit(|t| delta = t.delta(xml.clone(), true)));
         n.id
     };
     assert_eq!(
-        delta(),
+        delta,
         Delta::with_name("test")
             .retain(1)
             .remove(1)
@@ -150,22 +145,16 @@ fn event_observers() {
 
     // copy updates over
     {
-        let txn = d2.transact();
-        txn.node(xml2).unwrap().observe("sub", move |e| {
-            *delta2.acquire_mut() = e.delta(true);
-        })
-    };
-
-    {
         let t1 = d1.transact();
         let mut t2 = d2.transact_mut();
         let sv = t2.state_vector();
         let update = t1.encode_diff_v1(&sv);
         t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
+        t2.commit(&mut on_commit(|t| delta = t.delta(xml2.clone(), true)));
     }
     assert_eq!(
-        delta(),
+        delta,
         Delta::with_name("test")
             .insert_attr("key1", "value11")
             .insert(Out::node(n1))

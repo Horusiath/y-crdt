@@ -5,7 +5,7 @@ use crate::formatter::{
     AttributedFragment, DefaultFormatter, DeltaFormatter, Last, RenderMode, formatted_len,
 };
 use crate::lib0;
-use crate::node::{Attrs, DeepObservable, Node, NodePtr, Observable, Path, PathSegment, TypeRef};
+use crate::node::{Attrs, Node, NodePtr, Path, PathSegment, TypeRef};
 use crate::slice::BlockSlice;
 use crate::transaction::DocHandle;
 use crate::{
@@ -32,9 +32,6 @@ impl<T> AsRef<Node> for NodeRef<T> {
         &*self.ptr
     }
 }
-
-impl<T> DeepObservable for NodeRef<T> {}
-impl<T> Observable for NodeRef<T> {}
 
 impl<T> NodeRef<T> {
     pub fn new(ptr: NodePtr, txn: T) -> Self {

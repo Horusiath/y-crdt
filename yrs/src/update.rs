@@ -1077,12 +1077,12 @@ impl Iterator for IntoBlocks {
 mod test {
     use std::collections::{HashMap, VecDeque};
     use std::iter::FromIterator;
-    use std::sync::{Arc, Mutex};
 
     use crate::block::{Block, BlockRange, ClientID, Item, ItemContent};
 
-    use crate::lib0::{Cursor, Decode, DecoderV1, Encode};
+    use crate::lib0::{Cursor, Decode, DecoderV1, Encode, Encoder, EncoderV1};
     use crate::node::TypePtr;
+    use crate::test_utils::Report;
     use crate::update::{BlockSet, Update};
     use crate::{Any, Delta, Doc, ID, IdSet, Options, Out, StateVector, merge_updates_v1};
 
@@ -1283,39 +1283,17 @@ mod test {
     #[test]
     fn merge_pending_updates() {
         let mut d0 = Doc::with_client_id(0);
-        let server_updates = Arc::new(Mutex::new(vec![]));
-        {
-            let server_updates = server_updates.clone();
-            d0.observe_update_v1("sub", move |_, update| {
-                let mut lock = server_updates.lock().unwrap();
-                lock.push(update.update.clone());
-            })
-        };
-        d0.transact_mut()
-            .node_mut("textBlock")
-            .unwrap()
-            .apply_delta(Delta::new().insert("r".to_string()));
-        d0.transact_mut()
-            .node_mut("textBlock")
-            .unwrap()
-            .apply_delta(Delta::new().insert("o".to_string()));
-        d0.transact_mut()
-            .node_mut("textBlock")
-            .unwrap()
-            .apply_delta(Delta::new().insert("n".to_string()));
-        d0.transact_mut()
-            .node_mut("textBlock")
-            .unwrap()
-            .apply_delta(Delta::new().insert("e".to_string()));
-        d0.transact_mut()
-            .node_mut("textBlock")
-            .unwrap()
-            .apply_delta(Delta::new().insert("n".to_string()));
-        d0.unobserve_update_v1("sub");
+        let mut updates = vec![];
+        for c in ["r", "o", "n", "e", "n"] {
+            let mut txn = d0.transact_mut();
+            txn.node_mut("textBlock")
+                .unwrap()
+                .apply_delta(Delta::new().insert(c.to_string()));
+            let mut r = Report::new(EncoderV1::new());
+            txn.commit(&mut r);
+            updates.push(r.encoder.to_vec());
+        }
         drop(d0);
-
-        let updates = Arc::into_inner(server_updates).unwrap();
-        let updates = updates.into_inner().unwrap();
 
         let mut d1 = Doc::with_client_id(1);
         d1.transact_mut()
@@ -1431,22 +1409,22 @@ mod test {
         c.transact_mut()
             .apply_update(Update::decode_v1(&d_state).unwrap())
             .unwrap();
-        let updates = Arc::new(Mutex::new(vec![]));
-        {
-            let updates = updates.clone();
-            c.observe_update_v1("sub", move |_, e| {
-                updates.lock().unwrap().push(e.update.clone())
-            })
+        let mut updates = vec![];
+        let mut insert = |index: u32, chunk: &str| {
+            let mut txn = c.transact_mut();
+            txn.node_mut("t").unwrap().insert_text(index, chunk);
+            let mut r = Report::new(EncoderV1::new());
+            txn.commit(&mut r);
+            updates.push(r.encoder.to_vec());
         };
 
-        c.transact_mut().node_mut("t").unwrap().insert_text(1, "a"); // C:0  "PaQ"    left D:0, right D:1
-        c.transact_mut().node_mut("t").unwrap().insert_text(2, "b"); // C:1  "PabQ"   left C:0, right D:1
-        c.transact_mut().node_mut("t").unwrap().insert_text(1, "c"); // C:2  "PcabQ"  left D:0, right C:0
-        c.transact_mut().node_mut("t").unwrap().insert_text(5, "d"); // C:3  "PcabQd" left D:1, right none
-        c.unobserve_update_v1("sub");
+        insert(1, "a"); // C:0  "PaQ"    left D:0, right D:1
+        insert(2, "b"); // C:1  "PabQ"   left C:0, right D:1
+        insert(1, "c"); // C:2  "PcabQ"  left D:0, right C:0
+        insert(5, "d"); // C:3  "PcabQd" left D:1, right none
 
         let mut msgs = vec![d_state];
-        msgs.extend(updates.lock().unwrap().iter().cloned());
+        msgs.extend(updates.iter().cloned());
         // msgs: [D state, C:0, C:1, C:2, C:3]
 
         let apply = |order: &[usize]| -> String {

@@ -1,12 +1,10 @@
+use serde::Deserialize;
 use std::collections::Bound;
 use std::ops::RangeBounds;
-use std::sync::{Arc, Mutex};
-
-use arc_swap::ArcSwapOption;
-use serde::Deserialize;
-use yrs::node::{Attrs, DeepObservable, Observable};
-use yrs::test_utils::exchange_updates;
-use yrs::{AcquireMut, AttrOp, Cell, Delta, Doc, DocHandle, NodeID, NodeRef, Out, Transaction};
+use yrs::lib0::Decode;
+use yrs::node::Attrs;
+use yrs::test_utils::{exchange_updates, on_commit};
+use yrs::{Delta, Doc, DocHandle, NodeID, NodeRef, Out, Reporter, Transaction, Update};
 
 /// Renders `value`, resolving nested nodes through `txn`.
 fn stringify<D: DocHandle>(txn: &Transaction<D>, value: &Out) -> String {
@@ -37,6 +35,34 @@ fn unquote(doc: &Doc, link: &NodeID) -> Vec<Out> {
         Some(link) => link.unquote().collect(),
         None => vec![],
     }
+}
+
+fn sync_into(from: &Doc, to: &mut Doc, r: &mut impl Reporter) {
+    let update = from
+        .transact()
+        .encode_state_as_update_v1(&to.transact().state_vector());
+    let mut txn = to.transact_mut();
+    txn.apply_update(Update::decode_v1(&update).unwrap())
+        .unwrap();
+    txn.commit(r);
+}
+
+fn deep_events<'a>(root: &NodeID, events: &'a mut Vec<(NodeID, Delta)>) -> impl Reporter + 'a {
+    let root = root.clone();
+    on_commit(move |t: &Transaction<&Doc>| {
+        let mut nodes: Vec<_> = t.modified_within(root.clone()).collect();
+        nodes.sort_by_key(|n| n.path().len());
+        events.extend(nodes.into_iter().map(|n| (n.id(), t.delta(n.id(), false))));
+    })
+}
+
+fn target<'a>(link: &NodeID, target: &'a mut Option<NodeID>) -> impl Reporter + 'a {
+    let link = link.clone();
+    on_commit(move |t: &Transaction<&Doc>| {
+        if let Some(id) = t.modified().map(|(n, _)| n.id()).find(|id| *id == link) {
+            *target = Some(id);
+        }
+    })
 }
 
 /// Renders a weak `link` as a string.
@@ -366,15 +392,6 @@ fn observe_map_update() {
         m1.insert_attr("b", Delta::link(link1)).node_id().unwrap()
     };
 
-    let target1 = Cell::new(None);
-    {
-        let target = target1.clone();
-        let txn = d1.transact();
-        txn.node(link1.clone()).unwrap().observe("sub", move |e| {
-            *target.acquire_mut() = Some(e.target().id())
-        })
-    };
-
     exchange_updates(&mut [&mut d1, &mut d2]);
 
     let link2 = d2
@@ -386,15 +403,6 @@ fn observe_map_update() {
         .node_id()
         .unwrap();
     assert_eq!(deref(&d2, &link2), Some("value".into()));
-
-    let target2 = Cell::new(None);
-    {
-        let target = target2.clone();
-        let txn = d2.transact();
-        txn.node(link2.clone()).unwrap().observe("sub", move |e| {
-            *target.acquire_mut() = Some(e.target().id())
-        })
-    };
 
     d1.transact_mut()
         .node_mut("map")
@@ -419,15 +427,6 @@ fn observe_map_delete() {
         m1.insert_attr("b", Delta::link(link1)).node_id().unwrap()
     };
 
-    let target1 = Arc::new(ArcSwapOption::default());
-    {
-        let target = target1.clone();
-        let txn = d1.transact();
-        txn.node(link1.clone()).unwrap().observe("sub", move |e| {
-            target.store(Some(Arc::new(e.target().id())))
-        })
-    };
-
     exchange_updates(&mut [&mut d1, &mut d2]);
 
     let link2 = d2
@@ -440,21 +439,21 @@ fn observe_map_delete() {
         .unwrap();
     assert_eq!(deref(&d2, &link2), Some("value".into()));
 
-    let target2 = Arc::new(ArcSwapOption::default());
-    {
-        let target = target2.clone();
-        let txn = d2.transact();
-        txn.node(link2.clone()).unwrap().observe("sub", move |e| {
-            target.store(Some(Arc::new(e.target().id())))
-        })
-    };
-
-    d1.transact_mut().node_mut("map").unwrap().remove_attr("a");
-    let l1 = target1.swap(None).unwrap();
+    let (mut target1, mut target2) = (None, None);
+    let mut txn = d1.transact_mut();
+    txn.node_mut("map").unwrap().remove_attr("a");
+    txn.commit(&mut on_commit(|t| {
+        target1 = t.modified().map(|(n, _)| n.id()).find(|id| *id == link1)
+    }));
+    let l1 = target1.unwrap();
     assert_eq!(deref(&d1, &l1), None);
 
-    exchange_updates(&mut [&mut d1, &mut d2]);
-    let l2 = target2.swap(None).unwrap();
+    sync_into(
+        &d1,
+        &mut d2,
+        &mut on_commit(|t| target2 = t.modified().map(|(n, _)| n.id()).find(|id| *id == link2)),
+    );
+    let l2 = target2.unwrap();
     assert_eq!(deref(&d2, &l2), None);
 }
 
@@ -471,15 +470,6 @@ fn observe_array() {
         a1.insert(0, Delta::link(link1)).node_id().unwrap()
     };
 
-    let target1 = Arc::new(ArcSwapOption::default());
-    {
-        let target = target1.clone();
-        let txn = d1.transact();
-        txn.node(link1.clone()).unwrap().observe("sub", move |e| {
-            target.store(Some(Arc::new(e.target().id())))
-        })
-    };
-
     exchange_updates(&mut [&mut d1, &mut d2]);
 
     let link2 = d2
@@ -492,32 +482,32 @@ fn observe_array() {
         .unwrap();
     assert_eq!(unquote(&d2, &link2), vec!["B".into(), "C".into()]);
 
-    let target2 = Arc::new(ArcSwapOption::default());
-    {
-        let target = target2.clone();
-        let txn = d2.transact();
-        txn.node(link2.clone()).unwrap().observe("sub", move |e| {
-            target.store(Some(Arc::new(e.target().id())))
-        })
-    };
+    let (mut target1, mut target2) = (None, None);
 
-    d1.transact_mut().node_mut("array").unwrap().remove(2, 1);
+    let mut txn = d1.transact_mut();
+    txn.node_mut("array").unwrap().remove(2, 1);
+    txn.commit(&mut target(&link1, &mut target1));
     assert_eq!(unquote(&d1, &link1), vec!["C".into()]);
 
-    exchange_updates(&mut [&mut d1, &mut d2]);
-    let l2 = target2.swap(None).unwrap();
+    sync_into(&d1, &mut d2, &mut target(&link2, &mut target2));
+    let l2 = target2.take().unwrap();
     assert_eq!(unquote(&d2, &l2), vec!["C".into()]);
 
-    d2.transact_mut().node_mut("array").unwrap().remove(2, 1);
-    let l2 = target2.swap(None).unwrap();
+    let mut txn = d2.transact_mut();
+    txn.node_mut("array").unwrap().remove(2, 1);
+    txn.commit(&mut target(&link2, &mut target2));
+    let l2 = target2.take().unwrap();
     assert_eq!(unquote(&d2, &l2), vec![]);
 
-    exchange_updates(&mut [&mut d1, &mut d2]);
-    let l1 = target1.swap(None).unwrap();
+    // link1 isn't modified by this sync, `target1` is still set by the local remove above
+    sync_into(&d2, &mut d1, &mut target(&link1, &mut target1));
+    let l1 = target1.take().unwrap();
     assert_eq!(unquote(&d1, &l1), vec![]);
 
-    d1.transact_mut().node_mut("array").unwrap().remove(1, 1);
-    assert_eq!(target1.swap(None), None);
+    let mut txn = d1.transact_mut();
+    txn.node_mut("array").unwrap().remove(1, 1);
+    txn.commit(&mut target(&link1, &mut target1));
+    assert_eq!(target1.take(), None);
 }
 
 #[test]
@@ -551,27 +541,13 @@ fn deep_observe_transitive() {
             .unwrap()
     };
 
-    let events = Arc::new(Mutex::new(vec![]));
-    {
-        let events = events.clone();
-        let txn = doc.transact();
-        txn.node(link2).unwrap().observe_deep("sub", move |evts| {
-            let mut er = events.lock().unwrap();
-            for e in evts.iter() {
-                er.push(e.target().id());
-            }
-        })
-    };
-    doc.transact_mut()
-        .node_mut("map2")
-        .unwrap()
-        .insert_attr("key", "value2");
-    let actual: Vec<_> = events
-        .lock()
-        .unwrap()
-        .iter()
-        .flat_map(|id| deref(&doc, id))
-        .collect();
+    let mut events = vec![];
+    let mut txn = doc.transact_mut();
+    txn.node_mut("map2").unwrap().insert_attr("key", "value2");
+    txn.commit(&mut on_commit(|t| {
+        events.extend(t.modified_within(link2.clone()).map(|n| n.id()))
+    }));
+    let actual: Vec<_> = events.iter().flat_map(|id| deref(&doc, id)).collect();
     assert_eq!(actual, vec!["value2".into()])
 }
 
@@ -613,25 +589,13 @@ fn deep_observe_transitive2() {
             .unwrap()
     };
 
-    let events = Arc::new(Mutex::new(vec![]));
-    {
-        let events = events.clone();
-        let txn = doc.transact();
-        txn.node(link3).unwrap().observe_deep("sub", move |evts| {
-            let mut er = events.lock().unwrap();
-            for e in evts.iter() {
-                er.push(e.target().id());
-            }
-        })
-    };
-    doc.transact_mut()
-        .node_mut("map2")
-        .unwrap()
-        .insert_attr("key", "value2");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let mut events = vec![];
+    let mut txn = doc.transact_mut();
+    txn.node_mut("map2").unwrap().insert_attr("key", "value2");
+    txn.commit(&mut on_commit(|t| {
+        events.extend(t.modified_within(link3.clone()).map(|n| n.id()))
+    }));
+    let actual = std::mem::take(&mut events);
     let actual: Vec<_> = actual.into_iter().flat_map(|id| deref(&doc, &id)).collect();
     assert_eq!(actual, vec!["value2".into()])
 }
@@ -648,17 +612,7 @@ fn deep_observe_map() {
     */
     let mut doc = Doc::with_client_id(1);
 
-    let events = Arc::new(Mutex::new(vec![]));
-    {
-        let events = events.clone();
-        let mut txn = doc.transact_mut();
-        txn.node_mut("map").unwrap().observe_deep("sub", move |e| {
-            let mut rs = events.lock().unwrap();
-            for e in e.iter_mut() {
-                rs.push((e.target().id(), e.delta(false)));
-            }
-        })
-    };
+    let mut events = vec![];
 
     let (nested, link) = {
         let mut txn = doc.transact_mut();
@@ -676,40 +630,33 @@ fn deep_observe_map() {
     };
 
     // update entry in linked map
-    events.lock().unwrap().clear();
-    doc.transact_mut()
-        .node_mut(nested.clone())
+    events.clear();
+    let mut txn = doc.transact_mut();
+    txn.node_mut(nested.clone())
         .unwrap()
         .insert_attr("key", "value");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    txn.commit(&mut deep_events(&NodeID::from("map"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(nested.clone(), Delta::out().insert_attr("key", "value"))]
     );
 
     // delete entry in linked map
-    doc.transact_mut()
-        .node_mut(nested.clone())
-        .unwrap()
-        .remove_attr("key");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let mut txn = doc.transact_mut();
+    txn.node_mut(nested.clone()).unwrap().remove_attr("key");
+    txn.commit(&mut deep_events(&NodeID::from("map"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(nested.clone(), Delta::out().remove_attr("key"),)]
     );
 
     // delete linked map
-    doc.transact_mut().node_mut("array").unwrap().remove(0, 1);
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let mut txn = doc.transact_mut();
+    txn.node_mut("array").unwrap().remove(0, 1);
+    txn.commit(&mut deep_events(&NodeID::from("map"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(actual, vec![(link.clone(), Delta::out())]);
 }
 
@@ -741,69 +688,45 @@ fn deep_observe_array() {
         (nested, link)
     };
 
-    let events = Arc::new(Mutex::new(vec![]));
-    {
-        let events = events.clone();
-        let mut txn = doc.transact_mut();
-        txn.node_mut("array")
-            .unwrap()
-            .observe_deep("sub", move |e| {
-                let mut events = events.lock().unwrap();
-                for e in e.iter_mut() {
-                    events.push((e.target().id(), e.delta(false)));
-                }
-            })
-    };
-    doc.transact_mut()
-        .node_mut(nested.clone())
+    let mut events = vec![];
+    let mut txn = doc.transact_mut();
+    txn.node_mut(nested.clone())
         .unwrap()
         .insert_attr("key", "value");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    txn.commit(&mut deep_events(&NodeID::from("array"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(nested.clone(), Delta::out().insert_attr("key", "value"))]
     );
 
     // update existing entry
-    doc.transact_mut()
-        .node_mut(nested.clone())
+    let mut txn = doc.transact_mut();
+    txn.node_mut(nested.clone())
         .unwrap()
         .insert_attr("key", "value2");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    txn.commit(&mut deep_events(&NodeID::from("array"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(nested.clone(), Delta::out().insert_attr("key", "value2"),)]
     );
 
     // delete entry in linked map
-    doc.transact_mut()
-        .node_mut(nested.clone())
-        .unwrap()
-        .remove_attr("key");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let mut txn = doc.transact_mut();
+    txn.node_mut(nested.clone()).unwrap().remove_attr("key");
+    txn.commit(&mut deep_events(&NodeID::from("array"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(nested.clone(), Delta::out().remove_attr("key"))]
     );
 
     // delete linked map
-    doc.transact_mut()
-        .node_mut("map")
-        .unwrap()
-        .remove_attr("nested");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let mut txn = doc.transact_mut();
+    txn.node_mut("map").unwrap().remove_attr("nested");
+    txn.commit(&mut deep_events(&NodeID::from("array"), &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(actual, vec![(link.clone(), Delta::out())]);
 }
 
@@ -829,18 +752,7 @@ fn deep_observe_new_element_within_quoted_range() {
 
     exchange_updates(&mut [&mut d1, &mut d2]);
 
-    let e1 = Arc::new(Mutex::new(vec![]));
-    let _s1 = {
-        let events = e1.clone();
-        let txn = d1.transact();
-        txn.node(l1).unwrap().observe_deep("sub", move |e| {
-            let mut events = events.lock().unwrap();
-            events.clear();
-            for e in e.iter_mut() {
-                events.push((e.target().id(), e.delta(false)));
-            }
-        })
-    };
+    let mut e1 = vec![];
 
     let l2 = d2
         .transact()
@@ -850,18 +762,7 @@ fn deep_observe_new_element_within_quoted_range() {
         .unwrap()
         .node_id()
         .unwrap();
-    let e2 = Arc::new(Mutex::new(vec![]));
-    let _s2 = {
-        let events = e2.clone();
-        let txn = d2.transact();
-        txn.node(l2).unwrap().observe_deep("sub", move |e| {
-            let mut events = events.lock().unwrap();
-            events.clear();
-            for e in e.iter_mut() {
-                events.push((e.target().id(), e.delta(false)));
-            }
-        })
-    };
+    let mut e2 = vec![];
 
     let m20 = d1
         .transact_mut()
@@ -871,16 +772,17 @@ fn deep_observe_new_element_within_quoted_range() {
         .node_id()
         .unwrap();
     exchange_updates(&mut [&mut d1, &mut d2]);
-    d1.transact_mut()
-        .node_mut(m20.clone())
+    let mut txn = d1.transact_mut();
+    txn.node_mut(m20.clone())
         .unwrap()
         .insert_attr("key", "value");
+    txn.commit(&mut deep_events(&l1, &mut e1));
     assert_eq!(
-        &*e1.lock().unwrap(),
+        &e1,
         &vec![(m20.clone(), Delta::out().insert_attr("key", "value"))]
     );
 
-    exchange_updates(&mut [&mut d1, &mut d2]);
+    sync_into(&d1, &mut d2, &mut deep_events(&l2, &mut e2));
 
     let m21 = d2
         .transact()
@@ -891,7 +793,7 @@ fn deep_observe_new_element_within_quoted_range() {
         .node_id()
         .unwrap();
     assert_eq!(
-        &*e2.lock().unwrap(),
+        &e2,
         &vec![(m21.clone(), Delta::out().insert_attr("key", "value"))]
     );
 }
@@ -938,52 +840,34 @@ fn deep_observe_recursive() {
         (m0, m1, m2)
     };
 
-    let events = Arc::new(Mutex::new(vec![]));
-    {
-        let events = events.clone();
-        let mut txn = doc.transact_mut();
-        txn.node_mut(m0).unwrap().observe_deep("sub", move |e| {
-            let mut rs = events.lock().unwrap();
-            for e in e.iter_mut() {
-                rs.push((e.target().id(), e.delta(false)));
-            }
-        })
-    };
+    let mut events = vec![];
 
-    doc.transact_mut()
-        .node_mut(m1.clone())
+    let mut txn = doc.transact_mut();
+    txn.node_mut(m1.clone())
         .unwrap()
         .insert_attr("test-key1", "value1");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    txn.commit(&mut deep_events(&m0, &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(m1.clone(), Delta::out().insert_attr("test-key1", "value1"))]
     );
 
-    doc.transact_mut()
-        .node_mut(m2.clone())
+    let mut txn = doc.transact_mut();
+    txn.node_mut(m2.clone())
         .unwrap()
         .insert_attr("test-key2", "value2");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    txn.commit(&mut deep_events(&m0, &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(m2.clone(), Delta::out().insert_attr("test-key2", "value2"))]
     );
 
-    doc.transact_mut()
-        .node_mut(m1.clone())
-        .unwrap()
-        .remove_attr("test-key1");
-    let actual = {
-        let mut guard = events.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let mut txn = doc.transact_mut();
+    txn.node_mut(m1.clone()).unwrap().remove_attr("test-key1");
+    txn.commit(&mut deep_events(&m0, &mut events));
+    let actual = std::mem::take(&mut events);
     assert_eq!(
         actual,
         vec![(m1.clone(), Delta::out().remove_attr("test-key1"))]

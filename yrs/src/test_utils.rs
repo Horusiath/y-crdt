@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use fastrand::Rng;
@@ -8,10 +8,111 @@ use fastrand::Rng;
 use crate::block::{Block, ClientID};
 use crate::block_store::ClientBlockList;
 use crate::lib0::{Cursor, Decode, Decoder, DecoderV1, Encode, Encoder, EncoderV1, Read, Write};
+use crate::node::NodePtr;
 use crate::update::BlockSet;
-use crate::{Doc, Options, StateVector, Update};
+use crate::{
+    Doc, IdSet, Modified, Options, Reporter, StateVector, Subdocs, Transaction, TransactionMut,
+    Update,
+};
 
 pub const EXCHANGE_UPDATES_ORIGIN: &str = "exchange_updates";
+
+/// Requests every storage, with an encoder of choice.
+pub struct Report<E> {
+    pub encoder: E,
+    pub inserts: IdSet,
+    pub deletes: IdSet,
+    pub modified: Modified,
+    pub parents: Vec<NodePtr>,
+    pub before: StateVector,
+    pub after: StateVector,
+    pub subdocs: Subdocs,
+}
+
+impl<E> Report<E> {
+    pub fn new(encoder: E) -> Self {
+        Report {
+            encoder,
+            inserts: IdSet::new(),
+            deletes: IdSet::new(),
+            modified: Modified::new(),
+            parents: Vec::new(),
+            before: StateVector::default(),
+            after: StateVector::default(),
+            subdocs: Subdocs::default(),
+        }
+    }
+}
+
+impl<E: Encoder> Reporter for Report<E> {
+    type Encoder = E;
+
+    fn encoder(&mut self) -> Option<&mut E> {
+        Some(&mut self.encoder)
+    }
+    fn inserts(&mut self) -> Option<&mut IdSet> {
+        Some(&mut self.inserts)
+    }
+    fn deletes(&mut self) -> Option<&mut IdSet> {
+        Some(&mut self.deletes)
+    }
+    fn modified(&mut self) -> Option<&mut Modified> {
+        Some(&mut self.modified)
+    }
+    fn changed_parent_types(&mut self) -> Option<&mut Vec<NodePtr>> {
+        Some(&mut self.parents)
+    }
+    fn before_state(&mut self) -> Option<&mut StateVector> {
+        Some(&mut self.before)
+    }
+    fn after_state(&mut self) -> Option<&mut StateVector> {
+        Some(&mut self.after)
+    }
+    fn subdocs(&mut self) -> Option<&mut Subdocs> {
+        Some(&mut self.subdocs)
+    }
+}
+
+/// Calls a closure with the committing transaction (before GC).
+pub struct OnCommit<F>(F);
+
+pub fn on_commit<F: FnMut(&Transaction<&Doc>)>(f: F) -> OnCommit<F> {
+    OnCommit(f)
+}
+
+impl<F: FnMut(&Transaction<&Doc>)> Reporter for OnCommit<F> {
+    type Encoder = EncoderV1;
+
+    fn committing(&mut self, txn: &Transaction<&Doc>) {
+        (self.0)(txn)
+    }
+}
+
+/// Calls a closure with the committed transaction (after GC).
+pub struct OnCommitted<F>(F);
+
+pub fn on_committed<F: FnMut(&Transaction<&Doc>)>(f: F) -> OnCommitted<F> {
+    OnCommitted(f)
+}
+
+impl<F: FnMut(&Transaction<&Doc>)> Reporter for OnCommitted<F> {
+    type Encoder = EncoderV1;
+
+    fn committed(&mut self, txn: &Transaction<&Doc>) {
+        (self.0)(txn)
+    }
+}
+
+/// Keeps content deleted under given nodes.
+pub struct Keep(pub HashSet<NodePtr>);
+
+impl Reporter for Keep {
+    type Encoder = EncoderV1;
+
+    fn keep(&self, _: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
+        Some(&self.0)
+    }
+}
 
 /// Creates a copy of a `doc` with all of its content - a port of Yjs `cloneDoc`.
 pub fn clone_doc(doc: &Doc, options: Option<Options>) -> Doc {
@@ -58,7 +159,7 @@ const MSG_SYNC_UPDATE: usize = 2;
 
 pub fn run_scenario<F>(mut seed: u64, mods: &[F], users: usize, iterations: usize)
 where
-    F: Fn(&mut Doc, &mut Rng),
+    F: Fn(&mut TransactionMut, &mut Rng),
 {
     if seed == 0 {
         seed = fastrand::get_seed();
@@ -90,7 +191,14 @@ where
             let peer = &mut inner.peers[idx];
             let test = rng.choice(mods).unwrap();
             let mut peer_state = peer.state();
-            test(&mut peer_state.doc, rng);
+            let mut txn = peer_state.doc.transact_mut();
+            test(&mut txn, rng);
+            let mut r = Report::new(EncoderV1::new());
+            txn.commit(&mut r);
+            let update = r.encoder.to_vec();
+            if !update.is_empty() {
+                peer.outbox.lock().unwrap().push_back(update);
+            }
         };
         tc.broadcast_pending();
     }
@@ -162,18 +270,6 @@ impl TestConnector {
         } else {
             let rc = self.0.clone();
             let instance = TestPeer::new(client_id);
-            {
-                let outbox = instance.outbox.clone();
-                let mut peer_state = instance.state();
-
-                peer_state.doc.observe_update_v1("sub", move |tx, e| {
-                    if tx.origin() != Some(&EXCHANGE_UPDATES_ORIGIN.into()) {
-                        // only local
-                        let mut outbox = outbox.lock().unwrap();
-                        outbox.push_back(e.update.clone());
-                    }
-                })
-            };
             let mut inner = rc.lock().unwrap();
             let idx = inner.peers.len();
             inner.peers.push(instance);

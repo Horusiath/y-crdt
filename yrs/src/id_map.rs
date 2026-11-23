@@ -834,23 +834,10 @@ mod test {
 
     #[test]
     fn attribution_encoding() {
-        use crate::{Acquire, AcquireMut, AttrValue, Cell, Doc};
-        let attributions = Cell::new(IdMap::<AttrValue>::new());
+        use crate::test_utils::on_committed;
+        use crate::{AttrValue, Doc};
+        let mut attributions = IdMap::<AttrValue>::new();
         let mut doc = Doc::with_client_id(1);
-        let a = attributions.clone();
-        doc.observe_after_transaction("attr", move |txn| {
-            let mut a = a.acquire_mut();
-            let ins = vec![
-                ContentAttribute::insert("userX"),
-                ContentAttribute::insert_at(42),
-            ];
-            let del = vec![
-                ContentAttribute::delete("userX"),
-                ContentAttribute::delete_at(42),
-            ];
-            a.merge_with(IdMap::from_set(txn.insert_set(), ins));
-            a.merge_with(IdMap::from_set(txn.delete_set(), del));
-        });
         for i in 0..100u32 {
             let mut txn = doc.transact_mut();
             let mut text = txn.node_mut("text").unwrap();
@@ -861,8 +848,19 @@ mod test {
             } else {
                 text.insert_text(fastrand::u32(0..=len), "word");
             }
+            txn.commit(&mut on_committed(|t| {
+                let ins = vec![
+                    ContentAttribute::insert("userX"),
+                    ContentAttribute::insert_at(42),
+                ];
+                let del = vec![
+                    ContentAttribute::delete("userX"),
+                    ContentAttribute::delete_at(42),
+                ];
+                attributions.merge_with(IdMap::from_set(t.insert_set(), ins));
+                attributions.merge_with(IdMap::from_set(t.delete_set(), del));
+            }));
         }
-        let attributions = attributions.acquire().clone();
         assert!(!attributions.is_empty());
         let decoded = IdMap::<AttrValue>::decode_v1(&attributions.encode_v1()).unwrap();
         assert_eq!(decoded, attributions);

@@ -46,7 +46,7 @@ pub trait Reporter {
     fn keep(&self, _txn: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
         None
     }
-    /// Called after observers ran and before GC, with storages (except `encoder`) already filled.
+    /// Called after changes are collected and before GC, with storages (except `encoder`) already filled.
     /// This is where deltas of the transaction should be read: GC'ed content doesn't render.
     fn committing(&mut self, _txn: &Transaction<&Doc>) {}
     /// Called last with the committed transaction, after GC, before its state is cleared.
@@ -230,92 +230,13 @@ impl<A: Reporter, B: Reporter> Reporter for (A, B) {
 
 #[cfg(test)]
 mod test {
-    use super::{NoReporter, Reporter};
+    use super::NoReporter;
     use crate::block::{ClientID, ItemContent};
     use crate::lib0::{Decode, Encoder, EncoderV1, EncoderV2};
-    use crate::node::{NodePtr, Observable, PathSegment};
-    use crate::{
-        Acquire, AcquireMut, Any, Cell, Delta, Doc, ID, IdSet, Modified, NodeID, StateVector,
-        Transaction, Update,
-    };
+    use crate::node::PathSegment;
+    use crate::test_utils::{Keep, Report, on_commit};
+    use crate::{Delta, Doc, ID, IdSet, NodeID, Origin, Update};
     use std::collections::{HashMap, HashSet};
-
-    /// Requests every storage, with an encoder of choice.
-    struct Report<E> {
-        encoder: E,
-        inserts: IdSet,
-        deletes: IdSet,
-        modified: Modified,
-        parents: Vec<NodePtr>,
-        before: StateVector,
-        after: StateVector,
-    }
-
-    impl<E> Report<E> {
-        fn new(encoder: E) -> Self {
-            Report {
-                encoder,
-                inserts: IdSet::new(),
-                deletes: IdSet::new(),
-                modified: Modified::new(),
-                parents: Vec::new(),
-                before: StateVector::default(),
-                after: StateVector::default(),
-            }
-        }
-    }
-
-    impl<E: Encoder> Reporter for Report<E> {
-        type Encoder = E;
-
-        fn encoder(&mut self) -> Option<&mut E> {
-            Some(&mut self.encoder)
-        }
-        fn inserts(&mut self) -> Option<&mut IdSet> {
-            Some(&mut self.inserts)
-        }
-        fn deletes(&mut self) -> Option<&mut IdSet> {
-            Some(&mut self.deletes)
-        }
-        fn modified(&mut self) -> Option<&mut Modified> {
-            Some(&mut self.modified)
-        }
-        fn changed_parent_types(&mut self) -> Option<&mut Vec<NodePtr>> {
-            Some(&mut self.parents)
-        }
-        fn before_state(&mut self) -> Option<&mut StateVector> {
-            Some(&mut self.before)
-        }
-        fn after_state(&mut self) -> Option<&mut StateVector> {
-            Some(&mut self.after)
-        }
-    }
-
-    /// Calls a closure with the committing transaction (before GC).
-    struct OnCommit<F>(F);
-
-    fn on_commit<F: FnMut(&Transaction<&Doc>)>(f: F) -> OnCommit<F> {
-        OnCommit(f)
-    }
-
-    impl<F: FnMut(&Transaction<&Doc>)> Reporter for OnCommit<F> {
-        type Encoder = EncoderV1;
-
-        fn committing(&mut self, txn: &Transaction<&Doc>) {
-            (self.0)(txn)
-        }
-    }
-
-    /// Keeps content deleted under given nodes.
-    struct Keep(HashSet<NodePtr>);
-
-    impl Reporter for Keep {
-        type Encoder = EncoderV1;
-
-        fn keep(&self, _: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
-            Some(&self.0)
-        }
-    }
 
     fn insert_text(doc: &mut Doc, text: &str) {
         doc.transact_mut()
@@ -396,14 +317,10 @@ mod test {
     #[test]
     fn no_reporter_commit() {
         let mut doc = Doc::with_client_id(1);
-        let updates = Cell::new(0);
-        let updates_c = updates.clone();
-        doc.observe_update_v1("sub", move |_, _| *updates_c.acquire_mut() += 1);
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().insert_text(0, "abc");
         txn.commit(&mut NoReporter);
         assert_eq!(text(&doc), "abc");
-        assert_eq!(*updates.acquire(), 1);
     }
 
     #[test]
@@ -529,5 +446,58 @@ mod test {
         assert!(!ra.inserts.is_empty() && ra.inserts == rb.inserts);
         assert!(!rb.encoder.to_vec().is_empty());
         assert_eq!((a, b), (1, 1));
+    }
+
+    #[test]
+    fn delta_deep_includes_nested_changes() {
+        let mut doc = Doc::with_client_id(1);
+        let nested = {
+            let mut txn = doc.transact_mut();
+            let mut map = txn.node_mut("map").unwrap();
+            map.insert_attr("nested", Delta::new().insert(1))
+                .node_id()
+                .unwrap()
+        };
+        let mut deltas = vec![];
+        let mut txn = doc.transact_mut();
+        txn.node_mut("map").unwrap().insert_attr("a", 1);
+        txn.node_mut(nested).unwrap().push_back(2);
+        txn.commit(&mut on_commit(|t| {
+            deltas.push((t.delta("map", false), t.delta("map", true)))
+        }));
+        let shallow = Delta::out().insert_attr("a", 1);
+        let deep = shallow
+            .clone()
+            .modify_attr("nested", Delta::out().retain(1).insert(2));
+        assert_eq!(deltas, vec![(shallow, deep)]);
+    }
+
+    #[test]
+    fn is_added_and_is_deleted() {
+        let mut doc = Doc::with_client_id(1);
+        let mut flags = [(false, false); 2];
+        let mut txn = doc.transact_mut();
+        let mut array = txn.node_mut("array").unwrap();
+        array.push_back(1);
+        array.push_back(2);
+        array.remove(0, 1);
+        txn.commit(&mut on_commit(|t| {
+            let ids = [ID::new(ClientID::new(1), 0), ID::new(ClientID::new(1), 1)];
+            flags = ids.map(|id| (t.has_added(&id), t.has_deleted(&id)));
+        }));
+        assert_eq!(flags, [(true, true), (true, false)]);
+    }
+
+    #[test]
+    fn observe_deep_receives_only_own_subtree_events() {
+        let mut doc = Doc::with_client_id(1);
+        let mut targets = vec![];
+        let mut txn = doc.transact_mut();
+        txn.node_mut("a").unwrap().insert_attr("key", 1);
+        txn.node_mut("b").unwrap().insert_attr("key", 1);
+        txn.commit(&mut on_commit(|t| {
+            targets.extend(t.modified_within("a").map(|n| n.id()))
+        }));
+        assert_eq!(targets, vec![NodeID::from("a")]);
     }
 }

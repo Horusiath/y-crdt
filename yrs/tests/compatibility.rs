@@ -2,15 +2,13 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::BufReader;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use yrs::IdSet;
 use yrs::Update;
 use yrs::block::{Block, ClientID, Item, ItemContent};
-use yrs::lib0::{Decode, Decoder, DecoderV1, Encode, Read};
+use yrs::lib0::{Decode, Decoder, DecoderV1, Encode, Encoder, EncoderV1, Read};
 use yrs::node::{Node, TypePtr, TypeRef};
-use yrs::test_utils::Blocks;
+use yrs::test_utils::{Blocks, Report};
 use yrs::{Any, Delta, Doc, ID, In, Out, StateVector};
 
 #[test]
@@ -103,12 +101,16 @@ fn text_insert_delete() {
         ds.insert(ID::new(CLIENT_ID, 5), 2);
         ds
     };
-    let visited = Arc::new(AtomicBool::new(false));
-    let setter = visited.clone();
+    let visited;
 
     let mut doc = Doc::new();
-    doc.observe_update_v1("sub", move |_, e| {
-        let u = Update::decode_v1(&e.update).unwrap();
+    {
+        let mut txn = doc.transact_mut();
+        let u = Update::decode_v1(update).unwrap();
+        txn.apply_update(u).unwrap();
+        let mut r = Report::new(EncoderV1::new());
+        txn.commit(&mut r);
+        let u = Update::decode_v1(&r.encoder.to_vec()).unwrap();
         let update_blocks = Blocks::new(&u.blocks);
         for (actual, expected) in update_blocks.zip(expected_blocks.as_slice()) {
             if let Block::Item(block) = actual {
@@ -116,16 +118,11 @@ fn text_insert_delete() {
             }
         }
         assert_eq!(u.delete_set, expected_ds);
-        setter.store(true, Ordering::Relaxed);
-    });
-    {
-        let mut txn = doc.transact_mut();
-        let u = Update::decode_v1(update).unwrap();
-        txn.apply_update(u).unwrap();
+        visited = true;
     }
     let actual = doc.transact().node("type").unwrap().to_string();
     assert_eq!(actual, "abhi");
-    assert!(visited.load(Ordering::Relaxed));
+    assert!(visited);
 }
 
 #[test]

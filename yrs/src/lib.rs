@@ -8,7 +8,7 @@
 //!
 //! **Shared Types** work just like normal data types, but they automatically sync with other peers.
 //!
-//! A **Document** is the access point to create shared types, and to listen to update events.
+//! A **Document** is the access point to create shared types and transactions over them.
 //!
 //! # Features
 //!
@@ -16,8 +16,9 @@
 //!    yrs (v0.26 and below) and yjs (pre v14). It uses 32bit [crate::ClientID]. The current default
 //!    uses 53-bit (max safe integer number in JavaScript/Yjs).
 //! - `weak` this feature enables weak references and quotations (see: [crate::WeakRef]).
-//! - `sync` this feature modifies observers callback constraints to use `Send` and `Sync` traits.
-//!   These are required when using yrs features in multithreaded environments.
+//! - `sync` this feature makes [Cell] thread-safe and adds `Send` and `Sync` bounds to
+//!   [undo::Meta] and [undo::CaptureTransactionFn]. These are required when using yrs features in
+//!   multithreaded environments.
 //!
 //! # Quick start
 //!
@@ -78,9 +79,9 @@
 //! 2. [Read-write transactions](TransactionMut), create via [Transact::transact_mut]/[Transact::try_transact_mut].
 //!    These can be used to modify the internal document state. These transactions work as
 //!    intelligent batches. They are automatically committed when dropped, performing tasks like
-//!    state cleaning, metadata compression and triggering event callbacks. Read-write transactions
-//!    require exclusive access to an underlying document store - no other transaction (neither
-//!    read-write nor read-only one) can be active while read-write transaction is to be created.
+//!    state cleaning and metadata compression. Read-write transactions require exclusive access
+//!    to an underlying document store - no other transaction (neither read-write nor read-only one)
+//!    can be active while read-write transaction is to be created.
 //!
 //! In order to synchronize state between the document replicas living on a different peer processes,
 //! there are two possible cases:
@@ -92,13 +93,12 @@
 //!    will contain all new changes performed since provided state vector. Finally this update can
 //!    be passed back to the requester, [deserialized](Update::decode) and integrated into a document
 //!    store via [TransactionMut::apply_update].
-//! 2. Another propagation mechanism relies on subscribing to [Doc::observe_update_v1] or
-//!    [Doc::observe_update_v2] events, which will be fired whenever an referenced document will
-//!    detect new changes.
+//! 2. Another propagation mechanism relies on collecting the update of every committed transaction
+//!    through [Reporter::encoder] (see [Transaction::commit]).
 //!
 //! While the 2nd option can produce smaller binary payload than 1st one at times and doesn't require
-//! request-response cycles, it cannot pass the document state prior the observer callback
-//! registration and expects that all changes will surely be delivered to other peer. A practical
+//! request-response cycles, it cannot pass the document state prior to the first reported commit
+//! and expects that all changes will surely be delivered to other peer. A practical
 //! approach (used i.e. by [y-sync protocol](https://crates.io/crates/y-sync)) is usually a combination
 //! of both variants: use 1st one on connection initialization between two peers followed by
 //! 2nd approach to deliver subsequent changes.
@@ -270,8 +270,8 @@
 //! }
 //! ```
 //!
-//! Weak refs also expose observer API that allows to subscribe to changes happening in source
-//! collections within quoted range.
+//! Changes happening in source collections within quoted range are reported as changes of the weak
+//! ref as well (see [Transaction::modified_within]).
 //!
 //! Keep in mind that weak refs don't maintain ownership over quoted elements. If a source
 //! collection removes a quoted element, it will no longer be accessible from weak ref:
@@ -307,7 +307,7 @@
 //! [UndoManager] is a Yrs response for these needs, supporting wide variety of options:
 //!
 //! ```rust
-//! use yrs::{Acquire, AcquireMut, Cell, Doc, UndoManager, Update};
+//! use yrs::{Acquire, AcquireMut, Cell, ClientID, Doc, NoReporter, Reporter, UndoManager, Update};
 //! use yrs::lib0::Decode;
 //! use yrs::undo::Options;
 //!
@@ -320,21 +320,23 @@
 //! let remote = Cell::new(Doc::with_client_id(321));
 //! let remote_client_id = remote.acquire().client_id();
 //!
-//! let push_text = |doc: &Cell<Doc>, origin, text: &str| {
+//! // undo manager tracks only the transactions committed with it
+//! fn push_text(doc: &Cell<Doc>, origin: ClientID, text: &str, r: &mut impl Reporter) {
 //!     let mut doc = doc.acquire_mut();
 //!     let mut txn = doc.transact_mut_with(origin);
 //!     txn.node_mut("article").unwrap().push_text(text);
-//! };
+//!     txn.commit(r);
+//! }
 //! let read_text = |doc: &Cell<Doc>| doc.acquire().transact().node("article").unwrap().to_string();
 //!
 //! // perform changes locally
-//! push_text(&local, local_client_id, "hello ");
-//! mgr.reset(); // prevent previous and next operation to be treated by Undo manager as one batch
-//! push_text(&local, local_client_id, "world");
+//! push_text(&local, local_client_id, "hello ", &mut mgr);
+//! mgr.capture(()); // prevent previous and next operation to be treated by Undo manager as one batch
+//! push_text(&local, local_client_id, "world", &mut mgr);
 //! assert_eq!(read_text(&local), "hello world");
 //!
 //! // perform remote changes - these are not being tracked by mgr
-//! push_text(&remote, remote_client_id, "everyone");
+//! push_text(&remote, remote_client_id, "everyone", &mut NoReporter);
 //! assert_eq!(read_text(&remote), "everyone");
 //!
 //! // sync changes from remote to local
@@ -343,11 +345,11 @@
 //! assert_eq!(read_text(&local), "hello worldeveryone"); // remote changes synced
 //!
 //! // undo last performed change on local
-//! mgr.undo_blocking();
+//! mgr.undo(&mut NoReporter);
 //! assert_eq!(read_text(&local), "hello everyone");
 //!
 //! // redo change we undone
-//! mgr.redo_blocking();
+//! mgr.redo(&mut NoReporter);
 //! assert_eq!(read_text(&local), "hello worldeveryone");
 //! ```
 //!
@@ -369,8 +371,7 @@
 //! Notice, that undo/redo changes are **not** mapped 1-1 on the update batches committed by
 //! transactions. As an example: a frequent case includes establishing a new transaction for every
 //! user key stroke. Meanwhile we may decide to use different granularity of undo/redo actions.
-//! These are grouped together on time-based ranges (configurable in [undo::Options], which is
-//! 500ms by default). You can also set them explicitly by calling [UndoManager::reset] method.
+//! Tracked changes are grouped together until [UndoManager::capture] is called.
 //!
 //! # Showing past revisions of the document
 //!
@@ -437,7 +438,7 @@
 //!   to make conflict resolution algorithm deterministic.
 //! - Yrs also provides support fo XML nodes in form of [XmlElementRef], [XmlTextRef] and [XmlFragmentRef].
 //!
-//! Underneath all of these types are represented by the same abstract [types::Node] type. Each
+//! Underneath all of these types are represented by the same abstract [node::Node] type. Each
 //! branch is always capable of working as both indexed sequence of elements and a map. In practice
 //! specialized shared types are actually projections over branch type and can be used interchangeably
 //! if needed, i.e.: [XmlElementRef] can be also interpreted as [MapRef], in which case the collection
@@ -507,25 +508,24 @@
 //! Logical references are serializable. They also can help to avoid segfaults in cases when we hold
 //! an unsafe reference to a nested collection that has been already deleted by concurrent operation.
 //!
-//! # Transaction event lifecycle
+//! # Observing changes
 //!
-//! Yrs provides a variety of lifecycle events, which enable users to react on various situations
-//! and changes performed. Some of these events are used by Yrs own features (e.g. [UndoManager]).
-//! They are always triggered once performed update is committed by dropping or
-//! [committing](TransactionMut::commit) a read-write transaction.
+//! Changes made by a read-write transaction are reported when it's committed: [Transaction::commit]
+//! takes a [Reporter], which picks the data it needs from the transaction's change set. Reporters
+//! can be combined as tuples.
 //!
-//! An order in which these updates are fired is as follows:
+//! Some of the Yrs own features (e.g. [UndoManager]) are reporters too.
 //!
-//! 1. Observers on updated shared types: [TextRef::observe], [ArrayRef::observe], [MapRef::observe],
-//!    [XmlTextRef::observe], [XmlFragmentRef::observe] and [XmlElementRef::observe].
-//! 2. [Deep observers](DeepObservable::observe_deep) (special kind of observers that are bubbled up
-//!    from nested shared types through their parent collections hierarchy).
-//! 3. After transaction callbacks: [Doc::observe_after_transaction].
-//! 4. After transaction cleanup callbacks (moment after all changes performed by transaction have
-//!    been compressed an integrated into document store): [Doc::observe_transaction_cleanup].
-//! 5. Update callbacks: [Doc::observe_update_v1] and [Doc::observe_update_v2]. Useful when we want
-//!    to encode and propagate incremental changes made by transaction to other peers.
-//! 6. Sub-document change callbacks: [Doc::observe_subdocs].
+//! Commit calls a reporter in the following order:
+//!
+//! 1. Storages are filled and [Reporter::committing] is called, before deleted content is garbage
+//!    collected. This is where deltas of the transaction ([Transaction::delta]) should be read.
+//! 2. [Reporter::keep] is asked which nodes must keep their deleted content from being GC'ed.
+//! 3. After GC and block squashing, the `encoder` receives the transaction's update.
+//! 4. [Reporter::committed] is called last, while the transaction state is still available.
+//!
+//! [NoReporter] doesn't collect anything. A read-write transaction which is dropped without being
+//! committed explicitly is committed with [NoReporter].
 //!
 //! # Update lib0 v1 vs. v2
 //!
@@ -611,7 +611,6 @@ mod alt;
 pub mod block;
 mod block_store;
 pub mod doc;
-mod event;
 mod formatter;
 mod id_map;
 mod id_set;
@@ -633,13 +632,11 @@ pub mod lib0;
 mod meta;
 pub mod node;
 mod node_ref;
-pub mod observer;
 mod out;
 mod reporter;
 mod slice;
 mod state_vector;
 mod sticky_index;
-pub mod sync;
 #[doc(hidden)]
 pub mod test_utils;
 mod transact;
@@ -659,9 +656,6 @@ pub use crate::delta::{AttrOp, Attribute, Attribution, Delta, Op};
 pub use crate::doc::Doc;
 pub use crate::doc::OffsetKind;
 pub use crate::doc::Options;
-pub use crate::event::{
-    Event, SubdocsEvent, SubdocsEventIter, TransactionCleanupEvent, UpdateEvent,
-};
 pub use crate::formatter::{
     AttrValue, AttributeValue, AttributedFragment, AttributedFragmentKind, AttributionsFormatter,
     DefaultFormatter, DeltaFormatter, DiffFormatter, RenderMode, SnapshotFormatter,
@@ -676,7 +670,6 @@ pub use crate::node_ref::DeltaOptions;
 pub use crate::node_ref::Formatted;
 pub use crate::node_ref::Modified;
 pub use crate::node_ref::NodeRef;
-pub use crate::observer::Observer;
 pub use crate::out::Out;
 pub use crate::reporter::{NoReporter, Reporter};
 pub use crate::state_vector::Snapshot;

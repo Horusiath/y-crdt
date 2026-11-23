@@ -1,14 +1,11 @@
-use arc_swap::ArcSwapOption;
 use fastrand::Rng;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 use yrs::lib0::Decode;
-use yrs::node::{DeepObservable, Observable, Path, PathSegment};
-use yrs::test_utils::{RngExt, exchange_updates, run_scenario};
+use yrs::node::{Path, PathSegment};
+use yrs::test_utils::{RngExt, exchange_updates, on_commit, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Attribute, Cell, ClientID, Delta, Doc, DocHandle, In, NodeRef, Out,
-    StateVector, Transaction, Update, any,
+    Any, Attribute, ClientID, Delta, Doc, DocHandle, In, NodeRef, Out, StateVector, Transaction,
+    TransactionMut, Update, any,
 };
 
 #[test]
@@ -310,30 +307,23 @@ fn map_get_set_remove_with_3_way_conflicts() {
 #[test]
 fn insert_and_remove_events() {
     let mut d1 = Doc::with_client_id(1);
-    let delta = Cell::new(Delta::out());
-    let delta1 = delta.clone();
-    let delta2 = delta.clone();
-    let delta = || delta.acquire().clone();
-    {
-        let mut txn = d1.transact_mut();
-        txn.node_mut("map")
-            .unwrap()
-            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(false))
-    };
+    let mut delta = Delta::out();
 
     // insert new entry
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("map").unwrap().insert_attr("a", 1);
+        txn.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out().insert_attr("a", 1));
+    assert_eq!(delta, Delta::out().insert_attr("a", 1));
 
     // update existing entry once
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("map").unwrap().insert_attr("a", 2);
+        txn.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out().insert_attr("a", 2));
+    assert_eq!(delta, Delta::out().insert_attr("a", 2));
 
     // update existing entry twice
     {
@@ -341,15 +331,17 @@ fn insert_and_remove_events() {
         let mut m1 = txn.node_mut("map").unwrap();
         m1.insert_attr("a", 3);
         m1.insert_attr("a", 4);
+        txn.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out().insert_attr("a", 4));
+    assert_eq!(delta, Delta::out().insert_attr("a", 4));
 
     // remove existing entry
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("map").unwrap().remove_attr("a");
+        txn.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out().remove_attr("a"));
+    assert_eq!(delta, Delta::out().remove_attr("a"));
 
     // add another entry and update it
     {
@@ -357,8 +349,9 @@ fn insert_and_remove_events() {
         let mut m1 = txn.node_mut("map").unwrap();
         m1.insert_attr("b", 1);
         m1.insert_attr("b", 2);
+        txn.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out().insert_attr("b", 2));
+    assert_eq!(delta, Delta::out().insert_attr("b", 2));
 
     // add and remove an entry
     {
@@ -366,18 +359,12 @@ fn insert_and_remove_events() {
         let mut m1 = txn.node_mut("map").unwrap();
         m1.insert_attr("c", 1);
         m1.remove_attr("c");
+        txn.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out()); // insert->remove == no-op
+    assert_eq!(delta, Delta::out()); // insert->remove == no-op
 
     // copy updates over
     let mut d2 = Doc::with_client_id(2);
-    {
-        let mut txn = d2.transact_mut();
-        txn.node_mut("map")
-            .unwrap()
-            .observe("sub", move |e| *delta2.acquire_mut() = e.delta(false))
-    };
-
     {
         let t1 = d1.transact();
         let mut t2 = d2.transact_mut();
@@ -386,24 +373,21 @@ fn insert_and_remove_events() {
         let update = t1.encode_diff_v1(&sv);
         t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
+        t2.commit(&mut on_commit(|t| delta = t.delta("map", false)));
     }
-    assert_eq!(delta(), Delta::out().insert_attr("b", 2));
+    assert_eq!(delta, Delta::out().insert_attr("b", 2));
 }
 
-fn map_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 3] {
-    fn set(doc: &mut Doc, rng: &mut Rng) {
+fn map_transactions() -> [Box<dyn Fn(&mut TransactionMut, &mut Rng)>; 3] {
+    fn set(txn: &mut TransactionMut, rng: &mut Rng) {
         let key = rng.choice(["one", "two"]).unwrap();
         let value: String = rng.random_string();
-        doc.transact_mut()
-            .node_mut("map")
-            .unwrap()
-            .insert_attr(key, value);
+        txn.node_mut("map").unwrap().insert_attr(key, value);
     }
 
-    fn set_type(doc: &mut Doc, rng: &mut Rng) {
+    fn set_type(txn: &mut TransactionMut, rng: &mut Rng) {
         let key = rng.choice(["one", "two", "three"]).unwrap();
         let (a, b) = (rng.f32(), rng.f32());
-        let mut txn = doc.transact_mut();
         let mut map = txn.node_mut("map").unwrap();
         if a <= 0.33 {
             let arr = Delta::new().insert(1).insert(2).insert(3).insert(4);
@@ -419,9 +403,9 @@ fn map_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 3] {
         }
     }
 
-    fn delete(doc: &mut Doc, rng: &mut Rng) {
+    fn delete(txn: &mut TransactionMut, rng: &mut Rng) {
         let key = rng.choice(["one", "two"]).unwrap();
-        doc.transact_mut().node_mut("map").unwrap().remove_attr(key);
+        txn.node_mut("map").unwrap().remove_attr(key);
     }
     [Box::new(set), Box::new(set_type), Box::new(delete)]
 }
@@ -438,18 +422,7 @@ fn fuzzy_test_6() {
 #[test]
 fn observe_deep() {
     let mut doc = Doc::with_client_id(1);
-    let paths = Arc::new(Mutex::new(vec![]));
-    let calls = Arc::new(AtomicU32::new(0));
-    let paths_copy = paths.clone();
-    let calls_copy = calls.clone();
-    {
-        let mut txn = doc.transact_mut();
-        txn.node_mut("map").unwrap().observe_deep("sub", move |e| {
-            let path: Vec<Path> = e.iter().map(|e| e.path()).collect();
-            paths_copy.lock().unwrap().push(path);
-            calls_copy.fetch_add(1, Ordering::Relaxed);
-        })
-    };
+    let mut paths = vec![];
 
     let nested = {
         let mut txn = doc.transact_mut();
@@ -460,7 +433,9 @@ fn observe_deep() {
         let Out::Node(nested) = out else {
             panic!("expected a nested node")
         };
-        nested.id
+        let id = nested.id;
+        txn.commit(&mut crate::deep_paths("map", &mut paths));
+        id
     };
     let nested2 = {
         let mut txn = doc.transact_mut();
@@ -471,11 +446,14 @@ fn observe_deep() {
         let Out::Node(nested2) = out else {
             panic!("expected a nested node")
         };
-        nested2.id
+        let id = nested2.id;
+        txn.commit(&mut crate::deep_paths("map", &mut paths));
+        id
     };
     {
         let mut txn = doc.transact_mut();
         txn.node_mut(nested2).unwrap().insert(0, "content");
+        txn.commit(&mut crate::deep_paths("map", &mut paths));
     }
 
     let nested_text = {
@@ -487,29 +465,28 @@ fn observe_deep() {
         let Out::Node(nested_text) = out else {
             panic!("expected a nested node")
         };
-        nested_text.id
+        let id = nested_text.id;
+        txn.commit(&mut crate::deep_paths("map", &mut paths));
+        id
     };
     {
         let mut txn = doc.transact_mut();
         txn.node_mut(nested_text).unwrap().push_text("!");
+        txn.commit(&mut crate::deep_paths("map", &mut paths));
     }
 
-    assert_eq!(calls.load(Ordering::Relaxed), 5);
-    let actual = paths.lock().unwrap();
+    let calls = paths.len();
+    assert_eq!(calls, 5);
+    let actual = paths;
+    // paths are absolute: each was prefixed with the root key "map"
     assert_eq!(
-        actual.as_slice(),
+        actual,
         &[
-            vec![Path::from(vec![])],
-            vec![Path::from(vec![PathSegment::Key("map".into())])],
-            vec![Path::from(vec![
-                PathSegment::Key("map".into()),
-                PathSegment::Key("array".into())
-            ])],
-            vec![Path::from(vec![PathSegment::Key("map".into()),])],
-            vec![Path::from(vec![
-                PathSegment::Key("map".into()),
-                PathSegment::Key("text".into()),
-            ])],
+            vec![Path::from(vec!["map".into()])],
+            vec![Path::from(vec!["map".into(), "map".into()])],
+            vec![Path::from(vec!["map".into(), "map".into(), "array".into()])],
+            vec![Path::from(vec!["map".into(), "map".into(),])],
+            vec![Path::from(vec!["map".into(), "map".into(), "text".into(),])],
         ]
     );
 }
@@ -845,24 +822,20 @@ fn key_event_over_a_value_integrated_after_a_clock_gap() {
         .node_mut("map")
         .unwrap()
         .insert_attr("k", "c");
-    let delta = Arc::new(Mutex::new(None));
-    let delta_c = delta.clone();
-    r.transact_mut()
-        .node_mut("map")
-        .unwrap()
-        .observe("sub", move |e| {
-            *delta_c.lock().unwrap() = Some(e.delta(false))
-        });
+    let mut delta = None;
     let from_b = b
         .transact()
         .encode_state_as_update_v1(&StateVector::from_iter([(ClientID::new(20), 1)]));
-    r.transact_mut()
-        .apply_update(Update::decode_v1(&from_b).unwrap())
+    let mut txn = r.transact_mut();
+    txn.apply_update(Update::decode_v1(&from_b).unwrap())
         .unwrap();
+    txn.commit(&mut on_commit(|t| {
+        delta = t.is_modified("map", false).then(|| t.delta("map", false))
+    }));
 
     assert_eq!(r.transact().node("map").unwrap().attr("k"), None);
     // the value of "k" didn't change: 20:2 (deleted) is still its latest entry
-    assert_eq!(*delta.lock().unwrap(), Some(Delta::out()));
+    assert_eq!(delta, Some(Delta::out()));
 }
 
 /// A nested map integrated behind a skip (its author's earlier blocks missing) was taken
@@ -899,14 +872,7 @@ fn nested_map_integrated_after_a_clock_gap_reports_its_changes() {
         other => panic!("expected a nested map, got {:?}", other),
     };
 
-    let events = Arc::new(AtomicU32::new(0));
-    let events_c = events.clone();
-    r.transact_mut()
-        .node_mut(nested_r.clone())
-        .unwrap()
-        .observe("sub", move |_| {
-            events_c.fetch_add(1, Ordering::SeqCst);
-        });
+    let mut events = 0;
     a.transact_mut()
         .node_mut(nested_a)
         .unwrap()
@@ -914,13 +880,16 @@ fn nested_map_integrated_after_a_clock_gap_reports_its_changes() {
     let change = a
         .transact()
         .encode_state_as_update_v1(&StateVector::from_iter([(ClientID::new(1), 2)]));
-    r.transact_mut()
-        .apply_update(Update::decode_v1(&change).unwrap())
+    let mut txn = r.transact_mut();
+    txn.apply_update(Update::decode_v1(&change).unwrap())
         .unwrap();
+    txn.commit(&mut on_commit(|t| {
+        events += t.is_modified(nested_r.clone(), false) as u32
+    }));
 
     assert_eq!(
         r.transact().node(nested_r).unwrap().attr("y"),
         Some(Out::Any(Any::from(2)))
     );
-    assert_eq!(events.load(Ordering::SeqCst), 1);
+    assert_eq!(events, 1);
 }

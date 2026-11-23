@@ -2,13 +2,12 @@ use fastrand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use yrs::lib0::{Decode, Encode};
-use yrs::node::{Attrs, Observable};
-use yrs::test_utils::{RngExt, attribute_all, exchange_updates, run_scenario};
+use yrs::node::Attrs;
+use yrs::test_utils::{RngExt, attribute_all, exchange_updates, on_commit, run_scenario};
 use yrs::{
-    Acquire, AcquireMut, Any, Attribute, Attribution, AttributionsFormatter, Cell, ClientID,
-    ContentAttribute, ContentIds, ContentMap, Delta, DeltaOptions, Doc, IdMap, IdSet, In, NodeRef,
-    OffsetKind, Op, Options, Out, Snapshot, SnapshotFormatter, StateVector, Transaction, Update,
-    any,
+    Any, Attribute, Attribution, AttributionsFormatter, ClientID, ContentAttribute, ContentIds,
+    ContentMap, Delta, DeltaOptions, Doc, IdMap, IdSet, In, NodeRef, OffsetKind, Op, Options, Out,
+    Snapshot, SnapshotFormatter, StateVector, Transaction, TransactionMut, Update, any,
 };
 
 #[test]
@@ -361,29 +360,23 @@ fn concurrent_insert_delete() {
 #[test]
 fn observer() {
     let mut doc = Doc::with_client_id(1);
-    let delta = Cell::new(Delta::out());
-    let delta1 = delta.clone();
-    {
-        let mut txn = doc.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(false))
-    };
-    let delta = || std::mem::take(&mut *delta.acquire_mut());
+    let mut delta = Delta::out();
 
     // insert initial data to an empty YText
     {
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().insert_text(0, "abcd"); // => 'abcd'
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", false)));
     }
-    assert_eq!(delta(), Delta::out().insert_text("abcd"));
+    assert_eq!(delta, Delta::out().insert_text("abcd"));
 
     // remove 2 chars from the middle
     {
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().remove(1, 2); // => 'ad'
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", false)));
     }
-    assert_eq!(delta(), Delta::out().retain(1).remove(2));
+    assert_eq!(delta, Delta::out().retain(1).remove(2));
 
     // insert new item in the middle
     let attrs = Attrs::from([("bold".into(), true.into())]);
@@ -392,73 +385,51 @@ fn observer() {
         txn.node_mut("text")
             .unwrap()
             .insert_text_fmt(1, "e", &attrs); // => 'a<bold>e</bold>d'
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", false)));
     }
-    assert_eq!(delta(), Delta::out().retain(1).insert_text_fmt("e", &attrs));
+    assert_eq!(delta, Delta::out().retain(1).insert_text_fmt("e", &attrs));
 
     // remove formatting
     let attrs = Attrs::from([("bold".into(), Any::Null)]);
     {
         let mut txn = doc.transact_mut();
         txn.node_mut("text").unwrap().format(1, 1, &attrs); // => 'aed'
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", false)));
     }
-    assert_eq!(delta(), Delta::out().retain(1).retain_fmt(1, &attrs));
-
-    // free the observer and make sure that callback is no longer called
-    doc.transact_mut()
-        .node_mut("text")
-        .unwrap()
-        .unobserve("sub");
-    {
-        let mut txn = doc.transact_mut();
-        txn.node_mut("text").unwrap().insert_text(1, "fgh"); // => 'afghed'
-    }
-    assert_eq!(delta(), Delta::out()); // empty after unsubscribing
+    assert_eq!(delta, Delta::out().retain(1).retain_fmt(1, &attrs));
 }
 
 #[test]
 fn insert_and_remove_event_changes() {
     let mut d1 = Doc::with_client_id(1);
-    let delta = Cell::new(Delta::out());
-    let delta1 = delta.clone();
-    let delta2 = delta.clone();
-    {
-        let mut txn = d1.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta1.acquire_mut() = e.delta(true))
-    };
-    let delta = || std::mem::take(&mut *delta.acquire_mut());
+    let mut delta = Delta::out();
 
     // insert initial string
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("text").unwrap().insert_text(0, "abcd");
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", true)));
     }
-    assert_eq!(delta(), Delta::out().insert_text("abcd"));
+    assert_eq!(delta, Delta::out().insert_text("abcd"));
 
     // remove middle
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("text").unwrap().remove(1, 2);
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", true)));
     }
-    assert_eq!(delta(), Delta::out().retain(1).remove(2));
+    assert_eq!(delta, Delta::out().retain(1).remove(2));
 
     // insert again
     {
         let mut txn = d1.transact_mut();
         txn.node_mut("text").unwrap().insert_text(1, "ef");
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", true)));
     }
-    assert_eq!(delta(), Delta::out().retain(1).insert_text("ef"));
+    assert_eq!(delta, Delta::out().retain(1).insert_text("ef"));
 
     // replicate data to another peer
     let mut d2 = Doc::with_client_id(2);
-    {
-        let mut txn = d2.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta2.acquire_mut() = e.delta(true))
-    };
-
     {
         let t1 = d1.transact();
         let mut t2 = d2.transact_mut();
@@ -467,21 +438,20 @@ fn insert_and_remove_event_changes() {
         let update = t1.encode_diff_v1(&sv);
         t2.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
+        t2.commit(&mut on_commit(|t| delta = t.delta("text", true)));
     }
-    assert_eq!(delta(), Delta::out().insert_text("aefd"));
+    assert_eq!(delta, Delta::out().insert_text("aefd"));
 }
 
-fn text_transactions() -> [Box<dyn Fn(&mut Doc, &mut Rng)>; 2] {
-    fn insert_text(doc: &mut Doc, rng: &mut Rng) {
-        let mut txn = doc.transact_mut();
+fn text_transactions() -> [Box<dyn Fn(&mut TransactionMut, &mut Rng)>; 2] {
+    fn insert_text(txn: &mut TransactionMut, rng: &mut Rng) {
         let mut ytext = txn.node_mut("text").unwrap();
         let pos = rng.between(0, ytext.len());
         let word = rng.random_string();
         ytext.insert_text(pos, word.as_str());
     }
 
-    fn delete_text(doc: &mut Doc, rng: &mut Rng) {
-        let mut txn = doc.transact_mut();
+    fn delete_text(txn: &mut TransactionMut, rng: &mut Rng) {
         let mut ytext = txn.node_mut("text").unwrap();
         let len = ytext.len();
         if len > 0 {
@@ -508,23 +478,8 @@ fn basic_format() {
     let mut d1 = Doc::with_client_id(1);
     let mut d2 = Doc::with_client_id(2);
 
-    let delta1 = Cell::new(Delta::out());
-    let delta_clone = delta1.clone();
-    {
-        let mut txn = d1.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta_clone.acquire_mut() = e.delta(true))
-    };
-
-    let delta2 = Cell::new(Delta::out());
-    let delta_clone = delta2.clone();
-    {
-        let mut txn = d2.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta_clone.acquire_mut() = e.delta(true))
-    };
+    let mut delta1 = Delta::out();
+    let mut delta2 = Delta::out();
 
     let a: Attrs = HashMap::from([("bold".into(), Any::Bool(true))]);
 
@@ -536,18 +491,18 @@ fn basic_format() {
         let expected = Delta::out().insert_text_fmt("abc", &a);
         assert_eq!(txt1.delta(&DeltaOptions::default()), expected);
         let update = txn.encode_update_v1();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
 
-        assert_eq!(&*delta1.acquire(), &expected);
+        assert_eq!(&delta1, &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "abc");
 
         let mut txn = d2.transact_mut();
         txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta2 = t.delta("text", true)));
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "abc");
-        assert_eq!(&*delta2.acquire(), &expected);
+        assert_eq!(&delta2, &expected);
     }
 
     // step 2
@@ -558,19 +513,19 @@ fn basic_format() {
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(actual, Delta::out().insert_text_fmt("bc", &a));
         let update = txn.encode_update_v1();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
 
         let expected = Delta::out().remove(1);
-        assert_eq!(&*delta1.acquire(), &expected);
+        assert_eq!(&delta1, &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "bc");
 
         let mut txn = d2.transact_mut();
         txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta2 = t.delta("text", true)));
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "bc");
-        assert_eq!(&*delta2.acquire(), &expected);
+        assert_eq!(&delta2, &expected);
     }
 
     // step 3
@@ -583,19 +538,19 @@ fn basic_format() {
             Delta::out().insert_text_fmt("b", &a)
         );
         let update = txn.encode_update_v1();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
 
         let expected = Delta::out().retain(1).remove(1);
-        assert_eq!(&*delta1.acquire(), &expected);
+        assert_eq!(&delta1, &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "b");
 
         let mut txn = d2.transact_mut();
         txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta2 = t.delta("text", true)));
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "b");
-        assert_eq!(&*delta2.acquire(), &expected);
+        assert_eq!(&delta2, &expected);
     }
 
     // step 4
@@ -606,19 +561,19 @@ fn basic_format() {
         let actual = txt1.delta(&DeltaOptions::default());
         assert_eq!(actual, Delta::out().insert_text_fmt("zb", &a));
         let update = txn.encode_update_v1();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
 
         let expected = Delta::out().insert_text_fmt("z", &a);
-        assert_eq!(&*delta1.acquire(), &expected);
+        assert_eq!(&delta1, &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "zb");
 
         let mut txn = d2.transact_mut();
         txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta2 = t.delta("text", true)));
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "zb");
-        assert_eq!(&*delta2.acquire(), &expected);
+        assert_eq!(&delta2, &expected);
     }
 
     // step 5
@@ -632,19 +587,19 @@ fn basic_format() {
             Delta::out().insert_text("y").insert_text_fmt("zb", &a)
         );
         let update = txn.encode_update_v1();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
 
         let expected = Delta::out().insert_text("y");
-        assert_eq!(&*delta1.acquire(), &expected);
+        assert_eq!(&delta1, &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "yzb");
 
         let mut txn = d2.transact_mut();
         txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta2 = t.delta("text", true)));
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "yzb");
-        assert_eq!(&*delta2.acquire(), &expected);
+        assert_eq!(&delta2, &expected);
     }
 
     // step 6
@@ -659,19 +614,19 @@ fn basic_format() {
             Delta::out().insert_text("yz").insert_text_fmt("b", &a)
         );
         let update = txn.encode_update_v1();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
 
         let expected = Delta::out().retain(1).retain_fmt(1, &b);
-        assert_eq!(&*delta1.acquire(), &expected);
+        assert_eq!(&delta1, &expected);
         assert_eq!(d1.transact().node("text").unwrap().to_string(), "yzb");
 
         let mut txn = d2.transact_mut();
         txn.apply_update(Update::decode_v1(update.as_slice()).unwrap())
             .unwrap();
-        drop(txn);
+        txn.commit(&mut on_commit(|t| delta2 = t.delta("text", true)));
 
         assert_eq!(d2.transact().node("text").unwrap().to_string(), "yzb");
-        assert_eq!(&*delta2.acquire(), &expected);
+        assert_eq!(&delta2, &expected);
     }
 }
 
@@ -679,14 +634,7 @@ fn basic_format() {
 fn embed_with_attributes() {
     let mut d1 = Doc::with_client_id(1);
 
-    let delta1 = Cell::new(Delta::out());
-    let delta_clone = delta1.clone();
-    {
-        let mut txn = d1.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta_clone.acquire_mut() = e.delta(true))
-    };
+    let mut delta1 = Delta::out();
 
     let a1: Attrs = HashMap::from([("bold".into(), true.into())]);
     let a2: Attrs = HashMap::from([("width".into(), Any::from(100))]);
@@ -707,9 +655,10 @@ fn embed_with_attributes() {
 
         let update_v1 = txn.encode_state_as_update_v1(&StateVector::default());
         let update_v2 = txn.encode_state_as_update_v2(&StateVector::default());
+        txn.commit(&mut on_commit(|t| delta1 = t.delta("text", true)));
         (update_v1, update_v2)
     };
-    assert_eq!(&*delta1.acquire(), &expected);
+    assert_eq!(&delta1, &expected);
 
     let mut d2 = Doc::new();
     {
@@ -733,8 +682,7 @@ fn embed_with_attributes() {
 #[test]
 fn issue_101() {
     let mut d1 = Doc::with_client_id(1);
-    let delta = Cell::new(Delta::out());
-    let delta_copy = delta.clone();
+    let mut delta = Delta::out();
 
     let attrs: Attrs = HashMap::from([("bold".into(), true.into())]);
 
@@ -744,19 +692,11 @@ fn issue_101() {
     }
 
     {
-        let txn = d1.transact();
-        txn.node("text")
-            .unwrap()
-            .observe("sub", move |e| *delta_copy.acquire_mut() = e.delta(false))
-    };
-    {
         let mut txn = d1.transact_mut();
         txn.node_mut("text").unwrap().format(1, 2, &attrs);
+        txn.commit(&mut on_commit(|t| delta = t.delta("text", false)));
     }
-    assert_eq!(
-        &*delta.acquire(),
-        &Delta::out().retain(1).retain_fmt(2, &attrs)
-    );
+    assert_eq!(&delta, &Delta::out().retain(1).retain_fmt(2, &attrs));
 }
 
 #[test]
@@ -789,20 +729,13 @@ fn yrs_delete() {
         let c2 = text2.chars().count();
         let count = c1 as u32 + c2 as u32;
 
-        let delta = Cell::new(Delta::out());
-        let delta_copy = delta.clone();
-        let _observer = {
-            let txn = doc.transact();
-            txn.node("content")
-                .unwrap()
-                .observe("sub", move |e| *delta_copy.acquire_mut() = e.delta(false))
-        };
-
+        let mut delta = Delta::out();
         {
             let mut txn = doc.transact_mut();
             txn.node_mut("content").unwrap().remove(0, count);
+            txn.commit(&mut on_commit(|t| delta = t.delta("content", false)));
         }
-        assert_eq!(&*delta.acquire(), &Delta::out().remove(count));
+        assert_eq!(&delta, &Delta::out().remove(count));
     }
 
     assert_eq!(doc.transact().node("content").unwrap().to_string(), "");
@@ -1119,21 +1052,16 @@ fn delta_with_embeds() {
 fn delta_with_shared_ref() {
     let mut d1 = Doc::with_client_id(1);
 
-    let delta = Cell::new(Delta::out());
-    let delta_copy = delta.clone();
-    {
-        let mut txn = d1.transact_mut();
-        txn.node_mut("text")
-            .unwrap()
-            .observe("sub", move |e| *delta_copy.acquire_mut() = e.delta(true))
-    };
+    let mut delta = Delta::out();
 
     let update = {
         let mut txn1 = d1.transact_mut();
         txn1.node_mut("text").unwrap().apply_delta(
             Delta::new().insert(In::Node(Box::new(Delta::new().insert_attr("key", "val")))),
         );
-        txn1.encode_update_v1()
+        let update = txn1.encode_update_v1();
+        txn1.commit(&mut on_commit(|t| delta = t.delta("text", true)));
+        update
     };
 
     // the embedded node is reachable and carries its attributes
@@ -1156,7 +1084,7 @@ fn delta_with_shared_ref() {
         id,
         Delta::out().insert_attr("key", "val"),
     ));
-    assert_eq!(&*delta.acquire(), &expected, "fired event");
+    assert_eq!(&delta, &expected, "fired event");
 
     let mut d2 = Doc::with_client_id(2);
     d2.transact_mut()

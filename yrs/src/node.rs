@@ -1,15 +1,12 @@
 use crate::block::{Block, Item, ItemContent, ItemPtr};
-use crate::event::Event;
 use crate::formatter::formatted_len;
 use crate::lib0::{Decode, Decoder, Encode, Encoder};
 use crate::transaction::TransactionState;
-use crate::{
-    Any, Assoc, ClientID, Doc, ID, In, IndexScope, Observer, Origin, Out, StickyIndex, Transaction,
-};
+use crate::{Any, Assoc, ClientID, Doc, ID, In, IndexScope, Origin, Out, StickyIndex};
 use serde::de::{Error, MapAccess, Unexpected, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -19,10 +16,6 @@ use std::sync::Arc;
 
 pub type Attrs = HashMap<Arc<str>, Any>;
 
-/// A batch of [Event]s bubbled up from nested shared collections, passed to deep observers.
-/// They are sorted by the length of their [Event::path], so that top-most events come first.
-pub type Events<'txn> = [Event<'txn>];
-
 /// A wrapper around [Node] cell, supplied with a bunch of convenience methods to operate on both
 /// map-like and array-like contents of a [Node].
 #[repr(transparent)]
@@ -31,22 +24,6 @@ pub struct NodePtr(NonNull<Node>);
 
 unsafe impl Send for NodePtr {}
 unsafe impl Sync for NodePtr {}
-
-impl NodePtr {
-    pub(crate) fn trigger<'txn>(
-        &mut self,
-        txn: &'txn Transaction<&'txn Doc>,
-        subs: &'txn HashSet<Option<Arc<str>>>,
-    ) -> Event<'txn> {
-        let mut e = self.make_event(txn, subs);
-        self.observers.trigger(|fun| fun(&mut e));
-        e
-    }
-
-    pub(crate) fn trigger_deep<'txn>(&mut self, e: &mut Events<'txn>) {
-        self.deep_observers.trigger(|fun| fun(e));
-    }
-}
 
 impl TryFrom<ItemPtr> for NodePtr {
     type Error = ItemPtr;
@@ -187,21 +164,7 @@ pub struct Node {
     pub(crate) type_ref: TypeRef,
 
     pub(crate) has_formatting: bool,
-
-    pub(crate) observers: Observer<ObserveFn>,
-
-    pub(crate) deep_observers: Observer<DeepObserveFn>,
 }
-
-#[cfg(feature = "sync")]
-type ObserveFn = Box<dyn FnMut(&mut Event) + Send + Sync + 'static>;
-#[cfg(feature = "sync")]
-type DeepObserveFn = Box<dyn FnMut(&mut Events) + Send + Sync + 'static>;
-
-#[cfg(not(feature = "sync"))]
-type ObserveFn = Box<dyn FnMut(&mut Event) + 'static>;
-#[cfg(not(feature = "sync"))]
-type DeepObserveFn = Box<dyn FnMut(&mut Events) + 'static>;
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -228,8 +191,6 @@ impl Node {
             item: None,
             name,
             type_ref,
-            observers: Observer::default(),
-            deep_observers: Observer::default(),
             has_formatting: false,
         })
     }
@@ -488,46 +449,6 @@ impl Node {
         path
     }
 
-    #[cfg(feature = "sync")]
-    pub fn observe<F>(&mut self, key: Origin, f: F)
-    where
-        F: FnMut(&mut Event) + Send + Sync + 'static,
-    {
-        self.observers.subscribe(key, Box::new(f))
-    }
-
-    #[cfg(not(feature = "sync"))]
-    pub fn observe<F>(&mut self, key: Origin, f: F)
-    where
-        F: FnMut(&mut Event) + 'static,
-    {
-        self.observers.subscribe(key, Box::new(f))
-    }
-
-    pub fn unobserve(&mut self, key: &Origin) -> bool {
-        self.observers.unsubscribe(key)
-    }
-
-    #[cfg(feature = "sync")]
-    pub fn observe_deep<F>(&mut self, key: Origin, f: F)
-    where
-        F: FnMut(&mut Events) + Send + Sync + 'static,
-    {
-        self.deep_observers.subscribe(key, Box::new(f))
-    }
-
-    #[cfg(not(feature = "sync"))]
-    pub fn observe_deep<F>(&mut self, key: Origin, f: F)
-    where
-        F: FnMut(&mut Events) + 'static,
-    {
-        self.deep_observers.subscribe(key, Box::new(f))
-    }
-
-    pub fn unobserve_deep(&mut self, key: &Origin) -> bool {
-        self.deep_observers.unsubscribe(key)
-    }
-
     pub(crate) fn is_parent_of(&self, mut ptr: Option<ItemPtr>) -> bool {
         while let Some(i) = ptr.as_deref() {
             if let Some(parent) = i.parent.as_node() {
@@ -540,14 +461,6 @@ impl Node {
             }
         }
         false
-    }
-
-    pub(crate) fn make_event<'txn>(
-        &self,
-        txn: &'txn Transaction<&'txn Doc>,
-        subs: &'txn HashSet<Option<Arc<str>>>,
-    ) -> Event<'txn> {
-        Event::new(NodePtr::from(self), txn, subs)
     }
 }
 
@@ -979,84 +892,6 @@ impl Decode for TypeRef {
     }
 }
 
-#[cfg(feature = "sync")]
-pub trait Observable: AsRef<Node> {
-    /// Subscribes a given callback to be triggered whenever current y-type is changed.
-    /// A callback is triggered whenever a transaction gets committed. This function does not
-    /// trigger if changes have been observed by nested shared collections.
-    ///
-    /// All array-like event changes can be tracked by using [Event::delta] method.
-    /// All map-like event changes can be tracked by using [Event::keys] method.
-    ///
-    /// The callback is registered under `key` and can be removed via [Observable::unobserve].
-    fn observe<K, F>(&self, key: K, f: F)
-    where
-        K: Into<Origin>,
-        F: FnMut(&mut Event) + Send + Sync + 'static,
-    {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.observe(key.into(), f)
-    }
-
-    fn unobserve<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.unobserve(&key.into())
-    }
-}
-
-#[cfg(not(feature = "sync"))]
-pub trait Observable: AsRef<Node> {
-    fn observe<K, F>(&self, key: K, f: F)
-    where
-        K: Into<Origin>,
-        F: FnMut(&mut Event) + 'static,
-    {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.observe(key.into(), f)
-    }
-
-    fn unobserve<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.unobserve(&key.into())
-    }
-}
-
-/// Trait implemented by all Y-types, allowing for observing events which are emitted by
-/// nested types.
-#[cfg(feature = "sync")]
-pub trait DeepObservable: AsRef<Node> {
-    fn observe_deep<K, F>(&self, key: K, f: F)
-    where
-        K: Into<Origin>,
-        F: FnMut(&mut Events) + Send + Sync + 'static,
-    {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.observe_deep(key.into(), f)
-    }
-
-    fn unobserve_deep<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.unobserve_deep(&key.into())
-    }
-}
-
-#[cfg(not(feature = "sync"))]
-pub trait DeepObservable: AsRef<Node> {
-    fn observe_deep<K, F>(&self, key: K, f: F)
-    where
-        K: Into<Origin>,
-        F: FnMut(&mut Events) + 'static,
-    {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.observe_deep(key.into(), f)
-    }
-
-    fn unobserve_deep<K: Into<Origin>>(&self, key: K) -> bool {
-        let mut branch = NodePtr::from(self.as_ref());
-        branch.unobserve_deep(&key.into())
-    }
-}
-
 impl std::fmt::Display for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.type_ref() {
@@ -1221,6 +1056,27 @@ pub enum PathSegment {
     /// Index segments are used to inform how to access child shared collections within an [Array]
     /// or [XmlElement] types.
     Index(u32),
+}
+
+impl From<Arc<str>> for PathSegment {
+    #[inline]
+    fn from(value: Arc<str>) -> Self {
+        PathSegment::Key(value)
+    }
+}
+
+impl<'a> From<&'a str> for PathSegment {
+    #[inline]
+    fn from(value: &'a str) -> Self {
+        PathSegment::Key(value.into())
+    }
+}
+
+impl From<u32> for PathSegment {
+    #[inline]
+    fn from(value: u32) -> Self {
+        PathSegment::Index(value)
+    }
 }
 
 impl Serialize for PathSegment {

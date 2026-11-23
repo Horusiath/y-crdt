@@ -1,10 +1,10 @@
 use yrs::lib0::Decode;
-use yrs::node::{Attrs, DeepObservable, Observable};
-use yrs::test_utils::{clone_doc, exchange_updates};
+use yrs::node::Attrs;
+use yrs::test_utils::{clone_doc, exchange_updates, on_commit};
 use yrs::{
-    Acquire, AcquireMut, Any, Assoc, AttrValue, Attribute, Attribution, AttributionsFormatter,
-    Cell, ClientID, ContentAttribute, ContentIds, ContentMap, DefaultFormatter, Delta,
-    DeltaFormatter, DeltaOptions, DiffFormatter, Doc, IdSet, In, Options, Out, Update, any,
+    Any, Assoc, AttrValue, Attribute, Attribution, AttributionsFormatter, ClientID,
+    ContentAttribute, ContentIds, ContentMap, DefaultFormatter, Delta, DeltaFormatter,
+    DeltaOptions, DiffFormatter, Doc, IdSet, In, NoReporter, Options, Out, Reporter, Update, any,
 };
 
 fn bold() -> Attrs {
@@ -88,28 +88,24 @@ fn attributed_events() {
     );
     assert_eq!(c1, expected); // "hello ~world~"
 
-    let deltas = Cell::new(vec![]);
-    let deltas_c = deltas.clone();
-    doc.transact_mut()
-        .node_mut("text")
-        .unwrap()
-        .observe("sub", move |e| {
-            // the formatter of a live diff knows about the content of this transaction
-            let fmt = diff_formatter(&v1, e.transaction().doc());
-            deltas_c.acquire_mut().push(e.delta_fmt(false, &fmt));
-        });
+    let mut deltas = vec![];
     {
         let mut txn = doc.transact_mut();
         let mut text = txn.node_mut("text").unwrap();
         text.formatted_mut(&fmt)
             .apply_delta(Delta::new().retain(11).insert_text("!")); // "hello ~world~!"
+        txn.commit(&mut on_commit(|t| {
+            // the formatter of a live diff knows about the content of this transaction
+            let fmt = diff_formatter(&v1, t.doc());
+            deltas.push(t.delta_fmt("text", false, &fmt));
+        }));
     }
     let expected = Delta::out().retain(11).insert_text_attributed(
         "!",
         None,
         Some(Attribution::insert::<Attribute>([])),
     );
-    assert_eq!(*deltas.acquire(), vec![expected]);
+    assert_eq!(deltas, vec![expected]);
 }
 
 #[test]
@@ -142,28 +138,24 @@ fn attributions() {
         .insert_text_attributed("!", None, Some(Attribution::insert::<Attribute>([])));
     assert_eq!(actual, expected);
 
-    let deltas = Cell::new(vec![]);
-    let deltas_c = deltas.clone();
-    doc.transact_mut()
-        .node_mut("txt")
-        .unwrap()
-        .observe("sub", move |e| {
-            let fmt = diff_formatter(&base, e.transaction().doc());
-            let attributed = e.delta_fmt(false, &fmt);
-            deltas_c.acquire_mut().push((attributed, e.delta(false)));
-        });
-    doc.transact_mut()
-        .node_mut("txt")
+    let mut deltas = vec![];
+    let mut txn = doc.transact_mut();
+    txn.node_mut("txt")
         .unwrap()
         .formatted_mut(&fmt)
         .apply_delta(Delta::new().retain(11).insert_text("!"));
+    txn.commit(&mut on_commit(|t| {
+        let fmt = diff_formatter(&base, t.doc());
+        let attributed = t.delta_fmt("txt", false, &fmt);
+        deltas.push((attributed, t.delta("txt", false)));
+    }));
     let attributed = Delta::out().retain(11).insert_text_attributed(
         "!",
         None,
         Some(Attribution::insert::<Attribute>([])),
     );
     let unattributed = Delta::out().retain(5).insert_text("!");
-    assert_eq!(*deltas.acquire(), vec![(attributed, unattributed)]);
+    assert_eq!(deltas, vec![(attributed, unattributed)]);
 }
 
 #[test]
@@ -255,31 +247,35 @@ fn delta_fresh_range_after_item_merge() {
         .apply_delta(Delta::new().insert_text("XY"));
     sync(&doc, &mut sdoc);
     let base_now = ContentIds::from_doc(&doc);
-    let deltas = Cell::new(vec![]);
-    let deltas_c = deltas.clone();
-    sdoc.transact_mut()
-        .node_mut("t")
-        .unwrap()
-        .observe("sub", move |e| {
-            let fmt = diff_formatter(&base_now, e.transaction().doc());
-            deltas_c.acquire_mut().push(e.delta_fmt(true, &fmt));
-        });
+    let mut deltas = vec![];
     // suggested insert 'a' at position 0
-    sdoc.transact_mut()
-        .node_mut("t")
+    let mut txn = sdoc.transact_mut();
+    txn.node_mut("t")
         .unwrap()
         .apply_delta(Delta::new().insert_text("a"));
+    txn.commit(&mut on_commit(|t| {
+        if t.is_modified("t", false) {
+            let fmt = diff_formatter(&base_now, t.doc());
+            deltas.push(t.delta_fmt("t", true, &fmt));
+        }
+    }));
     // insert 'b' right after 'a', then delete both
     {
         let mut txn = sdoc.transact_mut();
         let mut t = txn.node_mut("t").unwrap();
         t.apply_delta(Delta::new().retain(1).insert_text("b"));
         t.apply_delta(Delta::new().remove(2));
+        txn.commit(&mut on_commit(|t| {
+            if t.is_modified("t", false) {
+                let fmt = diff_formatter(&base_now, t.doc());
+                deltas.push(t.delta_fmt("t", true, &fmt));
+            }
+        }));
     }
     let inserted =
         Delta::out().insert_text_attributed("a", None, Some(Attribution::insert::<Attribute>([])));
     let expected = vec![inserted, Delta::out().remove(1)];
-    assert_eq!(*deltas.acquire(), expected);
+    assert_eq!(deltas, expected);
     let base = ContentIds::from_doc(&doc);
     let fmt = diff_formatter(&base, &sdoc);
     let fresh = sdoc
@@ -557,30 +553,27 @@ fn ydoc_diff() {
 fn child_list_content() {
     let start = Doc::new();
     let mut updated = clone_doc(&start, None);
-    let deltas = Cell::new(vec![]);
-    let deltas_c = deltas.clone();
-    updated
-        .transact_mut()
-        .node_mut("array")
-        .unwrap()
-        .observe_deep("sub", move |events| {
-            deltas_c.acquire_mut().push(events[0].delta(true))
-        });
+    let mut deltas = vec![];
     let yf = Delta::with_name("test")
         .insert_text("test content")
         .insert_attr("k", "v"); // <test k="v">test content</test>
-    let id = updated
-        .transact_mut()
+    let mut txn = updated.transact_mut();
+    let id = txn
         .node_mut("array")
         .unwrap()
         .insert(0, yf)
         .node_id()
         .unwrap(); // [<test k="v">test content</test>]
+    txn.commit(&mut on_commit(|t| {
+        if t.is_modified("array", true) {
+            deltas.push(t.delta("array", true))
+        }
+    }));
     let test = Delta::with_name("test")
         .insert_text("test content")
         .insert_attr("k", "v");
     let expected = Delta::out().insert(Out::node_with_delta(id.clone(), test));
-    assert_eq!(*deltas.acquire(), vec![expected]);
+    assert_eq!(deltas, vec![expected]);
     let test = Delta::with_name("test")
         .insert_text_attributed(
             "test content",
@@ -779,11 +772,25 @@ fn render_deep<F: DeltaFormatter>(doc: &Doc, node: &str, fmt: &F) -> Delta {
 }
 
 fn apply_fmt(doc: &mut Doc, node: &str, fmt: &DiffFormatter, d: Delta<In>) -> Delta<In> {
+    apply_fmt_with(doc, node, fmt, d, &mut NoReporter)
+}
+
+/// Same as [apply_fmt], committed with `r`.
+fn apply_fmt_with<R: Reporter>(
+    doc: &mut Doc,
+    node: &str,
+    fmt: &DiffFormatter,
+    d: Delta<In>,
+    r: &mut R,
+) -> Delta<In> {
     let mut txn = doc.transact_mut();
-    txn.node_mut(node)
+    let fix = txn
+        .node_mut(node)
         .unwrap()
         .formatted_mut(fmt)
-        .apply_delta(d)
+        .apply_delta(d);
+    txn.commit(r);
+    fix
 }
 
 /// Ensure that no suggestion landed on the doc.
@@ -801,16 +808,12 @@ fn apply_delta_modify_into_tombstone_returns_inverse() {
         let (doc, mut sdoc) = struck_paragraph_pair(clients);
         let fmt = suggestions(&doc, &sdoc);
         let before = render_deep(&sdoc, "prosemirror", &fmt);
-        let fired = Cell::new(0);
-        let fired_c = fired.clone();
-        sdoc.transact_mut()
-            .node_mut("prosemirror")
-            .unwrap()
-            .observe_deep("sub", move |_| *fired_c.acquire_mut() += 1);
+        let mut fired = 0;
         let d = Delta::new().modify(Delta::new().retain(2).insert_text("XY"));
-        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        let mut r = on_commit(|t| fired += t.is_modified("prosemirror", true) as i32);
+        let fix = apply_fmt_with(&mut sdoc, "prosemirror", &fmt, d, &mut r);
         assert_eq!(fix, Delta::new().modify(Delta::new().retain(2).remove(2)));
-        assert_eq!(*fired.acquire(), 0, "a fully reverted apply emits no event");
+        assert_eq!(fired, 0, "a fully reverted apply emits no event");
         assert_reverted(&sdoc, "prosemirror", &fmt, &before);
     }
 }
@@ -892,21 +895,16 @@ fn apply_delta_mixed_fix_coordinates() {
     for clients in [(1, 2), (2, 1)] {
         let (doc, mut sdoc) = deleted_mid_par(clients);
         let fmt = suggestions(&doc, &sdoc);
-        let fired = Cell::new(0);
-        let fired_c = fired.clone();
-        sdoc.transact_mut()
-            .node_mut("prosemirror")
-            .unwrap()
-            .observe_deep("sub", move |_| *fired_c.acquire_mut() += 1);
+        let mut fired = 0;
         let d = Delta::new()
             .insert(paragraph("nn"))
             .retain(1)
             .modify(Delta::new().retain(2).insert_text("XY"))
             .modify(Delta::new().retain(2).insert_text("ZZ"));
-        let fix = apply_fmt(&mut sdoc, "prosemirror", &fmt, d);
+        let mut r = on_commit(|t| fired += t.is_modified("prosemirror", true) as i32);
+        let fix = apply_fmt_with(&mut sdoc, "prosemirror", &fmt, d, &mut r);
         assert_eq!(
-            *fired.acquire(),
-            1,
+            fired, 1,
             "the applied part of the change emits exactly one delta event"
         );
         let inverse = Delta::new().retain(2).remove(2);

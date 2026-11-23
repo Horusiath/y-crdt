@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 /// What the delta builder needs from an attribute value: who, and when. Values are owned by the
-/// attribution maps and may travel into doc observers (see [crate::Suggestion]), hence the bounds.
+/// attribution maps and may be shared across threads, hence the bounds.
 #[cfg(feature = "sync")]
 pub trait AttributeValue: Eq + Hash + Send + Sync + 'static {
     /// User id for `insert`/`delete` attributes.
@@ -20,7 +20,7 @@ pub trait AttributeValue: Eq + Hash + Send + Sync + 'static {
 }
 
 /// What the delta builder needs from an attribute value: who, and when. Values are owned by the
-/// attribution maps and may travel into doc observers (see [crate::Suggestion]), hence the bounds.
+/// attribution maps, hence the bounds.
 #[cfg(not(feature = "sync"))]
 pub trait AttributeValue: Eq + Hash + 'static {
     /// User id for `insert`/`delete` attributes.
