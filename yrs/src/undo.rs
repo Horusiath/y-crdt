@@ -5,7 +5,6 @@ use crate::iter::TxnIterator;
 use crate::lib0::EncoderV1;
 use crate::node::NodePtr;
 use crate::slice::BlockSlice;
-use crate::transaction::Origin;
 use crate::{
     Cell, Doc, ID, IdSet, NodeRef, OwnedMut, Reporter, Transaction, TransactionState, Uuid,
 };
@@ -13,15 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
-use std::pin::Pin;
 use std::sync::Arc;
 
 /// Undo manager is a structure used to perform undo/redo operations over the associated shared
 /// type(s).
 ///
 /// Undo manager is a [Reporter]: it only sees changes of transactions committed with it
-/// (see [Transaction::commit]), filtered by their origins (see: [Doc::transact_mut_with] and
-/// [UndoManager::include_origin]) and scope (see: [UndoManager::expand_scope]).
+/// (see [Transaction::commit]), filtered by its scope (see: [UndoManager::expand_scope]).
 ///
 /// Undo-/redo-able actions (a.k.a. [StackItem]s) are not equivalent to [crate::TransactionMut]
 /// unit of work: tracked changes extend the last [StackItem] until [UndoManager::capture] is
@@ -446,8 +443,8 @@ impl<M> UndoStack<M> {
 
 /// Set of options used to configure [UndoManager].
 pub struct Options<M> {
-    /// Custom logic decider, that along with [tracked_origins] can be used to determine if
-    /// transaction changes should be captured or not.
+    /// Custom logic decider, that can be used to determine if transaction changes should be
+    /// captured or not.
     pub capture_transaction: Option<CaptureTransactionFn>,
 
     /// Initial undo stack that can be pre-filled with some operations that can be undone.
@@ -1525,14 +1522,14 @@ mod test {
     #[test]
     fn special_deletion_case() {
         // https://github.com/yjs/yjs/issues/447
-        const ORIGIN: &str = "undoable";
         let doc = Cell::new(Doc::with_client_id(1));
         let mut mgr = UndoManager::new();
         node(&doc, "test", &mut NoReporter, |mut n| {
             mgr.expand_scope(&mut n)
         });
 
-        let e = node(&doc, "test", &mut mgr, |mut f| {
+        // setup is not undoable
+        let e = node(&doc, "test", &mut NoReporter, |mut f| {
             let content = Delta::with_name("test")
                 .insert_attr("a", "1".to_string())
                 .insert_attr("b", "2".to_string());
@@ -1550,7 +1547,7 @@ mod test {
         {
             // change attribute "b" and delete test-node within a single transaction
             let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut_with(ORIGIN);
+            let mut txn = guard.transact_mut();
             txn.node_mut(e).unwrap().insert_attr("b", "3".to_string());
             txn.node_mut("test").unwrap().remove(0, 1);
             txn.commit(&mut mgr);

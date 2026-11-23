@@ -315,7 +315,6 @@
 //! let local_client_id = local.acquire().client_id();
 //! let mut mgr = UndoManager::with_options(Options::default());
 //! mgr.expand_scope(&mut local.transact_owned_mut().node_mut("article").unwrap());
-//! mgr.include_origin(local_client_id); // only track changes originating from local peer
 //!
 //! let remote = Cell::new(Doc::with_client_id(321));
 //! let remote_client_id = remote.acquire().client_id();
@@ -359,10 +358,9 @@
 //!
 //! It's important to understand a context, in which [UndoManager] operates:
 //!
-//! - **origins** can be specific classifiers attached to read-write transactions upon creation (see:
-//!   [Transact::transact_mut_with]). Undo manager can [include](UndoManager::include_origin) any
-//!   number of origins to its track scope. By default no origin is specified: in such case undo
-//!   manager will track all changes without looking at transaction origin.
+//! - **tracked transactions** are the ones committed with the undo manager as their [Reporter]
+//!   (see: [Transaction::commit]). Transactions committed otherwise (e.g. remote updates applied
+//!   with [NoReporter]) are not undoable.
 //! - **scope** refers to shared collection references such as [TextRef], [MapRef] etc. Undo manager
 //!   will only track operations performed on tracked scope refs. By default at least one such
 //!   reference must be specified, but they can be [expanded](UndoManager::expand_scope) to include

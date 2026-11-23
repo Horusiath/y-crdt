@@ -568,7 +568,10 @@ fn observe_deep_event_order() {
         paths,
         &[
             vec![Path::from(["array".into()])],
-            vec![Path::from(["array".into(), 1u32.into()])],
+            vec![
+                Path::from(["array".into()]),
+                Path::from(["array".into(), 1u32.into()])
+            ],
         ]
     );
 }
