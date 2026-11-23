@@ -38,12 +38,9 @@ pub struct UndoManager<M> {
     open: bool,
 }
 
-pub trait Meta: Default {}
-impl<M> Meta for M where M: Default {}
-
 impl<M> UndoManager<M>
 where
-    M: Meta,
+    M: Default,
 {
     /// Creates a new instance of the [UndoManager]. While it's possible for undo manager to
     /// observe multiple shared types (see: [UndoManager::expand_scope]), it can only work with
@@ -298,7 +295,7 @@ where
     }
 }
 
-impl<M: Meta> Reporter for UndoManager<M> {
+impl<M: Default> Reporter for UndoManager<M> {
     type Encoder = EncoderV1;
 
     fn keep(&self, txn: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {

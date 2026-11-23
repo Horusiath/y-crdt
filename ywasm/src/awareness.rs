@@ -1,8 +1,8 @@
 use js_sys::Uint8Array;
 use serde::Serialize;
 use std::cell::UnsafeCell;
-use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::wasm_bindgen;
 
 use yrs::block::ClientID;
 use yrs::sync::{Awareness as YAwareness, AwarenessUpdate, Timestamp};
@@ -46,7 +46,7 @@ impl Awareness {
             last_updated: u64,
         }
         let result = js_sys::Map::new();
-        for (client_id, state) in self.inner().iter() {
+        for (client_id, state) in self.inner().clients() {
             let info = ClientStateMeta {
                 clock: state.clock,
                 last_updated: state.last_updated,
@@ -92,7 +92,7 @@ impl Awareness {
     #[wasm_bindgen(js_name = getStates)]
     pub fn states(&self) -> crate::Result<js_sys::Map> {
         let result = js_sys::Map::new();
-        for (client_id, state) in self.inner().iter() {
+        for (client_id, state) in self.inner().clients() {
             if let Some(data) = &state.data {
                 let state = js_sys::JSON::parse(data.as_ref())?;
                 result.set(&JsValue::from_f64(client_id.get() as f64), &state);
