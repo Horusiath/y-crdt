@@ -547,27 +547,73 @@
 //! or cursor position, but without the overhead of keeping metadata necessary for conflict
 //! resolution.
 //!
+//! [sync::Awareness] is a trait over a storage of per-client states. [sync::awareness::AwarenessMap]
+//! is a ready-to-use implementation, but you can implement it over your own storage.
+//! Awareness doesn't emit events: [sync::Awareness::apply_update] returns a
+//! [sync::awareness::AwarenessUpdateSummary] describing which clients were added, updated or removed:
+//!
+//! ```rust
+//! use yrs::{any, Any, ClientID};
+//! use yrs::lib0::{Decode, Encode};
+//! use yrs::sync::{Awareness, AwarenessUpdate};
+//! use yrs::sync::awareness::AwarenessMap;
+//!
+//! let alice_id = ClientID::new(1);
+//! let bob_id = ClientID::new(2);
+//! let mut alice = AwarenessMap::<Any>::new();
+//! let mut bob = AwarenessMap::<Any>::new();
+//!
+//! // set the local state and send it to remote peers
+//! alice.insert_state(alice_id, any!({ "name": "Alice", "cursor": 5 }));
+//! let bytes = alice.update().unwrap().encode_v1();
+//!
+//! // apply the update on the remote peer and check what has changed
+//! let update = AwarenessUpdate::decode_v1(&bytes).unwrap();
+//! let summary = bob.apply_update(bob_id, update).unwrap();
+//! assert_eq!(summary.added, vec![alice_id]);
+//! assert_eq!(bob.state(alice_id).unwrap().data, Some(any!({ "name": "Alice", "cursor": 5 })));
+//!
+//! // before disconnecting, clear the local state and broadcast it explicitly
+//! // (`update()` only includes clients that still have a state)
+//! alice.remove_state(alice_id);
+//! let update = alice.update_with_clients([alice_id]).unwrap();
+//! let summary = bob.apply_update(bob_id, update).unwrap();
+//! assert_eq!(summary.removed, vec![alice_id]);
+//! ```
+//!
 //! [sync::Awareness] together with [Doc] updates combined create basis of y-sync [sync::Protocol].
 //! It's used by most of the network providers in Yjs/Yrs ecosystem and enables universal way of
 //! communicating between different systems.
 //!
 //! In its core y-sync protocol can operate as a simple state machine that serves exchanging and
-//! responding to different message types described by the protocol. The [sync::DefaultProtocol]
-//! provides all the message handlers necessary to make basic communication possible.
-//!
-//! y-sync protocol is extensible leaves a space for the users to define their own messages if
-//! necessary:
+//! responding to different message types described by the protocol. [sync::Protocol] is
+//! implemented for every type that is [sync::Awareness] and gives access to a corresponding [Doc].
+//! [sync::protocol::DefaultProtocol] bundles a [Doc] with an awareness state:
 //!
 //! ```rust
-//! use yrs::sync::{Awareness, Message, Protocol, Error};
+//! use yrs::{Any, any, ClientID, Doc};
+//! use yrs::lib0::{Encode, Encoder, EncoderV1};
+//! use yrs::sync::{Awareness, Protocol};
+//! use yrs::sync::protocol::DefaultProtocol;
 //!
-//! struct MyProtocol;
-//! impl Protocol for MyProtocol {
-//!     fn missing_handle(&self, awareness: &mut Awareness, tag: u8, data: Vec<u8>) -> Result<Option<Message>, Error> {
-//!         // you can not only override existing message handlers but also define your own
-//!         Ok(Some(Message::Custom(tag, data))) // echo
-//!     }
+//! let mut server = DefaultProtocol::<Any>::new(Doc::with_client_id(1));
+//! let mut client = DefaultProtocol::<Any>::new(Doc::with_client_id(2));
+//!
+//! server.as_mut().transact_mut().node_mut("text").unwrap().insert_text(0, "hello");
+//! client.set_state(any!({ "name": "Bob" }));
+//!
+//! // client initiates the connection: sends its state vector (SyncStep1) and awareness state
+//! let mut encoder = EncoderV1::new();
+//! client.start(&mut encoder).unwrap();
+//!
+//! // server applies the awareness update and replies with missing document updates (SyncStep2)
+//! let replies = server.handle(&encoder.to_vec()).unwrap();
+//! for reply in replies {
+//!     client.handle(&reply.encode_v1()).unwrap();
 //! }
+//!
+//! assert_eq!(client.as_ref().transact().node("text").unwrap().to_string(), "hello");
+//! assert_eq!(server.state(ClientID::new(2)).unwrap().data, Some(json!({ "name": "Bob" })));
 //! ```
 //!
 //! # Querying document state
@@ -635,7 +681,7 @@ mod reporter;
 mod slice;
 mod state_vector;
 mod sticky_index;
-mod sync;
+pub mod sync;
 #[doc(hidden)]
 pub mod test_utils;
 mod transact;

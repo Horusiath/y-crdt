@@ -312,6 +312,7 @@ where
             _ => None,
         };
         let render = DeltaWalk {
+            doc: self.txn.doc(),
             fmt,
             encoding: self.txn.doc.options.offset_kind,
             items,
@@ -337,6 +338,10 @@ where
     D: DocHandle,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        #[cfg(feature = "weak")]
+        if let TypeRef::WeakLink(source) = &self.ptr.type_ref {
+            return source.quoted_string(&*self.txn, f);
+        }
         let mut curr = self.ptr.start;
         while let Some(ptr) = curr {
             if !ptr.is_deleted() {
@@ -506,7 +511,7 @@ pub(crate) fn apply_delta<F: DeltaFormatter>(
     {
         let kind = doc.offset_kind();
         if formatted_len(fmt, &item, kind) > 0 {
-            DeltaWalk::full(fmt, kind).invert(node, &delta, fix);
+            DeltaWalk::full(doc, fmt).invert(node, &delta, fix);
         }
         return; // an invisible deleted node: there's nothing to revert
     }
@@ -976,6 +981,7 @@ pub(crate) fn get_delta<F: DeltaFormatter>(
         &state.changed
     };
     let render = DeltaWalk {
+        doc,
         fmt,
         encoding: doc.options.offset_kind,
         items: Some(&items),
@@ -1157,6 +1163,8 @@ impl std::fmt::Display for XmlFormat {
 }
 
 struct DeltaWalk<'a, F: DeltaFormatter> {
+    /// Used to resolve weak link boundaries.
+    doc: &'a Doc,
     fmt: &'a F,
     encoding: OffsetKind,
     /// If `None` renders the full node state.
@@ -1326,10 +1334,11 @@ fn piece_count(content: Option<&ItemContent>, len: u32) -> u32 {
 
 impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
     /// A deep render of the full state.
-    fn full(fmt: &'a F, encoding: OffsetKind) -> Self {
+    fn full(doc: &'a Doc, fmt: &'a F) -> Self {
         DeltaWalk {
+            doc,
             fmt,
-            encoding,
+            encoding: doc.options.offset_kind,
             items: None,
             inserted_items: None,
             deleted: None,
@@ -1495,10 +1504,17 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         let mut delta = match &node.type_ref {
             TypeRef::XmlElement(name) => Delta::with_name(name.clone()),
             #[cfg(feature = "weak")]
-            TypeRef::WeakLink(source) if self.link_depth == 0 && self.is_inserted(node) => Delta {
-                link: Some(source.clone()),
-                ..Delta::default()
-            },
+            TypeRef::WeakLink(source) => {
+                let mut delta = Delta::default();
+                if self.is_inserted(node) {
+                    delta.link = Some(source.clone());
+                }
+                // only full renders follow links
+                if self.link_depth > 0 && self.items.is_none() {
+                    self.quoted(&mut delta, source);
+                }
+                return delta;
+            }
             _ => Delta::default(),
         };
         self.attrs(&mut delta, node, attrs_to_render);
@@ -1617,7 +1633,7 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         }
         let walk = DeltaWalk {
             link_depth: self.link_depth,
-            ..DeltaWalk::full(self.fmt, self.encoding)
+            ..DeltaWalk::full(self.doc, self.fmt)
         };
         walk.node_value(node)
     }
@@ -1633,6 +1649,10 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
     }
 
     fn node_value(&self, node: NodePtr) -> Out {
+        #[cfg(feature = "weak")]
+        if let Some(value) = self.linked_entry(node) {
+            return value;
+        }
         if !self.deep {
             return Out::node(node.id());
         }
@@ -1666,18 +1686,94 @@ impl<'a, F: DeltaFormatter> DeltaWalk<'a, F> {
         let mut curr = node.start;
         while let Some(item) = curr {
             curr = item.right;
-            if self.fmt.contains(&item) {
-                pieces.clear();
-                self.read_pieces(&mut pieces, item);
-                for piece in pieces.iter() {
-                    self.process_content(d, &mut state, item, piece);
-                }
-            } else {
-                // generic fast path: content the renderer doesn't claim renders as-is — no attribution
-                // lookups, no AttributedContent wrappers and, in the common full-coverage case, no
-                // content slicing
-                self.fast_path(d, &mut state, item);
+            self.child(d, &mut state, &mut pieces, item);
+        }
+    }
+
+    fn child(
+        &self,
+        d: &mut Delta,
+        state: &mut WalkState,
+        pieces: &mut Vec<AttributedFragment<'a, F::Attr>>,
+        item: ItemPtr,
+    ) {
+        if self.fmt.contains(&item) {
+            pieces.clear();
+            self.read_pieces(pieces, item);
+            for piece in pieces.iter() {
+                self.process_content(d, state, item, piece);
             }
+        } else {
+            // generic fast path: content the renderer doesn't claim renders as-is — no attribution
+            // lookups, no AttributedContent wrappers and, in the common full-coverage case, no
+            // content slicing
+            self.fast_path(d, state, item);
+        }
+    }
+
+    #[cfg(feature = "weak")]
+    fn quoted(&self, d: &mut Delta, source: &crate::weak::LinkSource) {
+        let Some(first) = source.start().get_item(self.doc) else {
+            return; // quoted content has been GCed
+        };
+        if first.parent_sub.is_some() {
+            return; // map entry links render as their value in place (see `linked_entry`)
+        }
+        let walk = DeltaWalk {
+            link_depth: self.link_depth - 1,
+            ..*self
+        };
+        let parent = *first.parent.as_node().unwrap();
+        let mut state = WalkState::default();
+        let mut pieces = Vec::new();
+        // formatting in effect at the start of the quote comes from markers preceding it
+        let mut curr = parent.start;
+        let mut preceding = Delta::default();
+        while let Some(item) = curr
+            && item != first
+        {
+            curr = item.right;
+            if let ItemContent::Format(..) = &item.content {
+                walk.child(&mut preceding, &mut state, &mut pieces, item);
+            }
+        }
+        let end = source.end();
+        let end_id = end.id();
+        let mut curr = Some(first);
+        while let Some(item) = curr {
+            curr = item.right;
+            if end.assoc == Assoc::Before && end_id == Some(&item.id) {
+                break; // right side is open (last item excluded)
+            }
+            walk.child(d, &mut state, &mut pieces, item);
+            if end.assoc == Assoc::After && end_id == Some(&item.last_id()) {
+                break; // right side is closed (last item included)
+            }
+        }
+    }
+
+    #[cfg(feature = "weak")]
+    fn linked_entry(&self, node: NodePtr) -> Option<Out> {
+        use crate::iter::IntoBlockIter;
+        let TypeRef::WeakLink(source) = &node.type_ref else {
+            return None;
+        };
+        if self.link_depth == 0 || self.items.is_some() {
+            return None;
+        }
+        let first = source.start().get_item(self.doc)?;
+        first.parent_sub.as_ref()?;
+        let last = Some(first).to_iter().last()?;
+        if last.is_deleted() {
+            return None;
+        }
+        let walk = DeltaWalk {
+            link_depth: self.link_depth - 1,
+            ..*self
+        };
+        match last.content.as_node() {
+            Some(target) => Some(walk.node_value(NodePtr::from(target))),
+            None => last.content.get_last(),
         }
     }
 

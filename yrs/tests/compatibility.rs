@@ -1,15 +1,14 @@
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::fs::File;
 use std::io::BufReader;
 
-use yrs::IdSet;
 use yrs::Update;
 use yrs::block::{Block, ClientID, Item, ItemContent};
 use yrs::lib0::{Decode, Decoder, DecoderV1, Encode, Encoder, EncoderV1, Read};
 use yrs::node::{Node, TypePtr, TypeRef};
 use yrs::test_utils::{Blocks, Report};
-use yrs::{Any, Delta, Doc, ID, In, Out, StateVector};
+use yrs::{Any, Delta, Doc, ID, In, NodeID, Out, StateVector, Transaction};
+use yrs::{DocHandle, IdSet};
 
 #[test]
 fn text_insert_delete() {
@@ -456,19 +455,44 @@ fn test_data_set<P: AsRef<std::path::Path>>(path: P) {
             doc.transact_mut().apply_update(update).unwrap();
         }
         let mut txn = doc.transact_mut();
+        txn.node_mut("map").unwrap();
+        txn.node_mut("array").unwrap();
 
         let txt = txn.node_mut("text").unwrap();
         let expected = decoder.read_string().unwrap();
         let actual = txt.to_string();
         assert_eq!(actual, expected, "failed at {} run", test_num);
 
-        let map = txn.node_mut("map").unwrap();
         let expected = decoder.read_any().unwrap();
-        let actual = map.to_json();
+        let actual = legacy_json(&txn, "map".into(), &TypeRef::Map);
         assert_eq!(actual, expected, "failed at {} run", test_num);
 
-        let arr = txn.node_mut("array").unwrap();
         let expected = decoder.read_any().unwrap();
-        assert_eq!(arr.to_json(), expected, "failed at {} run", test_num);
+        let actual = legacy_json(&txn, "array".into(), &TypeRef::Array);
+        assert_eq!(actual, expected, "failed at {} run", test_num);
+    }
+}
+
+/// Renders a node in the Yjs v13 `toJSON` shape used by the data sets (no `attrs`/`children`
+/// wrapper). Root nodes have no type ref of their own, so the caller passes it.
+fn legacy_json<D: DocHandle>(txn: &Transaction<D>, id: NodeID, type_ref: &TypeRef) -> Any {
+    let node = txn.node(id).unwrap();
+    let value = |out: Out| match out {
+        Out::Any(any) => any,
+        Out::Node(n) => {
+            let type_ref = txn.node(n.id.clone()).unwrap().as_ref().type_ref().clone();
+            legacy_json(txn, n.id, &type_ref)
+        }
+        Out::Doc(guid) => panic!("unexpected subdoc {guid}"),
+    };
+    match type_ref {
+        TypeRef::Map => Any::from(
+            node.attrs()
+                .map(|(k, v)| (k.to_string(), value(v)))
+                .collect::<HashMap<_, _>>(),
+        ),
+        TypeRef::Array => Any::from(node.iter().map(value).collect::<Vec<_>>()),
+        TypeRef::Text => Any::from(node.to_string()),
+        other => panic!("unexpected type {other:?}"),
     }
 }

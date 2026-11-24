@@ -4,16 +4,7 @@ use std::ops::RangeBounds;
 use yrs::lib0::Decode;
 use yrs::node::Attrs;
 use yrs::test_utils::{exchange_updates, on_commit};
-use yrs::{Delta, Doc, DocHandle, NodeID, NodeRef, Out, Reporter, Transaction, Update};
-
-/// Renders `value`, resolving nested nodes through `txn`.
-fn stringify<D: DocHandle>(txn: &Transaction<D>, value: &Out) -> String {
-    match value {
-        Out::Node(n) => txn.node(n.id.clone()).unwrap().to_string(),
-        Out::Any(any) => any.to_string(),
-        Out::Doc(guid) => guid.to_string(),
-    }
-}
+use yrs::{Delta, DeltaOptions, Doc, NodeID, NodeRef, Out, Reporter, Transaction, Update};
 
 /// Dereferences a weak `link` living in `doc`.
 fn deref(doc: &Doc, link: &NodeID) -> Option<Out> {
@@ -68,6 +59,14 @@ fn target<'a>(link: &NodeID, target: &'a mut Option<NodeID>) -> impl Reporter + 
 /// Renders a weak `link` as a string.
 fn quoted_string(doc: &Doc, link: &NodeID) -> String {
     doc.transact().node(link.clone()).unwrap().to_string()
+}
+
+fn quoted_delta(doc: &Doc, link: &NodeID) -> Delta {
+    let opts = DeltaOptions {
+        link_depth: 1,
+        ..DeltaOptions::deep()
+    };
+    doc.transact().node(link.clone()).unwrap().delta(&opts)
 }
 
 #[test]
@@ -1075,9 +1074,22 @@ fn quote_formatted_text() {
             .unwrap();
         (l1, l2, l3)
     };
-    assert_eq!(quoted_string(&doc, &l1), "<b>a</b><i>b</i>");
-    assert_eq!(quoted_string(&doc, &l2), "<i>c</i>");
-    assert_eq!(quoted_string(&doc, &l3), "<i>d</i>e");
+    let expected = vec![
+        Delta::out()
+            .insert_text_fmt("a", &b)
+            .insert_text_fmt("b", &i)
+            .children,
+        Delta::out().insert_text_fmt("c", &i).children,
+        Delta::out()
+            .insert_text_fmt("d", &i)
+            .insert_text("e")
+            .children,
+    ];
+    let quotes: Vec<_> = [&l1, &l2, &l3]
+        .into_iter()
+        .map(|link| quoted_delta(&doc, link).children)
+        .collect();
+    assert_eq!(quotes, expected);
 
     {
         let mut txn = doc.transact_mut();
@@ -1089,26 +1101,48 @@ fn quote_formatted_text() {
         }
     }
 
-    let txn = doc.transact();
-    let diff: Vec<_> = txn
-        .node("text2")
-        .unwrap()
-        .iter()
-        .map(|v| stringify(&txn, &v))
+    let links: Vec<_> = doc.transact().node("text2").unwrap().iter().collect();
+    let quotes: Vec<_> = links
+        .into_iter()
+        .map(|v| quoted_delta(&doc, &v.node_id().unwrap()).children)
         .collect();
-    assert_eq!(
-        diff,
-        vec![
-            "<b>a</b><i>b</i>".to_string(),
-            "<i>c</i>".to_string(),
-            "<i>d</i>e".to_string()
-        ]
-    );
+    assert_eq!(quotes, expected);
 }
 
-/// TODO(unified-api): XmlTextRef and TextRef have been unified - this cast is now an identity.
-fn to_weak_xml_text<T>(weak: &NodeRef<T>) -> &NodeRef<T> {
-    weak
+#[test]
+fn map_link_delta() {
+    let mut doc = Doc::new();
+    let mut txn = doc.transact_mut();
+    let mut map = txn.node_mut("map").unwrap();
+    map.insert_attr("a", "hello");
+    let link = map.link("a").unwrap();
+    map.insert_attr("b", Delta::link(link));
+    let nested = map
+        .insert_attr("c", Delta::new().insert_attr("x", "nested"))
+        .node_id()
+        .unwrap();
+    let link = map.link("c").unwrap();
+    map.insert_attr("d", Delta::link(link));
+    drop(map);
+    drop(txn);
+
+    // {a:"hello", b:"hello", c:{x:"nested"}, d:{x:"nested"}}
+    let expected = |a: &str| {
+        let c = Out::node_with_delta(nested.clone(), Delta::out().insert_attr("x", "nested"));
+        Delta::out()
+            .insert_attr("a", a)
+            .insert_attr("b", a)
+            .insert_attr("c", c.clone())
+            .insert_attr("d", c)
+            .attrs
+    };
+    assert_eq!(quoted_delta(&doc, &"map".into()).attrs, expected("hello"));
+
+    doc.transact_mut()
+        .node_mut("map")
+        .unwrap()
+        .insert_attr("a", "world");
+    assert_eq!(quoted_delta(&doc, &"map".into()).attrs, expected("world"));
 }
 
 #[test]
@@ -1167,11 +1201,7 @@ fn quoted_text_start_boundary_inserts() {
         let incl = txn.node(link_incl.clone()).unwrap();
         let str = excl.to_string();
         assert_eq!(&str, "bcde");
-        let str = to_weak_xml_text(&excl).to_string();
-        assert_eq!(&str, "bcde");
         let str = incl.to_string();
-        assert_eq!(&str, "bcde");
-        let str = to_weak_xml_text(&incl).to_string();
         assert_eq!(&str, "bcde");
     }
 
@@ -1183,11 +1213,7 @@ fn quoted_text_start_boundary_inserts() {
         let incl = txn.node(link_incl).unwrap();
         let str = excl.to_string();
         assert_eq!(&str, "xyzbcde");
-        let str = to_weak_xml_text(&excl).to_string();
-        assert_eq!(&str, "xyzbcde");
         let str = incl.to_string();
-        assert_eq!(&str, "bcde");
-        let str = to_weak_xml_text(&incl).to_string();
         assert_eq!(&str, "bcde");
     }
 }
@@ -1234,11 +1260,7 @@ fn quoted_text_end_boundary_inserts() {
         let incl = txn.node(link_incl.clone()).unwrap();
         let str = excl.to_string();
         assert_eq!(&str, "bcde");
-        let str = to_weak_xml_text(&excl).to_string();
-        assert_eq!(&str, "bcde");
         let str = incl.to_string();
-        assert_eq!(&str, "bcde");
-        let str = to_weak_xml_text(&incl).to_string();
         assert_eq!(&str, "bcde");
     }
 
@@ -1250,11 +1272,7 @@ fn quoted_text_end_boundary_inserts() {
         let incl = txn.node(link_incl).unwrap();
         let str = excl.to_string();
         assert_eq!(&str, "bcdexyz");
-        let str = to_weak_xml_text(&excl).to_string();
-        assert_eq!(&str, "bcdexyz");
         let str = incl.to_string();
-        assert_eq!(&str, "bcde");
-        let str = to_weak_xml_text(&incl).to_string();
         assert_eq!(&str, "bcde");
     }
 }

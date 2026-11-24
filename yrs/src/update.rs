@@ -1288,7 +1288,7 @@ mod test {
             let mut txn = d0.transact_mut();
             txn.node_mut("textBlock")
                 .unwrap()
-                .apply_delta(Delta::new().insert(c.to_string()));
+                .apply_delta(Delta::new().insert_text(c));
             let mut r = Report::new(EncoderV1::new());
             txn.commit(&mut r);
             updates.push(r.encoder.to_vec());
