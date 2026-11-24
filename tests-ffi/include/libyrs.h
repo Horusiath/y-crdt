@@ -181,6 +181,38 @@ typedef struct YBinary {
   uint32_t len;
 } YBinary;
 
+/**
+ * Callbacks called by `ytransaction_commit` in field order, each with the `state` passed there.
+ * `NULL` fields are skipped. Meant to be declared as `static const`.
+ *
+ * Pointers passed to callbacks (transaction, update, JSON) are valid only during the callback.
+ * The transaction is read-only (writes return `ERR_READ_ONLY`) and must never be committed.
+ * Callbacks must not open a transaction on the same document.
+ */
+typedef struct YReporterVTable {
+  /**
+   * Called before GC. Deltas (`ytransaction_delta`) must be read here: after GC they render
+   * deleted content as spurious deletes.
+   */
+  void (*committing)(void *state, struct YTransaction *txn);
+  /**
+   * Receives lib0 v1 update of the transaction. Skipped if the transaction changed nothing.
+   */
+  void (*update_v1)(void *state, struct YTransaction *txn, struct YBinary update);
+  /**
+   * Receives lib0 v2 update of the transaction. Skipped if the transaction changed nothing.
+   */
+  void (*update_v2)(void *state, struct YTransaction *txn, struct YBinary update);
+  /**
+   * Receives JSON `{"added":[guid],"removed":[guid],"loaded":[guid]}`. Skipped if all are empty.
+   */
+  void (*subdocs)(void *state, const char *json);
+  /**
+   * Called last.
+   */
+  void (*committed)(void *state, struct YTransaction *txn);
+} YReporterVTable;
+
 typedef union YInValue {
   const char *json;
   const struct YDelta *node;
@@ -244,14 +276,6 @@ typedef struct YDelta {
 } YDelta;
 
 /**
- * Node change event. Valid only inside the observer callback: read it with `yevent_*` functions.
- */
-typedef struct YEvent {
-  void *event;
-  const struct YTransaction *txn;
-} YEvent;
-
-/**
  * Releases a string returned by yffi.
  */
 void ystring_destroy(char *str);
@@ -313,79 +337,34 @@ struct YTransaction *ydoc_write_transaction(YDoc *doc, struct YBinary origin);
 void ydoc_load(YDoc *doc, struct YTransaction *parent_txn);
 
 /**
- * Destroys a document: emits destroy event and clears all callbacks. `parent_txn` (read-write) is
- * required for subdocuments and may be `NULL` otherwise.
+ * Destroys a document. `parent_txn` (read-write) is required for subdocuments and may be `NULL`
+ * otherwise: destroyed subdocument is reported as `removed` by the parent's commit `subdocs`.
  */
 void ydoc_clear(YDoc *doc, struct YTransaction *parent_txn);
 
 /**
- * Subscribes `cb` under `key` to lib0 v1 updates. The update is valid only inside the callback.
+ * Commits (if read-write) and releases a transaction, reporting the commit to `vtable` callbacks
+ * called with `state`. `NULL` vtable reports nothing. Read-only transactions ignore the vtable.
  */
-void ydoc_observe_updates_v1(YDoc *doc,
-                             struct YBinary key,
-                             void *state,
-                             void (*cb)(void*, struct YBinary));
+void ytransaction_commit(struct YTransaction *txn,
+                         const struct YReporterVTable *vtable,
+                         void *state);
 
 /**
- * Unsubscribes a callback registered by `ydoc_observe_updates_v1`. Returns 1 if removed.
+ * Returns JSON array of ids of nodes modified by the transaction: all of them if `root` is `NULL`,
+ * otherwise only `root` and nodes nested in it.
  */
-uint8_t ydoc_unobserve_updates_v1(YDoc *doc, struct YBinary key);
+char *ytransaction_modified(const struct YTransaction *txn, const YNode *root);
 
 /**
- * Subscribes `cb` under `key` to lib0 v2 updates. The update is valid only inside the callback.
+ * Returns the transaction origin, or empty binary if none. It's borrowed: don't destroy it.
  */
-void ydoc_observe_updates_v2(YDoc *doc,
-                             struct YBinary key,
-                             void *state,
-                             void (*cb)(void*, struct YBinary));
+struct YBinary ytransaction_origin(const struct YTransaction *txn);
 
 /**
- * Unsubscribes a callback registered by `ydoc_observe_updates_v2`. Returns 1 if removed.
+ * Returns 1 if the transaction is local, 0 if it applies a remote update.
  */
-uint8_t ydoc_unobserve_updates_v2(YDoc *doc, struct YBinary key);
-
-/**
- * Subscribes `cb` under `key` to committed transactions. The transaction is read-write and valid
- * only inside the callback: it must not be committed.
- */
-void ydoc_observe_after_transaction(YDoc *doc,
-                                    struct YBinary key,
-                                    void *state,
-                                    void (*cb)(void*, struct YTransaction*));
-
-/**
- * Unsubscribes a callback registered by `ydoc_observe_after_transaction`. Returns 1 if removed.
- */
-uint8_t ydoc_unobserve_after_transaction(YDoc *doc, struct YBinary key);
-
-/**
- * Subscribes `cb` under `key` to subdocument changes, passed as JSON
- * `{"added":[guid],"removed":[guid],"loaded":[guid]}` valid only inside the callback.
- */
-void ydoc_observe_subdocs(YDoc *doc,
-                          struct YBinary key,
-                          void *state,
-                          void (*cb)(void*, const char*));
-
-/**
- * Unsubscribes a callback registered by `ydoc_observe_subdocs`. Returns 1 if removed.
- */
-uint8_t ydoc_unobserve_subdocs(YDoc *doc, struct YBinary key);
-
-/**
- * Subscribes `cb` under `key` to document destruction (see `ydoc_clear`).
- */
-void ydoc_observe_destroy(YDoc *doc, struct YBinary key, void *state, void (*cb)(void*, YDoc*));
-
-/**
- * Unsubscribes a callback registered by `ydoc_observe_destroy`. Returns 1 if removed.
- */
-uint8_t ydoc_unobserve_destroy(YDoc *doc, struct YBinary key);
-
-/**
- * Commits (if read-write) and releases a transaction.
- */
-void ytransaction_commit(struct YTransaction *txn);
+uint8_t ytransaction_local(const struct YTransaction *txn);
 
 /**
  * Returns 1 if transaction is read-write, 0 otherwise.
@@ -531,8 +510,9 @@ char *ynode_string(const YNode *node, const struct YTransaction *txn);
  * }
  * ```
  * Nested nodes carry their own `children`/`attrs` only when `deep` is set. Change deltas (see
- * `yevent_delta`) may also contain `{"type":"retain","retain":n}`, `{"type":"delete","delete":n}`,
- * `{"type":"modify","value":{...}}` children and `{"type":"delete"}`/`{"type":"modify"}` attrs.
+ * `ytransaction_delta`) may also contain `{"type":"retain","retain":n}`,
+ * `{"type":"delete","delete":n}`, `{"type":"modify","value":{...}}` children and
+ * `{"type":"delete"}`/`{"type":"modify"}` attrs.
  */
 char *ynode_json(const YNode *node,
                  const struct YTransaction *txn,
@@ -597,49 +577,15 @@ struct YAttrOp yattr_modify(const char *key, const struct YDelta *delta);
 uint8_t ynode_apply_delta(YNode *node, struct YTransaction *txn, const struct YDelta *delta);
 
 /**
- * Subscribes `cb` under `key` to changes of this node.
+ * Returns a JSON path from the document root to the node, e.g. `$.map.inner[2]`, accepted by
+ * `ytransaction_json_path`.
  */
-void ynode_observe(YNode *node, struct YBinary key, void *state, void (*cb)(void*,
-                                                                            const struct YEvent*));
+char *ynode_path(const YNode *node, const struct YTransaction *txn);
 
 /**
- * Unsubscribes a callback registered by `ynode_observe`. Returns 1 if removed.
- */
-uint8_t ynode_unobserve(YNode *node, struct YBinary key);
-
-/**
- * Subscribes `cb` under `key` to changes of this node and its descendants. Callback receives
- * an array of `len` events.
- */
-void ynode_observe_deep(YNode *node,
-                        struct YBinary key,
-                        void *state,
-                        void (*cb)(void*, uint32_t, const struct YEvent*));
-
-/**
- * Unsubscribes a callback registered by `ynode_observe_deep`. Returns 1 if removed.
- */
-uint8_t ynode_unobserve_deep(YNode *node, struct YBinary key);
-
-/**
- * Returns the node changed by this event.
- */
-YNode *yevent_target(const struct YEvent *event);
-
-/**
- * Returns the read-only transaction which triggered this event.
- */
-const struct YTransaction *yevent_transaction(const struct YEvent *event);
-
-/**
- * Returns a JSON path from the document root to the event target, e.g. `$.map.inner[2]`,
- * accepted by `ytransaction_json_path`.
- */
-char *yevent_path(const struct YEvent *event);
-
-/**
- * Returns changes made to the target node as delta JSON. `deep` also renders changes of nested
- * nodes as `modify` operations instead of listing them as separate events.
+ * Returns changes made to `node` by the transaction as delta JSON. `deep` also renders changes of
+ * nested nodes as `modify` operations. Only correct in `YReporterVTable.committing`: after GC
+ * deleted content renders as spurious deletes.
  *
  * Shape (fields are omitted when empty):
  * ```json
@@ -659,14 +605,15 @@ char *yevent_path(const struct YEvent *event);
  * }
  * ```
  * `retain` skips unchanged children, carrying a `format` only when formatting changed (`null`
- * clears a key). Like Yjs, event deltas don't carry previous attribute values.
+ * clears a key).
  */
-char *yevent_delta(const struct YEvent *event, uint8_t deep);
+char *ytransaction_delta(const struct YTransaction *txn, const YNode *node, uint8_t deep);
 
 /**
- * Returns JSON array of changed attribute keys, where `null` marks a change of children.
+ * Returns JSON array of `node` attribute keys changed by the transaction, where `null` marks
+ * a change of children.
  */
-char *yevent_keys_changed(const struct YEvent *event);
+char *ytransaction_keys_changed(const struct YTransaction *txn, const YNode *node);
 
 /**
  * Returns lib0 v1 encoded sticky index at `index` of a node (`assoc` >= 0: after, < 0: before),

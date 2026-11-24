@@ -8,11 +8,11 @@ use std::ops::Bound;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
-use yrs::lib0::{Decode, Encode};
+use yrs::lib0::{Decode, Encode, EncoderV1};
 use yrs::node::{Attrs, NodePtr, PathSegment};
 use yrs::{
-    Any, Assoc, AttrOp, Delta, DeltaOptions, In, JsonPath, JsonPathEval, LinkSource, NodeID,
-    NodeRef, Op, Options, Origin, Snapshot, StateVector, StickyIndex, Update,
+    Any, Assoc, AttrOp, Delta, DeltaOptions, In, JsonPath, JsonPathEval, LinkSource, NoReporter,
+    NodeID, NodeRef, Op, Options, Reporter, Snapshot, StateVector, StickyIndex, Subdocs, Update,
 };
 
 /// A Yrs document. All nodes live within a document and are read and written via transactions.
@@ -93,8 +93,6 @@ enum TxnInner {
     Write(yrs::Transaction<&'static mut Doc>),
     /// Read-only transaction borrowed for the duration of a callback.
     Ref(&'static yrs::Transaction<&'static Doc>),
-    /// Read-write transaction borrowed for the duration of a callback.
-    Mut(&'static mut yrs::Transaction<&'static mut Doc>),
 }
 
 impl Transaction {
@@ -103,14 +101,12 @@ impl Transaction {
             TxnInner::Read(txn) => txn,
             TxnInner::Write(txn) => txn.as_readonly(),
             TxnInner::Ref(txn) => txn,
-            TxnInner::Mut(txn) => txn.as_readonly(),
         }
     }
 
     fn write(&mut self) -> Option<&mut yrs::Transaction<&'static mut Doc>> {
         match &mut self.0 {
             TxnInner::Write(txn) => Some(txn),
-            TxnInner::Mut(txn) => Some(txn),
             _ => None,
         }
     }
@@ -178,10 +174,6 @@ unsafe fn to_str<'a>(str: *const c_char) -> Option<&'a str> {
 
 unsafe fn parse<T: DeserializeOwned>(json: *const c_char) -> Option<T> {
     serde_json::from_str(to_str(json)?).ok()
-}
-
-unsafe fn origin(key: YBinary) -> Origin {
-    Origin::from(key.as_slice())
 }
 
 fn into_c_str(str: impl Into<Vec<u8>>) -> *mut c_char {
@@ -325,119 +317,134 @@ pub unsafe extern "C" fn ydoc_load(doc: *mut Doc, parent_txn: *mut Transaction) 
     }
 }
 
-/// Destroys a document: emits destroy event and clears all callbacks. `parent_txn` (read-write) is
-/// required for subdocuments and may be `NULL` otherwise.
+/// Destroys a document. `parent_txn` (read-write) is required for subdocuments and may be `NULL`
+/// otherwise: destroyed subdocument is reported as `removed` by the parent's commit `subdocs`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ydoc_clear(doc: *mut Doc, parent_txn: *mut Transaction) {
     let txn = parent_txn.as_mut().and_then(Transaction::write);
     (*doc).destroy(txn);
 }
 
-/// Subscribes `cb` under `key` to lib0 v1 updates. The update is valid only inside the callback.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_observe_updates_v1(
-    doc: *mut Doc,
-    key: YBinary,
+/// Callbacks called by `ytransaction_commit` in field order, each with the `state` passed there.
+/// `NULL` fields are skipped. Meant to be declared as `static const`.
+///
+/// Pointers passed to callbacks (transaction, update, JSON) are valid only during the callback.
+/// The transaction is read-only (writes return `ERR_READ_ONLY`) and must never be committed.
+/// Callbacks must not open a transaction on the same document.
+#[repr(C)]
+pub struct YReporterVTable {
+    /// Called before GC. Deltas (`ytransaction_delta`) must be read here: after GC they render
+    /// deleted content as spurious deletes.
+    pub committing: Option<unsafe extern "C" fn(state: *mut c_void, txn: *mut Transaction)>,
+    /// Receives lib0 v1 update of the transaction. Skipped if the transaction changed nothing.
+    pub update_v1:
+        Option<unsafe extern "C" fn(state: *mut c_void, txn: *mut Transaction, update: YBinary)>,
+    /// Receives lib0 v2 update of the transaction. Skipped if the transaction changed nothing.
+    pub update_v2:
+        Option<unsafe extern "C" fn(state: *mut c_void, txn: *mut Transaction, update: YBinary)>,
+    /// Receives JSON `{"added":[guid],"removed":[guid],"loaded":[guid]}`. Skipped if all are empty.
+    pub subdocs: Option<unsafe extern "C" fn(state: *mut c_void, json: *const c_char)>,
+    /// Called last.
+    pub committed: Option<unsafe extern "C" fn(state: *mut c_void, txn: *mut Transaction)>,
+}
+
+/// Reports a commit to `YReporterVTable` callbacks.
+struct CReporter<'a> {
+    vt: &'a YReporterVTable,
     state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, YBinary),
-) {
-    (*doc).observe_update_v1(origin(key), move |_, e| {
-        cb(state, YBinary::borrowed(&e.update))
-    });
+    subdocs: Subdocs,
 }
 
-/// Unsubscribes a callback registered by `ydoc_observe_updates_v1`. Returns 1 if removed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_unobserve_updates_v1(doc: *mut Doc, key: YBinary) -> u8 {
-    (*doc).unobserve_update_v1(origin(key)) as u8
-}
+impl Reporter for CReporter<'_> {
+    type Encoder = EncoderV1;
 
-/// Subscribes `cb` under `key` to lib0 v2 updates. The update is valid only inside the callback.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_observe_updates_v2(
-    doc: *mut Doc,
-    key: YBinary,
-    state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, YBinary),
-) {
-    (*doc).observe_update_v2(origin(key), move |_, e| {
-        cb(state, YBinary::borrowed(&e.update))
-    });
-}
+    fn subdocs(&mut self) -> Option<&mut Subdocs> {
+        self.vt.subdocs.is_some().then_some(&mut self.subdocs)
+    }
 
-/// Unsubscribes a callback registered by `ydoc_observe_updates_v2`. Returns 1 if removed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_unobserve_updates_v2(doc: *mut Doc, key: YBinary) -> u8 {
-    (*doc).unobserve_update_v2(origin(key)) as u8
-}
-
-/// Subscribes `cb` under `key` to committed transactions. The transaction is read-write and valid
-/// only inside the callback: it must not be committed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_observe_after_transaction(
-    doc: *mut Doc,
-    key: YBinary,
-    state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, *mut Transaction),
-) {
-    (*doc).observe_after_transaction(origin(key), move |txn| {
-        let mut txn = Transaction(TxnInner::Mut(std::mem::transmute(txn)));
-        cb(state, &mut txn)
-    });
-}
-
-/// Unsubscribes a callback registered by `ydoc_observe_after_transaction`. Returns 1 if removed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_unobserve_after_transaction(doc: *mut Doc, key: YBinary) -> u8 {
-    (*doc).unobserve_after_transaction(origin(key)) as u8
-}
-
-/// Subscribes `cb` under `key` to subdocument changes, passed as JSON
-/// `{"added":[guid],"removed":[guid],"loaded":[guid]}` valid only inside the callback.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_observe_subdocs(
-    doc: *mut Doc,
-    key: YBinary,
-    state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, *const c_char),
-) {
-    (*doc).observe_subdocs(origin(key), move |_, e| {
-        if let Ok(json) = serde_json::to_vec(e).map(CString::new) {
-            let json = json.unwrap();
-            cb(state, json.as_ptr())
+    fn committing(&mut self, txn: &yrs::Transaction<&Doc>) {
+        if let Some(cb) = self.vt.committing {
+            unsafe { cb(self.state, &mut Transaction::borrowed(txn)) }
         }
-    });
+    }
+
+    fn committed(&mut self, txn: &yrs::Transaction<&Doc>) {
+        let vt = self.vt;
+        unsafe {
+            let mut c_txn = Transaction::borrowed(txn);
+            if txn.has_changes() {
+                if let Some(cb) = vt.update_v1 {
+                    let update = txn.encode_update_v1();
+                    cb(self.state, &mut c_txn, YBinary::borrowed(&update));
+                }
+                if let Some(cb) = vt.update_v2 {
+                    let update = txn.encode_update_v2();
+                    cb(self.state, &mut c_txn, YBinary::borrowed(&update));
+                }
+            }
+            let s = &self.subdocs;
+            if let Some(cb) = vt.subdocs
+                && !(s.added().is_empty() && s.removed().is_empty() && s.loaded().is_empty())
+                && let Ok(json) = serde_json::to_vec(s)
+            {
+                let json = CString::new(json).unwrap(); // JSON escapes NUL
+                cb(self.state, json.as_ptr());
+            }
+            if let Some(cb) = vt.committed {
+                cb(self.state, &mut c_txn);
+            }
+        }
+    }
 }
 
-/// Unsubscribes a callback registered by `ydoc_observe_subdocs`. Returns 1 if removed.
+/// Commits (if read-write) and releases a transaction, reporting the commit to `vtable` callbacks
+/// called with `state`. `NULL` vtable reports nothing. Read-only transactions ignore the vtable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_unobserve_subdocs(doc: *mut Doc, key: YBinary) -> u8 {
-    (*doc).unobserve_subdocs(origin(key)) as u8
-}
-
-/// Subscribes `cb` under `key` to document destruction (see `ydoc_clear`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_observe_destroy(
-    doc: *mut Doc,
-    key: YBinary,
+pub unsafe extern "C" fn ytransaction_commit(
+    txn: *mut Transaction,
+    vtable: *const YReporterVTable,
     state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, *mut Doc),
 ) {
-    (*doc).observe_destroy(origin(key), move |_, doc| {
-        cb(state, doc as *const Doc as *mut Doc)
-    });
+    let Transaction(inner) = *Box::from_raw(txn);
+    if let TxnInner::Write(txn) = inner {
+        match vtable.as_ref() {
+            Some(vt) => txn.commit(&mut CReporter {
+                vt,
+                state,
+                subdocs: Subdocs::default(),
+            }),
+            None => txn.commit(&mut NoReporter),
+        }
+    }
 }
 
-/// Unsubscribes a callback registered by `ydoc_observe_destroy`. Returns 1 if removed.
+/// Returns JSON array of ids of nodes modified by the transaction: all of them if `root` is `NULL`,
+/// otherwise only `root` and nodes nested in it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ydoc_unobserve_destroy(doc: *mut Doc, key: YBinary) -> u8 {
-    (*doc).unobserve_destroy(origin(key)) as u8
+pub unsafe extern "C" fn ytransaction_modified(
+    txn: *const Transaction,
+    root: *const Node,
+) -> *mut c_char {
+    let txn = (*txn).read();
+    match root.as_ref() {
+        None => json_seq(txn.modified().map(|(node, _)| node.id())),
+        Some(root) => json_seq(txn.modified_within(root.id()).map(|node| node.id())),
+    }
 }
 
-/// Commits (if read-write) and releases a transaction.
+/// Returns the transaction origin, or empty binary if none. It's borrowed: don't destroy it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ytransaction_commit(txn: *mut Transaction) {
-    drop(Box::from_raw(txn)); // committed on drop
+pub unsafe extern "C" fn ytransaction_origin(txn: *const Transaction) -> YBinary {
+    match (*txn).read().origin() {
+        Some(origin) => YBinary::borrowed(origin.as_ref()),
+        None => YBinary::empty(),
+    }
+}
+
+/// Returns 1 if the transaction is local, 0 if it applies a remote update.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ytransaction_local(txn: *const Transaction) -> u8 {
+    (*txn).read().is_local() as u8
 }
 
 /// Returns 1 if transaction is read-write, 0 otherwise.
@@ -714,8 +721,9 @@ pub unsafe extern "C" fn ynode_string(node: *const Node, txn: *const Transaction
 /// }
 /// ```
 /// Nested nodes carry their own `children`/`attrs` only when `deep` is set. Change deltas (see
-/// `yevent_delta`) may also contain `{"type":"retain","retain":n}`, `{"type":"delete","delete":n}`,
-/// `{"type":"modify","value":{...}}` children and `{"type":"delete"}`/`{"type":"modify"}` attrs.
+/// `ytransaction_delta`) may also contain `{"type":"retain","retain":n}`,
+/// `{"type":"delete","delete":n}`, `{"type":"modify","value":{...}}` children and
+/// `{"type":"delete"}`/`{"type":"modify"}` attrs.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ynode_json(
     node: *const Node,
@@ -1114,92 +1122,12 @@ pub unsafe extern "C" fn ynode_apply_delta(
     }
 }
 
-/* Events */
-
-/// Node change event. Valid only inside the observer callback: read it with `yevent_*` functions.
-#[repr(C)]
-pub struct YEvent {
-    event: *mut c_void,
-    txn: *const Transaction,
-}
-
-impl YEvent {
-    fn new(event: &mut yrs::Event, txn: &Transaction) -> Self {
-        YEvent {
-            event: event as *mut yrs::Event as *mut c_void,
-            txn,
-        }
-    }
-
-    unsafe fn event<'a>(&self) -> &'a mut yrs::Event<'static> {
-        &mut *(self.event as *mut yrs::Event<'static>)
-    }
-}
-
-/// Subscribes `cb` under `key` to changes of this node.
+/// Returns a JSON path from the document root to the node, e.g. `$.map.inner[2]`, accepted by
+/// `ytransaction_json_path`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ynode_observe(
-    node: *mut Node,
-    key: YBinary,
-    state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, *const YEvent),
-) {
-    (*node).observe(origin(key), move |e| {
-        let txn = Transaction::borrowed(e.transaction());
-        cb(state, &YEvent::new(e, &txn))
-    });
-}
-
-/// Unsubscribes a callback registered by `ynode_observe`. Returns 1 if removed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ynode_unobserve(node: *mut Node, key: YBinary) -> u8 {
-    (*node).unobserve(&origin(key)) as u8
-}
-
-/// Subscribes `cb` under `key` to changes of this node and its descendants. Callback receives
-/// an array of `len` events.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ynode_observe_deep(
-    node: *mut Node,
-    key: YBinary,
-    state: *mut c_void,
-    cb: extern "C" fn(*mut c_void, u32, *const YEvent),
-) {
-    (*node).observe_deep(origin(key), move |events| {
-        let Some(first) = events.first() else {
-            return;
-        };
-        let txn = Transaction::borrowed(first.transaction());
-        let events: Vec<_> = events.iter_mut().map(|e| YEvent::new(e, &txn)).collect();
-        cb(state, events.len() as u32, events.as_ptr())
-    });
-}
-
-/// Unsubscribes a callback registered by `ynode_observe_deep`. Returns 1 if removed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ynode_unobserve_deep(node: *mut Node, key: YBinary) -> u8 {
-    (*node).unobserve_deep(&origin(key)) as u8
-}
-
-/// Returns the node changed by this event.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn yevent_target(event: *const YEvent) -> *mut Node {
-    raw_node((*event).event().target().as_ref())
-}
-
-/// Returns the read-only transaction which triggered this event.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn yevent_transaction(event: *const YEvent) -> *const Transaction {
-    (*event).txn
-}
-
-/// Returns a JSON path from the document root to the event target, e.g. `$.map.inner[2]`,
-/// accepted by `ytransaction_json_path`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn yevent_path(event: *const YEvent) -> *mut c_char {
-    let target = (*event).event().target();
+pub unsafe extern "C" fn ynode_path(node: *const Node, txn: *const Transaction) -> *mut c_char {
     let mut path = String::from("$");
-    for segment in target.path() {
+    for segment in read_node(node, txn).path() {
         match segment {
             PathSegment::Key(key) => push_key(&mut path, &key),
             PathSegment::Index(i) => write!(path, "[{}]", i).unwrap(),
@@ -1217,8 +1145,9 @@ fn push_key(path: &mut String, key: &str) {
     }
 }
 
-/// Returns changes made to the target node as delta JSON. `deep` also renders changes of nested
-/// nodes as `modify` operations instead of listing them as separate events.
+/// Returns changes made to `node` by the transaction as delta JSON. `deep` also renders changes of
+/// nested nodes as `modify` operations. Only correct in `YReporterVTable.committing`: after GC
+/// deleted content renders as spurious deletes.
 ///
 /// Shape (fields are omitted when empty):
 /// ```json
@@ -1238,18 +1167,27 @@ fn push_key(path: &mut String, key: &str) {
 /// }
 /// ```
 /// `retain` skips unchanged children, carrying a `format` only when formatting changed (`null`
-/// clears a key). Like Yjs, event deltas don't carry previous attribute values.
+/// clears a key).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn yevent_delta(event: *const YEvent, deep: u8) -> *mut c_char {
-    to_json(&(*event).event().delta(deep != 0))
+pub unsafe extern "C" fn ytransaction_delta(
+    txn: *const Transaction,
+    node: *const Node,
+    deep: u8,
+) -> *mut c_char {
+    to_json(&(*txn).read().delta((*node).id(), deep != 0))
 }
 
-/// Returns JSON array of changed attribute keys, where `null` marks a change of children.
+/// Returns JSON array of `node` attribute keys changed by the transaction, where `null` marks
+/// a change of children.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn yevent_keys_changed(event: *const YEvent) -> *mut c_char {
-    let event = (*event).event();
-    let children = event.children_changed().then_some(None);
-    json_seq(children.into_iter().chain(event.keys_changed().map(Some)))
+pub unsafe extern "C" fn ytransaction_keys_changed(
+    txn: *const Transaction,
+    node: *const Node,
+) -> *mut c_char {
+    let txn = (*txn).read();
+    let id = (*node).id();
+    let children = txn.children_changed(id.clone()).then_some(None);
+    json_seq(children.into_iter().chain(txn.keys_changed(id).map(Some)))
 }
 
 /// Returns lib0 v1 encoded sticky index at `index` of a node (`assoc` >= 0: after, < 0: before),

@@ -75,13 +75,14 @@ static void node_id(char *json, char *out, size_t cap) {
     ystring_destroy(json);
 }
 
-static void insert_text(YDoc *doc, const char *root, uint32_t index, const char *text) {
+static void insert_text(YDoc *doc, const char *root, uint32_t index, const char *text,
+                        const YReporterVTable *vt = NULL, void *state = NULL) {
     YTransaction *txn = ydoc_write_transaction(doc, none());
     YNode *node = ynode(txn, root);
     YDeltaOp ops[] = {ydelta_retain(index, NULL), ydelta_insert_text(text, NULL)};
     YDelta ops_delta = ydelta(NULL, ops, 2, NULL, 0);
     REQUIRE(ynode_apply_delta(node, txn, &ops_delta) == 0);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, vt, state);
 }
 
 // Returns text of a root node, released by the caller.
@@ -90,7 +91,7 @@ static char *read_string(YDoc *doc, const char *root) {
     YNode *node = ynode(txn, root);
     REQUIRE(node != NULL);
     char *result = ynode_string(node, txn);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     return result;
 }
 
@@ -106,16 +107,16 @@ static void check_same_text(YDoc *d1, YDoc *d2, const char *root) {
 static void sync(YDoc *from, YDoc *to) {
     YTransaction *t_to = ydoc_read_transaction(to);
     YBinary sv = ytransaction_state_vector_v1(t_to);
-    ytransaction_commit(t_to);
+    ytransaction_commit(t_to, NULL, NULL);
 
     YTransaction *t_from = ydoc_read_transaction(from);
     YBinary diff = ytransaction_state_diff_v1(t_from, sv);
-    ytransaction_commit(t_from);
+    ytransaction_commit(t_from, NULL, NULL);
     ybinary_destroy(sv);
 
     t_to = ydoc_write_transaction(to, bin("remote"));
     REQUIRE(ytransaction_apply(t_to, diff) == 0);
-    ytransaction_commit(t_to);
+    ytransaction_commit(t_to, NULL, NULL);
     ybinary_destroy(diff);
 }
 
@@ -161,13 +162,13 @@ TEST_CASE("Text insert with format") {
     YDelta remove_delta = ydelta(NULL, remove, 2, NULL, 0);
     REQUIRE(ynode_apply_delta(text, txn, &remove_delta) == 0);
     CHECK_STR(ynode_string(text, txn), "hello");
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
 
     txn = ydoc_read_transaction(doc);
     CHECK(ytransaction_writeable(txn) == 0);
     CHECK(ynode_apply_delta(text, txn, &ops_delta) == ERR_READ_ONLY);
     CHECK_STR(ytransaction_root_refs(txn), "[\"text\"]");
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ydoc_destroy(doc);
 }
 
@@ -200,7 +201,7 @@ TEST_CASE("Array insert JSON and nested node") {
                    "\"children\":[{\"type\":\"insert\",\"insert\":\"nested\"}]");
     CHECK_STR(ytransaction_json_path(txn, "$.array[1].a"), "[\"b\"]");
     CHECK(ytransaction_json_path(txn, "$[") == NULL);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ydoc_destroy(doc);
 }
 
@@ -221,7 +222,7 @@ TEST_CASE("Invalid delta is not applied") {
     YDelta bad_tag_delta = ydelta(NULL, bad_tag, 1, NULL, 0);
     CHECK(ynode_apply_delta(array, txn, &bad_tag_delta) == ERR_DELTA_CONVERSION);
     CHECK(ynode_len(array, txn) == 0);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ydoc_destroy(doc);
 }
 
@@ -259,7 +260,7 @@ TEST_CASE("Map attributes") {
     REQUIRE(inner_node != NULL);
     CHECK_STR(ynode_attr_json(inner_node, txn, "k"), "\"v\"");
     CHECK_STR(ytransaction_json_path(txn, "$.map.inner.k"), "[\"v\"]");
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ydoc_destroy(doc);
 }
 
@@ -281,7 +282,7 @@ TEST_CASE("XML element") {
     CHECK(strstr(json, "\"name\":\"p\"") != NULL);
     CHECK(strstr(json, "\"class\":{\"type\":\"insert\",\"value\":\"bold\"}") != NULL);
     ystring_destroy(json);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ydoc_destroy(doc);
 }
 
@@ -289,10 +290,11 @@ static void on_subdocs(void *state, const char *json) {
     captured_push((Captured *) state, bin(json));
 }
 
+static const YReporterVTable SUBDOCS = {.subdocs = on_subdocs};
+
 TEST_CASE("Subdocuments") {
     YDoc *doc = ydoc("{\"client_id\":1}");
     Captured events = {0};
-    ydoc_observe_subdocs(doc, bin("subdocs"), &events, on_subdocs);
 
     YDoc *sub = ydoc("{\"guid\":\"sub-guid\"}");
     YTransaction *txn = ydoc_write_transaction(doc, none());
@@ -314,7 +316,7 @@ TEST_CASE("Subdocuments") {
     YDelta bad_ops_delta = ydelta(NULL, bad_ops, 1, NULL, 0);
     CHECK(ynode_apply_delta(array, txn, &bad_ops_delta) == ERR_DELTA_CONVERSION);
     ydoc_destroy(other);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, &SUBDOCS, &events);
 
     REQUIRE(events.len == 1);
     CHECK(strstr((const char *) events.items[0].ptr, "\"added\":[\"sub-guid\"]") != NULL);
@@ -322,13 +324,15 @@ TEST_CASE("Subdocuments") {
 
     insert_text(live, "\"text\"", 0, "inside");
     CHECK_STR(read_string(live, "\"text\""), "inside");
-    CHECK(ydoc_unobserve_subdocs(doc, bin("subdocs")) == 1);
     ydoc_destroy(doc);
 }
 
-static void on_update(void *state, YBinary update) {
+static void on_update(void *state, YTransaction *txn, YBinary update) {
     captured_push((Captured *) state, update);
 }
+
+static const YReporterVTable UPDATES_V1 = {.update_v1 = on_update};
+static const YReporterVTable UPDATES_V2 = {.update_v2 = on_update};
 
 TEST_CASE("Sync two docs") {
     YDoc *d1 = ydoc("{\"client_id\":1}");
@@ -343,20 +347,15 @@ TEST_CASE("Sync two docs") {
     CHECK(strlen(merged) == 10);
     ystring_destroy(merged);
 
-    // incremental updates via observer, applied with v2
+    // incremental update reported by commit, applied with v2
     Captured updates = {0};
-    ydoc_observe_updates_v2(d1, bin("sync"), &updates, on_update);
-    insert_text(d1, "\"text\"", 0, "!");
+    insert_text(d1, "\"text\"", 0, "!", &UPDATES_V2, &updates);
     REQUIRE(updates.len == 1);
     YTransaction *txn = ydoc_write_transaction(d2, none());
     CHECK(ytransaction_apply_v2(txn, updates.items[0]) == 0);
     CHECK(ytransaction_apply(txn, bin("\xff\xff")) != 0);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     check_same_text(d1, d2, "\"text\"");
-
-    CHECK(ydoc_unobserve_updates_v2(d1, bin("sync")) == 1);
-    insert_text(d1, "\"text\"", 0, "?");
-    CHECK(updates.len == 1);
     captured_free(&updates);
 
     ydoc_destroy(d1);
@@ -367,9 +366,8 @@ TEST_CASE("Pending update") {
     YDoc *d1 = ydoc("{\"client_id\":1}");
     YDoc *d2 = ydoc("{\"client_id\":2}");
     Captured updates = {0};
-    ydoc_observe_updates_v1(d1, bin("u"), &updates, on_update);
-    insert_text(d1, "\"text\"", 0, "a");
-    insert_text(d1, "\"text\"", 1, "b");
+    insert_text(d1, "\"text\"", 0, "a", &UPDATES_V1, &updates);
+    insert_text(d1, "\"text\"", 1, "b", &UPDATES_V1, &updates);
     REQUIRE(updates.len == 2);
 
     YTransaction *txn = ydoc_write_transaction(d2, none());
@@ -377,7 +375,7 @@ TEST_CASE("Pending update") {
     YBinary pending = ytransaction_pending_update(txn);
     CHECK(pending.len > 0);
     ybinary_destroy(pending);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     captured_free(&updates);
 
     ydoc_destroy(d1);
@@ -389,17 +387,17 @@ TEST_CASE("Snapshot") {
     insert_text(doc, "\"text\"", 0, "hello");
     YTransaction *txn = ydoc_read_transaction(doc);
     YBinary snapshot = ytransaction_snapshot(txn);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     insert_text(doc, "\"text\"", 5, " world");
 
     txn = ydoc_read_transaction(doc);
     YBinary update = ytransaction_encode_state_from_snapshot_v1(txn, snapshot);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
 
     YDoc *past = ydoc(NULL);
     txn = ydoc_write_transaction(past, none());
     CHECK(ytransaction_apply(txn, update) == 0);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     CHECK_STR(read_string(past, "\"text\""), "hello");
 
     ybinary_destroy(update);
@@ -408,63 +406,86 @@ TEST_CASE("Snapshot") {
     ydoc_destroy(doc);
 }
 
-// Last observed event, strings owned until `event_free`.
+// Changes read in `committing`, strings owned until `event_free`.
 typedef struct Event {
+    YNode *node;
     int calls;
     char *delta;
     char *keys;
-    char *target;
     char *path;
+    char *within;
+    char *all;
     uint8_t writeable;
 } Event;
 
 static void event_free(Event *e) {
     ystring_destroy(e->delta);
     ystring_destroy(e->keys);
-    ystring_destroy(e->target);
     ystring_destroy(e->path);
-    e->delta = e->keys = e->target = e->path = NULL;
+    ystring_destroy(e->within);
+    ystring_destroy(e->all);
+    e->delta = e->keys = e->path = e->within = e->all = NULL;
 }
 
-static void capture(Event *c, const YEvent *e) {
-    event_free(c);
-    c->calls++;
-    c->delta = yevent_delta(e, 0);
-    c->keys = yevent_keys_changed(e);
-    c->target = ynode_id(yevent_target(e));
-    c->path = yevent_path(e);
-    c->writeable = ytransaction_writeable((YTransaction *) yevent_transaction(e));
+// Captures changes of `target`.
+static void capture(Event *e, YTransaction *txn, YNode *target) {
+    e->calls++;
+    e->delta = ytransaction_delta(txn, target, 0);
+    e->keys = ytransaction_keys_changed(txn, target);
+    e->path = ynode_path(target, txn);
+    e->writeable = ytransaction_writeable(txn);
 }
 
-static void on_event(void *state, const YEvent *e) {
-    capture((Event *) state, e);
+static void on_node(void *state, YTransaction *txn) {
+    Event *e = (Event *) state;
+    event_free(e);
+    capture(e, txn, e->node);
 }
 
-static void on_deep(void *state, uint32_t len, const YEvent *events) {
-    for (uint32_t i = 0; i < len; i++) {
-        capture((Event *) state, &events[i]);
+// Captures nodes modified within `e->node` and changes of the first one.
+static void on_deep(void *state, YTransaction *txn) {
+    Event *e = (Event *) state;
+    event_free(e);
+    e->all = ytransaction_modified(txn, NULL);
+    e->within = ytransaction_modified(txn, e->node);
+    char id[64];
+    size_t len = strlen(e->within) - 2; // strip [ ]
+    if (len >= sizeof(id)) {
+        return;
+    }
+    memcpy(id, e->within + 1, len);
+    id[len] = 0;
+    YNode *target = ynode(txn, id);
+    if (target != NULL) {
+        capture(e, txn, target);
     }
 }
+
+static const YReporterVTable NODE = {.committing = on_node};
+static const YReporterVTable DEEP = {.committing = on_deep};
 
 TEST_CASE("Observe node") {
     YDoc *doc = ydoc("{\"client_id\":1}");
     YTransaction *txn = ydoc_write_transaction(doc, none());
-    YNode *text = ynode(txn, "\"text\"");
-    ytransaction_commit(txn);
+    Event c = {ynode(txn, "\"text\"")};
+    ytransaction_commit(txn, NULL, NULL);
 
-    Event c = {0};
-    ynode_observe(text, bin("key"), &c, on_event);
-    insert_text(doc, "\"text\"", 0, "abc");
+    insert_text(doc, "\"text\"", 0, "abc", &NODE, &c);
     CHECK(c.calls == 1);
     CHECK(strcmp(c.delta, "{\"children\":[{\"type\":\"insert\",\"insert\":\"abc\"}]}") == 0);
     CHECK(strcmp(c.keys, "[null]") == 0);
-    CHECK(strcmp(c.target, "\"text\"") == 0);
     CHECK(strcmp(c.path, "$.text") == 0);
     CHECK(c.writeable == 0);
 
-    CHECK(ynode_unobserve(text, bin("key")) == 1);
-    insert_text(doc, "\"text\"", 0, "x");
-    CHECK(c.calls == 1);
+    // deleted content still renders before GC
+    txn = ydoc_write_transaction(doc, none());
+    YDeltaOp remove[] = {ydelta_retain(1, NULL), ydelta_remove(2)};
+    YDelta remove_delta = ydelta(NULL, remove, 2, NULL, 0);
+    REQUIRE(ynode_apply_delta(c.node, txn, &remove_delta) == 0);
+    ytransaction_commit(txn, &NODE, &c);
+    CHECK(c.calls == 2);
+    CHECK(strcmp(c.delta, "{\"children\":[{\"type\":\"retain\",\"retain\":1},"
+                          "{\"type\":\"delete\",\"delete\":2}]}") == 0);
     event_free(&c);
     ydoc_destroy(doc);
 }
@@ -476,56 +497,152 @@ TEST_CASE("Observe deep") {
     YAttrOp attrs[] = {yattr_update("inner", yin_node(NULL))};
     YDelta attrs_delta = ydelta(NULL, NULL, 0, attrs, 1);
     REQUIRE(ynode_apply_delta(map, txn, &attrs_delta) == 0);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
 
-    Event c = {0};
-    ynode_observe_deep(map, bin("deep"), &c, on_deep);
-
+    Event c = {map};
     txn = ydoc_write_transaction(doc, none());
     YAttrOp inner_ops[] = {yattr_update("k", yin_json("1"))};
     YDelta inner = ydelta(NULL, NULL, 0, inner_ops, 1);
     YAttrOp modify[] = {yattr_modify("inner", &inner)};
     YDelta modify_delta = ydelta(NULL, NULL, 0, modify, 1);
     REQUIRE(ynode_apply_delta(map, txn, &modify_delta) == 0);
-    ytransaction_commit(txn);
+    YNode *other = ynode(txn, "\"other\"");
+    REQUIRE(ynode_apply_delta(other, txn, &inner) == 0);
+    ytransaction_commit(txn, &DEEP, &c);
 
     CHECK(c.calls == 1);
+    CHECK(strstr(c.all, "\"other\"") != NULL);
+    CHECK(strstr(c.within, "\"other\"") == NULL);
     CHECK(strcmp(c.path, "$.map.inner") == 0);
     txn = ydoc_read_transaction(doc);
     CHECK_CONTAINS(ytransaction_json_path(txn, c.path), "[{\"type\":\"delta\",\"id\":{");
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     CHECK(strcmp(c.keys, "[\"k\"]") == 0);
     CHECK(strcmp(c.delta, "{\"attrs\":{\"k\":{\"type\":\"insert\",\"value\":1}}}") == 0);
-
-    CHECK(ynode_unobserve_deep(map, bin("deep")) == 1);
     event_free(&c);
     ydoc_destroy(doc);
 }
 
-static void on_after_transaction(void *state, YTransaction *txn) {
-    *((uint8_t *) state) = ytransaction_writeable(txn);
+// Order of reporter callbacks, one letter per call.
+typedef struct Calls {
+    char order[16];
+    uint32_t len;
+} Calls;
+
+static void push_call(void *state, char c) {
+    Calls *calls = (Calls *) state;
+    if (calls->len < sizeof(calls->order) - 1) {
+        calls->order[calls->len++] = c;
+    }
 }
 
-TEST_CASE("After transaction") {
+static void call_committing(void *state, YTransaction *txn) {
+    push_call(state, 'c');
+}
+
+static void call_update_v1(void *state, YTransaction *txn, YBinary update) {
+    push_call(state, '1');
+}
+
+static void call_update_v2(void *state, YTransaction *txn, YBinary update) {
+    push_call(state, '2');
+}
+
+static void call_subdocs(void *state, const char *json) {
+    push_call(state, 's');
+}
+
+static void call_committed(void *state, YTransaction *txn) {
+    push_call(state, 'C');
+}
+
+static const YReporterVTable CALLS = {
+    call_committing, call_update_v1, call_update_v2, call_subdocs, call_committed,
+};
+
+TEST_CASE("Partial vtable") {
     YDoc *doc = ydoc(NULL);
-    uint8_t writeable = 0;
-    ydoc_observe_after_transaction(doc, bin("after"), &writeable, on_after_transaction);
-    insert_text(doc, "\"text\"", 0, "a");
-    CHECK(writeable == 1);
-    CHECK(ydoc_unobserve_after_transaction(doc, bin("after")) == 1);
+    static const YReporterVTable partial = {.update_v1 = call_update_v1,
+                                            .committed = call_committed};
+    Calls calls = {0};
+    insert_text(doc, "\"text\"", 0, "abc", &partial, &calls);
+    CHECK(strcmp(calls.order, "1C") == 0);
     ydoc_destroy(doc);
 }
 
-static void on_destroy(void *state, YDoc *doc) {
-    *((int *) state) += 1;
+TEST_CASE("Read-only commit ignores vtable") {
+    YDoc *doc = ydoc(NULL);
+    Calls calls = {0};
+    ytransaction_commit(ydoc_read_transaction(doc), &CALLS, &calls);
+    CHECK(calls.len == 0);
+    ydoc_destroy(doc);
+}
+
+TEST_CASE("Empty commit skips updates") {
+    YDoc *doc = ydoc(NULL);
+    Calls calls = {0};
+    ytransaction_commit(ydoc_write_transaction(doc, bin("origin")), &CALLS, &calls);
+    CHECK(strcmp(calls.order, "cC") == 0);
+    ydoc_destroy(doc);
+}
+
+// Transaction origin and locality seen by an update callback.
+typedef struct Meta {
+    char origin[16];
+    uint8_t local;
+} Meta;
+
+static void on_meta(void *state, YTransaction *txn, YBinary update) {
+    Meta *m = (Meta *) state;
+    YBinary origin = ytransaction_origin(txn);
+    if (origin.len < sizeof(m->origin)) {
+        memcpy(m->origin, origin.ptr, origin.len);
+        m->origin[origin.len] = 0;
+    }
+    m->local = ytransaction_local(txn);
+}
+
+static const YReporterVTable META = {.update_v1 = on_meta};
+
+TEST_CASE("Update reads origin") {
+    YDoc *d1 = ydoc("{\"client_id\":1}");
+    Meta meta = {"-", 0};
+    YTransaction *txn = ydoc_write_transaction(d1, bin("my-origin"));
+    YDeltaOp ops[] = {ydelta_insert_text("abc", NULL)};
+    YDelta ops_delta = ydelta(NULL, ops, 1, NULL, 0);
+    REQUIRE(ynode_apply_delta(ynode(txn, "\"text\""), txn, &ops_delta) == 0);
+    YBinary update = ytransaction_state_diff_v1(txn, none());
+    ytransaction_commit(txn, &META, &meta);
+    CHECK(strcmp(meta.origin, "my-origin") == 0);
+    CHECK(meta.local == 1);
+
+    YDoc *d2 = ydoc("{\"client_id\":2}");
+    txn = ydoc_write_transaction(d2, none());
+    REQUIRE(ytransaction_apply(txn, update) == 0);
+    ytransaction_commit(txn, &META, &meta);
+    CHECK(strcmp(meta.origin, "") == 0);
+    CHECK(meta.local == 0);
+    ybinary_destroy(update);
+    ydoc_destroy(d1);
+    ydoc_destroy(d2);
 }
 
 TEST_CASE("Destroy") {
     YDoc *doc = ydoc(NULL);
-    int calls = 0;
-    ydoc_observe_destroy(doc, bin("destroy"), &calls, on_destroy);
-    ydoc_clear(doc, NULL);
-    CHECK(calls == 1);
+    YTransaction *txn = ydoc_write_transaction(doc, none());
+    YIn items[] = {yin_doc(ydoc("{\"guid\":\"sub-guid\"}"))};
+    YDeltaOp ops[] = {ydelta_insert(items, 1, NULL)};
+    YDelta ops_delta = ydelta(NULL, ops, 1, NULL, 0);
+    REQUIRE(ynode_apply_delta(ynode(txn, "\"docs\""), txn, &ops_delta) == 0);
+    ytransaction_commit(txn, NULL, NULL);
+
+    Captured events = {0};
+    txn = ydoc_write_transaction(doc, none());
+    ydoc_clear(ytransaction_subdoc(txn, "sub-guid"), txn);
+    ytransaction_commit(txn, &SUBDOCS, &events);
+    REQUIRE(events.len == 1);
+    CHECK(strstr((const char *) events.items[0].ptr, "\"removed\":[\"sub-guid\"]") != NULL);
+    captured_free(&events);
     ydoc_destroy(doc);
 }
 
@@ -538,13 +655,13 @@ TEST_CASE("Sticky index") {
     YBinary index = ysticky_index_from_index(text, txn, 6, 0);
     REQUIRE(index.len > 0);
     CHECK(ysticky_index_from_index(text, txn, 100, 0).len == 0);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
 
     insert_text(doc, "\"text\"", 0, "say ");
     txn = ydoc_read_transaction(doc);
     CHECK_STR(ysticky_index_read(index, txn), "{\"id\":\"text\",\"index\":10}");
     CHECK(ysticky_index_read(bin("garbage"), txn) == NULL);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ybinary_destroy(index);
     ydoc_destroy(doc);
 }
@@ -576,7 +693,7 @@ TEST_CASE("Weak links") {
     YDelta ops_delta = ydelta(NULL, ops, 1, NULL, 0);
     REQUIRE(ynode_apply_delta(array, txn, &ops_delta) == 0);
     CHECK(ynode_len(array, txn) == 2);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
 
     txn = ydoc_read_transaction(doc);
     char expected[256];
@@ -584,7 +701,7 @@ TEST_CASE("Weak links") {
     CHECK_CONTAINS(ynode_json(array, txn, 1, 0), expected);
     snprintf(expected, sizeof(expected), "\"link\":%s", quote);
     CHECK_CONTAINS(ynode_json(array, txn, 1, 0), expected);
-    ytransaction_commit(txn);
+    ytransaction_commit(txn, NULL, NULL);
     ystring_destroy(link);
     ystring_destroy(quote);
     ydoc_destroy(doc);

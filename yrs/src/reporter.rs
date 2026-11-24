@@ -96,13 +96,10 @@ fn fill_report<R: Reporter + ?Sized>(r: &mut R, txn: &Transaction<&Doc>) {
 
 /// Writes the transaction's update into the encoder requested by `r`. Called after GC and squashing.
 fn encode_report<R: Reporter + ?Sized>(r: &mut R, txn: &Transaction<&Doc>) {
-    let (doc, Some(state)) = (txn.doc, txn.state.as_deref()) else {
-        return;
-    };
-    if let Some(encoder) = r.encoder() {
-        if !state.delete_set.is_empty() || state.after_state(doc) != state.before_state(doc) {
-            txn.encode_update(encoder);
-        }
+    if txn.has_changes()
+        && let Some(encoder) = r.encoder()
+    {
+        txn.encode_update(encoder);
     }
 }
 
@@ -116,7 +113,7 @@ impl Reporter for NoReporter {
     fn committed(&mut self, txn: &Transaction<&Doc>) {
         #[cfg(feature = "loud-report")]
         {
-            if !txn.insert_set().is_empty() || !txn.delete_set().is_empty() {
+            if txn.has_changes() {
                 eprintln!(
                     "yrs: transaction with changes committed without a reporter (doc: {}, origin: {:?})",
                     txn.doc().guid(),

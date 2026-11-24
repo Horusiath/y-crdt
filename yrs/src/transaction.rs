@@ -374,6 +374,15 @@ impl<D: DocHandle> Transaction<D> {
             .map_or_else(|| EMPTY.get_or_init(IdSet::new), |s| &s.delete_set)
     }
 
+    /// Checks if this transaction inserted or deleted anything.
+    pub fn has_changes(&self) -> bool {
+        if let Some(s) = &self.state {
+            !s.insert_set.is_empty() || !s.delete_set.is_empty()
+        } else {
+            false
+        }
+    }
+
     /// Returns `false` if this transaction applies a remote update.
     pub fn is_local(&self) -> bool {
         self.state.as_ref().map_or(true, |s| s.local)
@@ -1418,7 +1427,7 @@ impl<'doc> Iterator for RootRefs<'doc> {
 }
 
 /// Guids of subdocuments added, removed and loaded within a transaction.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, serde::Serialize)]
 pub struct Subdocs {
     pub(crate) added: HashSet<crate::Uuid>,
     pub(crate) removed: HashSet<crate::Uuid>,
