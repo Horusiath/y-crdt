@@ -65,7 +65,7 @@ impl<T> AsMut<Doc> for DefaultProtocol<T> {
 
 impl<T> Awareness for DefaultProtocol<T>
 where
-    T: Serialize + DeserializeOwned + Eq,
+    T: Serialize + DeserializeOwned + PartialEq,
 {
     type State = T;
 
@@ -415,14 +415,13 @@ mod test {
             txt.push_text("hello world");
         }
         let mut awareness = DefaultProtocol::<Value>::new(doc);
-        awareness
-            .set_state(json!({
-              "user":{
-                "name": "Anonymous 50",
-                "color": "#30bced",
-                "colorLight": "#30bced33"
-              }
-            }));
+        awareness.set_state(json!({
+          "user":{
+            "name": "Anonymous 50",
+            "color": "#30bced",
+            "colorLight": "#30bced33"
+          }
+        }));
 
         let messages = [
             crate::sync::Message::Sync(crate::sync::SyncMessage::SyncStep1(
