@@ -577,7 +577,6 @@ fn observe_deep_event_order() {
 }
 
 #[test]
-#[cfg(feature = "sync")]
 fn multi_threading() {
     use std::sync::{Arc, RwLock};
     use std::thread::{sleep, spawn};

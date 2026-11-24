@@ -16,8 +16,6 @@
 //!    yrs (v0.26 and below) and yjs (pre v14). It uses 32bit [crate::ClientID]. The current default
 //!    uses 53-bit (max safe integer number in JavaScript/Yjs).
 //! - `weak` this feature enables weak references and quotations (see: [crate::WeakRef]).
-//! - `sync` this feature makes [Cell] thread-safe. This is required when using yrs features in
-//!   multithreaded environments.
 //!
 //! # Quick start
 //!
@@ -667,7 +665,6 @@ mod utils;
 
 pub mod any;
 pub mod atomic;
-pub mod cell;
 mod cursor;
 mod delta;
 mod gc;
@@ -737,31 +734,6 @@ pub use crate::transaction::TransactionState;
 pub use crate::update::Update;
 #[cfg(feature = "weak")]
 pub use crate::weak::{LinkSource, Quotable, QuoteError, Unquote};
-
-pub use crate::cell::Acquire;
-pub use crate::cell::AcquireMut;
-
-#[cfg(not(feature = "sync"))]
-pub type Cell<T> = crate::cell::RcCell<T>;
-#[cfg(not(feature = "sync"))]
-pub type OwnedRef<T> = crate::cell::OwnedRef<T>;
-#[cfg(not(feature = "sync"))]
-pub type OwnedMut<T> = crate::cell::OwnedMut<T>;
-#[cfg(not(feature = "sync"))]
-pub type Ref<'a, T> = crate::cell::Ref<'a, T>;
-#[cfg(not(feature = "sync"))]
-pub type Mut<'a, T> = crate::cell::Mut<'a, T>;
-
-#[cfg(feature = "sync")]
-pub type Cell<T> = crate::cell::sync::ArcCell<T>;
-#[cfg(feature = "sync")]
-pub type OwnedRef<T> = crate::cell::sync::OwnedRef<T>;
-#[cfg(feature = "sync")]
-pub type OwnedMut<T> = crate::cell::sync::OwnedMut<T>;
-#[cfg(feature = "sync")]
-pub type Ref<'a, T> = crate::cell::sync::Ref<'a, T>;
-#[cfg(feature = "sync")]
-pub type Mut<'a, T> = crate::cell::sync::Mut<'a, T>;
 
 #[deprecated(since = "0.19.0", note = "Use `yrs::Out` instead")]
 pub type Value = Out;

@@ -65,8 +65,8 @@ fn merge_pending_v2(update: Vec<u8>, store: &Doc) -> Vec<u8> {
 
 /// A handle used by a [Transaction] to access its [Doc].
 ///
-/// Handles which also implement [DerefMut] (`&mut Doc`, [crate::OwnedMut]) give read-write
-/// transactions, the others (`&Doc`, [crate::OwnedRef]) give read-only ones.
+/// Handles which return a document from [DocHandle::try_doc_mut] (eg. `&mut Doc`) give read-write
+/// transactions, the others (eg. `&Doc`) give read-only ones.
 pub trait DocHandle: Deref<Target = Doc> {
     /// Returns a mutable reference to a document, if current handle allows writes.
     /// Used to commit read-write transactions when they are dropped.
@@ -87,43 +87,12 @@ impl DocHandle for &mut Doc {
     }
 }
 
-impl DocHandle for crate::cell::OwnedRef<Doc> {
-    #[inline]
-    fn try_doc_mut(&mut self) -> Option<&mut Doc> {
-        None
-    }
-}
-
-impl DocHandle for crate::cell::OwnedMut<Doc> {
-    #[inline]
-    fn try_doc_mut(&mut self) -> Option<&mut Doc> {
-        Some(self)
-    }
-}
-
-#[cfg(feature = "sync")]
-impl DocHandle for crate::cell::sync::OwnedRef<Doc> {
-    #[inline]
-    fn try_doc_mut(&mut self) -> Option<&mut Doc> {
-        None
-    }
-}
-
-#[cfg(feature = "sync")]
-impl DocHandle for crate::cell::sync::OwnedMut<Doc> {
-    #[inline]
-    fn try_doc_mut(&mut self) -> Option<&mut Doc> {
-        Some(self)
-    }
-}
-
 /// A transaction provides a controlled scope for reading and writing to a [Doc].
 ///
 /// - `Transaction<&Doc>` is a lightweight **read-only** transaction.
 /// - `Transaction<&mut Doc>` (aka [`TransactionMut`]) is a **read-write** transaction that
 ///   tracks changes and auto-commits when dropped.
-/// - `Transaction<OwnedRef<Doc>>`/`Transaction<OwnedMut<Doc>>` are their equivalents, which own
-///   a reference to a [crate::Cell] containing the document (see [crate::Cell::transact_owned_mut]).
+/// - `Transaction<D>` works over any other [DocHandle] implementation.
 ///
 /// Read-write transactions store information about all changes performed in their scope.
 /// These are used during [`Transaction::commit`] to optimize metadata and report changes.

@@ -602,7 +602,6 @@ fn get_as() {
 }*/
 
 #[test]
-#[cfg(feature = "sync")]
 fn multi_threading() {
     use std::sync::{Arc, RwLock};
     use std::thread::{sleep, spawn};

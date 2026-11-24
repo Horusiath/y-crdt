@@ -14,7 +14,6 @@ readme = "./README.md"
 [features]
 default = []
 weak = []
-sync = ["dep:async-lock"]
 small-client = []
 loud-report = []
 
@@ -23,7 +22,6 @@ thiserror = "2"
 fastrand = { version = "2", features = ["js"] }
 smallstr = { version = "0.3", features = ["union"] }
 smallvec = { version = "1.16", features = ["union", "const_generics", "const_new"] }
-async-lock = { version = "3.4", optional = true }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 

@@ -9,19 +9,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
-/// What the delta builder needs from an attribute value: who, and when. Values are owned by the
-/// attribution maps and may be shared across threads, hence the bounds.
-#[cfg(feature = "sync")]
-pub trait AttributeValue: Eq + Hash + Send + Sync + 'static {
-    /// User id for `insert`/`delete` attributes.
-    fn attributor(&self) -> Option<Arc<str>>;
-    /// Timestamp for `insertAt`/`deleteAt` attributes. `0` means not set.
-    fn timestamp(&self) -> u64;
-}
-
-/// What the delta builder needs from an attribute value: who, and when. Values are owned by the
-/// attribution maps, hence the bounds.
-#[cfg(not(feature = "sync"))]
+/// What the delta builder needs from an attribute value: who, and when.
 pub trait AttributeValue: Eq + Hash + 'static {
     /// User id for `insert`/`delete` attributes.
     fn attributor(&self) -> Option<Arc<str>>;
