@@ -706,3 +706,62 @@ TEST_CASE("Weak links") {
     ystring_destroy(quote);
     ydoc_destroy(doc);
 }
+
+static void on_track(void *state, YTransaction *txn) {
+    yundo_manager_track((YUndoManager *) state, txn);
+}
+
+static const YReporterVTable TRACK = {.committing = on_track};
+
+// Runs undo (or redo) in its own transaction, returning the reverted item.
+static YStackItem *undo_redo(YDoc *doc, YUndoManager *mgr, bool undo) {
+    YTransaction *txn = ydoc_write_transaction(doc, none());
+    YStackItem *item = NULL;
+    REQUIRE((undo ? yundo_manager_undo : yundo_manager_redo)(mgr, txn, &item) == 0);
+    ytransaction_commit(txn, NULL, NULL);
+    REQUIRE(item != NULL);
+    return item;
+}
+
+TEST_CASE("Undo manager") {
+    YDoc *doc = ydoc("{\"client_id\":1,\"guid\":\"undo-doc\"}");
+    YUndoManager *mgr = yundo_manager();
+    YTransaction *txn = ydoc_write_transaction(doc, none());
+    yundo_manager_expand_scope(mgr, txn, ynode(txn, "\"text\""));
+    ytransaction_commit(txn, NULL, NULL);
+
+    insert_text(doc, "\"other\"", 0, "x", &TRACK, mgr);
+    CHECK(yundo_manager_len(mgr, Y_UNDO_STACK) == 0); // out of scope
+
+    int m1, m2;
+    insert_text(doc, "\"text\"", 0, "a", &TRACK, mgr);
+    CHECK(yundo_manager_capture(mgr, &m1) == 1);
+    insert_text(doc, "\"text\"", 1, "b", &TRACK, mgr);
+    CHECK(yundo_manager_capture(mgr, &m2) == 1);
+    CHECK(yundo_manager_capture(mgr, &m2) == 0); // nothing tracked since
+    CHECK(yundo_manager_len(mgr, Y_UNDO_STACK) == 2);
+
+    YStackItem *item = undo_redo(doc, mgr, true);
+    CHECK(item->meta == &m2);
+    CHECK(strcmp(item->doc, "undo-doc") == 0);
+    ystack_item_destroy(item);
+    CHECK_STR(read_string(doc, "\"text\""), "a");
+    item = undo_redo(doc, mgr, true);
+    CHECK(item->meta == &m1);
+    ystack_item_destroy(item);
+    CHECK_STR(read_string(doc, "\"text\""), "");
+    CHECK(yundo_manager_len(mgr, Y_REDO_STACK) == 2);
+
+    item = undo_redo(doc, mgr, false);
+    CHECK(item->meta == NULL); // redo stack items carry no meta
+    ystack_item_destroy(item);
+    CHECK_STR(read_string(doc, "\"text\""), "a");
+    ystack_item_destroy(undo_redo(doc, mgr, false));
+    CHECK_STR(read_string(doc, "\"text\""), "ab");
+
+    txn = ydoc_write_transaction(doc, none());
+    CHECK(yundo_manager_clear(mgr, txn, Y_UNDO_STACK | Y_REDO_STACK) == 1);
+    ytransaction_commit(txn, NULL, NULL);
+    yundo_manager_destroy(mgr);
+    ydoc_destroy(doc);
+}

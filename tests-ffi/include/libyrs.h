@@ -37,6 +37,11 @@ typedef struct YDoc YDoc;
  */
 typedef struct YNode YNode;
 
+/**
+ * Tracks changes of its scope, possibly spread over multiple documents, and reverts them.
+ */
+typedef struct YUndoManager YUndoManager;
+
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -169,6 +174,26 @@ typedef struct YNode YNode;
 #define Y_ATTR_MODIFY 2
 
 /**
+ * `yundo_manager_clear`/`yundo_manager_len`/`yundo_manager_item` flag: undo stack.
+ */
+#define Y_UNDO_STACK 1
+
+/**
+ * `yundo_manager_clear`/`yundo_manager_len`/`yundo_manager_item` flag: redo stack.
+ */
+#define Y_REDO_STACK 2
+
+/**
+ * Error code: the last stack item belongs to another document than the transaction.
+ */
+#define ERR_UNDO_DOC_MISMATCH 14
+
+/**
+ * Error code: undo/redo requires a transaction without prior changes.
+ */
+#define ERR_UNDO_DIRTY_TRANSACTION 15
+
+/**
  * Transaction is a scope in which a document can be read or written.
  */
 typedef struct YTransaction YTransaction;
@@ -274,6 +299,28 @@ typedef struct YDelta {
   uint32_t attrs_len;
   const char *link;
 } YDelta;
+
+/**
+ * Copy of an undo manager stack item. Release it with `ystack_item_destroy`.
+ */
+typedef struct YStackItem {
+  /**
+   * Guid of the document the item belongs to.
+   */
+  char *doc;
+  /**
+   * lib0 v1 encoded ids of inserted blocks.
+   */
+  struct YBinary insertions;
+  /**
+   * lib0 v1 encoded ids of deleted blocks.
+   */
+  struct YBinary deletions;
+  /**
+   * Pointer passed to `yundo_manager_capture`, or `NULL`. Owned by the caller.
+   */
+  void *meta;
+} YStackItem;
 
 /**
  * Releases a string returned by yffi.
@@ -629,5 +676,70 @@ struct YBinary ysticky_index_from_index(const YNode *node,
  * malformed or unresolvable.
  */
 char *ysticky_index_read(struct YBinary index, const struct YTransaction *txn);
+
+/**
+ * Creates an undo manager with empty scope. Release it with `yundo_manager_destroy`.
+ */
+YUndoManager *yundo_manager(void);
+
+/**
+ * Releases an undo manager without freeing meta pointers. Clear it (`yundo_manager_clear`) for
+ * every still alive document first, otherwise their deleted content is never garbage collected.
+ */
+void yundo_manager_destroy(YUndoManager *mgr);
+
+/**
+ * Adds `node` (and everything nested in it) to the tracked scope, or the whole transaction
+ * document if `node` is `NULL`.
+ */
+void yundo_manager_expand_scope(YUndoManager *mgr,
+                                const struct YTransaction *txn,
+                                const YNode *node);
+
+/**
+ * Records changes of the transaction within the tracked scope. Call it before
+ * `ytransaction_commit` or from `YReporterVTable.committing`. Read-only and undo/redo
+ * transactions are ignored.
+ */
+void yundo_manager_track(YUndoManager *mgr, const struct YTransaction *txn);
+
+/**
+ * Seals the last stack item with `meta`, so that next tracked changes start a new one.
+ * Returns 0 (and ignores `meta`) if nothing was tracked since the last capture.
+ */
+uint8_t yundo_manager_capture(YUndoManager *mgr, void *meta);
+
+/**
+ * Reverts the last undo stack item within a read-write transaction without prior changes.
+ * Returns 0 on success or an error code. Unless `item` is `NULL`, it receives the reverted item
+ * (`NULL` if nothing was reverted). Item pushed onto the redo stack has `NULL` meta.
+ */
+uint8_t yundo_manager_undo(YUndoManager *mgr, struct YTransaction *txn, struct YStackItem **item);
+
+/**
+ * Reapplies the last redo stack item. Same rules as `yundo_manager_undo`.
+ */
+uint8_t yundo_manager_redo(YUndoManager *mgr, struct YTransaction *txn, struct YStackItem **item);
+
+/**
+ * Removes items of the transaction document from `stacks` (`Y_UNDO_STACK | Y_REDO_STACK`),
+ * without freeing their meta. Returns 1 if any item was removed. No-op on read-only transactions.
+ */
+uint8_t yundo_manager_clear(YUndoManager *mgr, struct YTransaction *txn, uint8_t stacks);
+
+/**
+ * Returns number of items on `stack` (`Y_UNDO_STACK` or `Y_REDO_STACK`), 0 if invalid.
+ */
+uint32_t yundo_manager_len(const YUndoManager *mgr, uint8_t stack);
+
+/**
+ * Returns a copy of item at `index` of `stack` (top is `len - 1`), or `NULL` if out of bounds.
+ */
+struct YStackItem *yundo_manager_item(const YUndoManager *mgr, uint8_t stack, uint32_t index);
+
+/**
+ * Releases a stack item, except its meta.
+ */
+void ystack_item_destroy(struct YStackItem *item);
 
 #endif

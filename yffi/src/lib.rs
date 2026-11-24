@@ -1222,3 +1222,204 @@ pub unsafe extern "C" fn ysticky_index_read(
         None => null_mut(),
     }
 }
+
+/// User metadata attached to a stack item. yffi never reads or frees it.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Meta(*mut c_void);
+
+impl Default for Meta {
+    fn default() -> Self {
+        Meta(null_mut())
+    }
+}
+
+/// Tracks changes of its scope, possibly spread over multiple documents, and reverts them.
+///
+/// cbindgen:ignore
+pub type UndoManager = yrs::undo::UndoManager<Meta>;
+
+/// `yundo_manager_clear`/`yundo_manager_len`/`yundo_manager_item` flag: undo stack.
+pub const Y_UNDO_STACK: u8 = 1;
+/// `yundo_manager_clear`/`yundo_manager_len`/`yundo_manager_item` flag: redo stack.
+pub const Y_REDO_STACK: u8 = 2;
+
+/// Error code: the last stack item belongs to another document than the transaction.
+pub const ERR_UNDO_DOC_MISMATCH: u8 = 14;
+
+/// Error code: undo/redo requires a transaction without prior changes.
+pub const ERR_UNDO_DIRTY_TRANSACTION: u8 = 15;
+
+/// Copy of an undo manager stack item. Release it with `ystack_item_destroy`.
+#[repr(C)]
+pub struct YStackItem {
+    /// Guid of the document the item belongs to.
+    pub doc: *mut c_char,
+    /// lib0 v1 encoded ids of inserted blocks.
+    pub insertions: YBinary,
+    /// lib0 v1 encoded ids of deleted blocks.
+    pub deletions: YBinary,
+    /// Pointer passed to `yundo_manager_capture`, or `NULL`. Owned by the caller.
+    pub meta: *mut c_void,
+}
+
+fn stack_item(item: &yrs::undo::StackItem<Meta>) -> *mut YStackItem {
+    Box::into_raw(Box::new(YStackItem {
+        doc: into_c_str(&**item.doc()),
+        insertions: item.insertions().encode_v1().into(),
+        deletions: item.deletions().encode_v1().into(),
+        meta: item.meta().0,
+    }))
+}
+
+fn stack_items(mgr: &UndoManager, stack: u8) -> Option<&[yrs::undo::StackItem<Meta>]> {
+    match stack {
+        Y_UNDO_STACK => Some(mgr.undo_stack()),
+        Y_REDO_STACK => Some(mgr.redo_stack()),
+        _ => None,
+    }
+}
+
+/// Creates an undo manager with empty scope. Release it with `yundo_manager_destroy`.
+#[unsafe(no_mangle)]
+pub extern "C" fn yundo_manager() -> *mut UndoManager {
+    Box::into_raw(Box::new(UndoManager::new()))
+}
+
+/// Releases an undo manager without freeing meta pointers. Clear it (`yundo_manager_clear`) for
+/// every still alive document first, otherwise their deleted content is never garbage collected.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_destroy(mgr: *mut UndoManager) {
+    if !mgr.is_null() {
+        drop(Box::from_raw(mgr));
+    }
+}
+
+/// Adds `node` (and everything nested in it) to the tracked scope, or the whole transaction
+/// document if `node` is `NULL`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_expand_scope(
+    mgr: *mut UndoManager,
+    txn: *const Transaction,
+    node: *const Node,
+) {
+    let txn = (*txn).read();
+    if node.is_null() {
+        (*mgr).expand_scope(txn);
+    } else {
+        (*mgr).expand_scope(&NodeRef::new(node_ptr(node), txn));
+    }
+}
+
+/// Records changes of the transaction within the tracked scope. Call it before
+/// `ytransaction_commit` or from `YReporterVTable.committing`. Read-only and undo/redo
+/// transactions are ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_track(mgr: *mut UndoManager, txn: *const Transaction) {
+    (*mgr).track((*txn).read());
+}
+
+/// Seals the last stack item with `meta`, so that next tracked changes start a new one.
+/// Returns 0 (and ignores `meta`) if nothing was tracked since the last capture.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_capture(mgr: *mut UndoManager, meta: *mut c_void) -> u8 {
+    (*mgr).capture(Meta(meta)) as u8
+}
+
+unsafe fn undo_redo(
+    mgr: *mut UndoManager,
+    txn: *mut Transaction,
+    item: *mut *mut YStackItem,
+    undo: bool,
+) -> u8 {
+    if !item.is_null() {
+        *item = null_mut();
+    }
+    let Some(txn) = (*txn).write() else {
+        return ERR_READ_ONLY;
+    };
+    let result = if undo {
+        (*mgr).undo(txn)
+    } else {
+        (*mgr).redo(txn)
+    };
+    match result {
+        Ok(reverted) => {
+            if let (Some(reverted), Some(item)) = (reverted, item.as_mut()) {
+                *item = stack_item(&reverted);
+            }
+            0
+        }
+        Err(yrs::undo::UndoError::DocMismatch { .. }) => ERR_UNDO_DOC_MISMATCH,
+        Err(yrs::undo::UndoError::DirtyTransaction) => ERR_UNDO_DIRTY_TRANSACTION,
+    }
+}
+
+/// Reverts the last undo stack item within a read-write transaction without prior changes.
+/// Returns 0 on success or an error code. Unless `item` is `NULL`, it receives the reverted item
+/// (`NULL` if nothing was reverted). Item pushed onto the redo stack has `NULL` meta.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_undo(
+    mgr: *mut UndoManager,
+    txn: *mut Transaction,
+    item: *mut *mut YStackItem,
+) -> u8 {
+    undo_redo(mgr, txn, item, true)
+}
+
+/// Reapplies the last redo stack item. Same rules as `yundo_manager_undo`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_redo(
+    mgr: *mut UndoManager,
+    txn: *mut Transaction,
+    item: *mut *mut YStackItem,
+) -> u8 {
+    undo_redo(mgr, txn, item, false)
+}
+
+/// Removes items of the transaction document from `stacks` (`Y_UNDO_STACK | Y_REDO_STACK`),
+/// without freeing their meta. Returns 1 if any item was removed. No-op on read-only transactions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_clear(
+    mgr: *mut UndoManager,
+    txn: *mut Transaction,
+    stacks: u8,
+) -> u8 {
+    let Some(txn) = (*txn).write() else {
+        return 0;
+    };
+    let mgr = &mut *mgr;
+    let undo = stacks & Y_UNDO_STACK != 0 && mgr.clear_undo(txn);
+    let redo = stacks & Y_REDO_STACK != 0 && mgr.clear_redo(txn);
+    (undo || redo) as u8
+}
+
+/// Returns number of items on `stack` (`Y_UNDO_STACK` or `Y_REDO_STACK`), 0 if invalid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_len(mgr: *const UndoManager, stack: u8) -> u32 {
+    stack_items(&*mgr, stack).map_or(0, |s| s.len() as u32)
+}
+
+/// Returns a copy of item at `index` of `stack` (top is `len - 1`), or `NULL` if out of bounds.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yundo_manager_item(
+    mgr: *const UndoManager,
+    stack: u8,
+    index: u32,
+) -> *mut YStackItem {
+    match stack_items(&*mgr, stack).and_then(|s| s.get(index as usize)) {
+        Some(item) => stack_item(item),
+        None => null_mut(),
+    }
+}
+
+/// Releases a stack item, except its meta.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ystack_item_destroy(item: *mut YStackItem) {
+    if !item.is_null() {
+        let item = Box::from_raw(item);
+        ystring_destroy(item.doc);
+        ybinary_destroy(item.insertions);
+        ybinary_destroy(item.deletions);
+    }
+}

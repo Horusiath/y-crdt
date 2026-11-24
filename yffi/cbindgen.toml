@@ -40,6 +40,11 @@ typedef struct YDoc YDoc;
  * A collaborative node. Owned by its document.
  */
 typedef struct YNode YNode;
+
+/**
+ * Tracks changes of its scope, possibly spread over multiple documents, and reverts them.
+ */
+typedef struct YUndoManager YUndoManager;
 """
 
 trailer = """
@@ -50,9 +55,10 @@ trailer = """
 parse_deps = false
 
 [export]
-exclude = ["Doc", "Node"]
+exclude = ["Doc", "Node", "UndoManager"]
 
 [export.rename]
 "Doc" = "YDoc"
 "Node" = "YNode"
+"UndoManager" = "YUndoManager"
 "Transaction" = "YTransaction"
