@@ -865,13 +865,11 @@ impl Item {
                 *parent_doc = Some(doc.guid().clone());
                 let doc_guid = options.guid.clone();
                 let should_load = options.should_load;
-                // If the Doc isn't already in store.subdocs (e.g. from Prelim),
-                // create it now (e.g. from decoded Options).
-                let subdoc = doc
-                    .subdocs
-                    .entry(doc_guid.clone())
-                    .or_insert_with(|| Doc::with_options(options.clone()));
+                // Subdocs are identified by guid: a newly integrated subdoc overrides
+                // any previously held one with the same guid.
+                let mut subdoc = Doc::with_options(options.clone());
                 subdoc.parent = Some(self_ptr);
+                doc.subdocs.insert(doc_guid.clone(), subdoc);
                 let subdocs = state.subdocs.get_or_init();
                 subdocs.added.insert(doc_guid.clone());
                 if should_load {

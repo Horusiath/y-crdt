@@ -613,7 +613,7 @@
 //! }
 //!
 //! assert_eq!(client.as_ref().transact().node("text").unwrap().to_string(), "hello");
-//! assert_eq!(server.state(ClientID::new(2)).unwrap().data, Some(json!({ "name": "Bob" })));
+//! assert_eq!(server.state(ClientID::new(2)).unwrap().data, Some(any!({ "name": "Bob" })));
 //! ```
 //!
 //! # Querying document state
