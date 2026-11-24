@@ -448,20 +448,6 @@ impl Node {
         }
         path
     }
-
-    pub(crate) fn is_parent_of(&self, mut ptr: Option<ItemPtr>) -> bool {
-        while let Some(i) = ptr.as_deref() {
-            if let Some(parent) = i.parent.as_node() {
-                if parent.deref() == self {
-                    return true;
-                }
-                ptr = parent.item;
-            } else {
-                break;
-            }
-        }
-        false
-    }
 }
 
 pub(crate) struct Iter<'a> {

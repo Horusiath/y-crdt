@@ -2,7 +2,6 @@ use crate::lib0::{Encoder, EncoderV1};
 use crate::node::NodePtr;
 use crate::transaction::Subdocs;
 use crate::{Doc, IdSet, Modified, Origin, StateVector, Transaction};
-use std::collections::HashSet;
 
 /// Used to report changes made during transactions. Storage accessors returning `None` are skipped.
 pub trait Reporter {
@@ -42,10 +41,6 @@ pub trait Reporter {
     }
     /// Receives the transaction origin and whether it was local.
     fn meta(&mut self, _origin: Option<&Origin>, _local: bool) {}
-    /// Asked before GC: nodes whose content deleted by `txn` must stay in the block store.
-    fn keep(&self, _txn: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
-        None
-    }
     /// Called after changes are collected and before GC, with storages (except `encoder`) already filled.
     /// This is where deltas of the transaction should be read: GC'ed content doesn't render.
     fn committing(&mut self, _txn: &Transaction<&Doc>) {}
@@ -154,9 +149,6 @@ impl<R: Reporter + ?Sized> Reporter for &mut R {
     fn meta(&mut self, origin: Option<&Origin>, local: bool) {
         (**self).meta(origin, local)
     }
-    fn keep(&self, txn: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
-        (**self).keep(txn)
-    }
     fn committing(&mut self, txn: &Transaction<&Doc>) {
         (**self).committing(txn)
     }
@@ -171,8 +163,7 @@ impl<R: Reporter + ?Sized> Reporter for &mut R {
     }
 }
 
-/// Both reporters are filled by a commit. Storage accessors and `encoder` expose `A` only,
-/// and if both return a `keep` scope, `A`'s wins.
+/// Both reporters are filled by a commit. Storage accessors and `encoder` expose `A` only.
 impl<A: Reporter, B: Reporter> Reporter for (A, B) {
     type Encoder = A::Encoder;
 
@@ -204,9 +195,6 @@ impl<A: Reporter, B: Reporter> Reporter for (A, B) {
         self.0.meta(origin, local);
         self.1.meta(origin, local);
     }
-    fn keep(&self, txn: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
-        self.0.keep(txn).or_else(|| self.1.keep(txn))
-    }
     fn committing(&mut self, txn: &Transaction<&Doc>) {
         self.0.committing(txn);
         self.1.committing(txn);
@@ -231,8 +219,8 @@ mod test {
     use crate::block::{ClientID, ItemContent};
     use crate::lib0::{Decode, Encoder, EncoderV1, EncoderV2};
     use crate::node::PathSegment;
-    use crate::test_utils::{Keep, Report, on_commit};
-    use crate::{Delta, Doc, ID, IdSet, NodeID, Origin, Update};
+    use crate::test_utils::{Report, on_commit};
+    use crate::{Delta, Doc, ID, IdSet, NodeID, UndoManager, Update};
     use std::collections::{HashMap, HashSet};
 
     fn insert_text(doc: &mut Doc, text: &str) {
@@ -321,13 +309,15 @@ mod test {
     }
 
     #[test]
-    fn keep_prevents_gc() {
+    fn track_prevents_gc() {
         let mut doc = Doc::with_client_id(1);
         insert_text(&mut doc, "abc");
-        let text = doc.node(NodeID::from("text")).unwrap();
+        let mut mgr = UndoManager::new();
         let mut txn = doc.transact_mut();
+        mgr.expand_scope(&txn.node("text").unwrap());
         txn.node_mut("text").unwrap().remove(0, 3);
-        txn.commit(&mut Keep(HashSet::from([text])));
+        mgr.track(&txn);
+        txn.commit(&mut NoReporter);
         let item = doc.blocks.get_item(&ID::new(ClientID::new(1), 0)).unwrap();
         assert!(matches!(item.content, ItemContent::String(_)));
     }

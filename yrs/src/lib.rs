@@ -16,8 +16,7 @@
 //!    yrs (v0.26 and below) and yjs (pre v14). It uses 32bit [crate::ClientID]. The current default
 //!    uses 53-bit (max safe integer number in JavaScript/Yjs).
 //! - `weak` this feature enables weak references and quotations (see: [crate::WeakRef]).
-//! - `sync` this feature makes [Cell] thread-safe and adds `Send` and `Sync` bounds to
-//!   [undo::Meta] and [undo::CaptureTransactionFn]. These are required when using yrs features in
+//! - `sync` this feature makes [Cell] thread-safe. This is required when using yrs features in
 //!   multithreaded environments.
 //!
 //! # Quick start
@@ -307,64 +306,68 @@
 //! [UndoManager] is a Yrs response for these needs, supporting wide variety of options:
 //!
 //! ```rust
-//! use yrs::{Acquire, AcquireMut, Cell, ClientID, Doc, NoReporter, Reporter, UndoManager, Update};
+//! use yrs::{ClientID, Doc, NoReporter, Reporter, UndoManager, Update};
 //! use yrs::lib0::Decode;
-//! use yrs::undo::Options;
 //!
-//! let local = Cell::new(Doc::with_client_id(123));
-//! let local_client_id = local.acquire().client_id();
-//! let mut mgr = UndoManager::with_options(Options::default());
-//! mgr.expand_scope(&mut local.transact_owned_mut().node_mut("article").unwrap());
+//! let mut local = Doc::with_client_id(123);
+//! let local_client_id = local.client_id();
+//! let mut mgr = UndoManager::new();
+//! mgr.expand_scope(&local.transact_mut().node_mut("article").unwrap());
 //!
-//! let remote = Cell::new(Doc::with_client_id(321));
-//! let remote_client_id = remote.acquire().client_id();
+//! let mut remote = Doc::with_client_id(321);
+//! let remote_client_id = remote.client_id();
 //!
-//! // undo manager tracks only the transactions committed with it
-//! fn push_text(doc: &Cell<Doc>, origin: ClientID, text: &str, r: &mut impl Reporter) {
-//!     let mut doc = doc.acquire_mut();
+//! // undo manager tracks only the transactions committed with it (or passed to UndoManager::track)
+//! fn push_text(doc: &mut Doc, origin: ClientID, text: &str, r: &mut impl Reporter) {
 //!     let mut txn = doc.transact_mut_with(origin);
 //!     txn.node_mut("article").unwrap().push_text(text);
 //!     txn.commit(r);
 //! }
-//! let read_text = |doc: &Cell<Doc>| doc.acquire().transact().node("article").unwrap().to_string();
+//! let read_text = |doc: &Doc| doc.transact().node("article").unwrap().to_string();
 //!
 //! // perform changes locally
-//! push_text(&local, local_client_id, "hello ", &mut mgr);
+//! push_text(&mut local, local_client_id, "hello ", &mut mgr);
 //! mgr.capture(()); // prevent previous and next operation to be treated by Undo manager as one batch
-//! push_text(&local, local_client_id, "world", &mut mgr);
+//! push_text(&mut local, local_client_id, "world", &mut mgr);
 //! assert_eq!(read_text(&local), "hello world");
 //!
 //! // perform remote changes - these are not being tracked by mgr
-//! push_text(&remote, remote_client_id, "everyone", &mut NoReporter);
+//! push_text(&mut remote, remote_client_id, "everyone", &mut NoReporter);
 //! assert_eq!(read_text(&remote), "everyone");
 //!
 //! // sync changes from remote to local
-//! let update = remote.acquire().transact().encode_state_as_update_v1(&local.acquire().transact().state_vector());
-//! local.acquire_mut().transact_mut().apply_update(Update::decode_v1(&update).unwrap()).unwrap();
+//! let update = remote.transact().encode_state_as_update_v1(&local.transact().state_vector());
+//! local.transact_mut().apply_update(Update::decode_v1(&update).unwrap()).unwrap();
 //! assert_eq!(read_text(&local), "hello worldeveryone"); // remote changes synced
 //!
-//! // undo last performed change on local
-//! mgr.undo(&mut NoReporter);
+//! // undo last performed change on local, within a transaction owned by the caller
+//! let mut txn = local.transact_mut();
+//! mgr.undo(&mut txn).unwrap();
+//! txn.commit(&mut NoReporter);
 //! assert_eq!(read_text(&local), "hello everyone");
 //!
 //! // redo change we undone
-//! mgr.redo(&mut NoReporter);
+//! let mut txn = local.transact_mut();
+//! mgr.redo(&mut txn).unwrap();
+//! txn.commit(&mut NoReporter);
 //! assert_eq!(read_text(&local), "hello worldeveryone");
 //! ```
 //!
-//! > Keep in mind, that in order to serve its purpose, undo manager may need to implicitly create
-//! transactions over underlying [Doc] - for that reason make sure that no other transaction is
-//! active while calling methods like [UndoManager::undo] or [UndoManager::redo].
+//! > Keep in mind, that [UndoManager::undo] and [UndoManager::redo] run within a transaction
+//! provided by the caller, which must not contain any other changes. Changes made by undo/redo
+//! are never tracked as new undoable actions, so such transaction can be committed with any
+//! [Reporter] - including the undo manager itself.
 //!
 //! It's important to understand a context, in which [UndoManager] operates:
 //!
-//! - **tracked transactions** are the ones committed with the undo manager as their [Reporter]
-//!   (see: [Transaction::commit]). Transactions committed otherwise (e.g. remote updates applied
-//!   with [NoReporter]) are not undoable.
-//! - **scope** refers to shared collection references such as [TextRef], [MapRef] etc. Undo manager
-//!   will only track operations performed on tracked scope refs. By default at least one such
-//!   reference must be specified, but they can be [expanded](UndoManager::expand_scope) to include
-//!   multiple collections at once if necessary.
+//! - **tracked transactions** are the ones passed to [UndoManager::track] before being committed,
+//!   or committed with the undo manager as their [Reporter] (see: [Transaction::commit]).
+//!   Transactions committed otherwise (e.g. remote updates applied with [NoReporter]) are not
+//!   undoable.
+//! - **scope** refers to shared collections (see: [NodeRef]) or whole documents. Undo manager
+//!   will only track operations performed within its scope, which can be
+//!   [expanded](UndoManager::expand_scope) to include multiple collections - even from different
+//!   documents - at once if necessary.
 //!
 //! Notice, that undo/redo changes are **not** mapped 1-1 on the update batches committed by
 //! transactions. As an example: a frequent case includes establishing a new transaction for every

@@ -8,7 +8,7 @@ use crate::node::{Node, NodePtr, TypePtr, TypeRef};
 use crate::node_ref::get_delta;
 use crate::reporter::{NoReporter, Reporter};
 use crate::slice::BlockSlice;
-use crate::undo::UndoStack;
+use crate::undo::{Scope, UndoStack};
 use crate::update::Update;
 use crate::utils::OptionExt;
 use crate::{
@@ -161,6 +161,9 @@ pub struct TransactionState {
     pub(crate) origin: Option<Origin>,
     pub(crate) local: bool,
     pub(crate) attributed_deletes: Option<IdSet>,
+    /// Set by [crate::undo::UndoManager::undo]/[crate::undo::UndoManager::redo], so that
+    /// [crate::undo::UndoManager::track] ignores this transaction.
+    pub(crate) undo_redo: bool,
     committed: bool,
     needs_cleanup: bool,
 }
@@ -180,6 +183,7 @@ impl TransactionState {
             origin,
             local: true,
             attributed_deletes: None,
+            undo_redo: false,
             committed: false,
             needs_cleanup: false,
         }
@@ -636,7 +640,7 @@ impl<D: DocHandle + DerefMut> Transaction<D> {
     pub fn revert(&mut self, inserts: &IdSet, deletes: &IdSet) -> bool {
         let (doc, state) = self.split_mut();
         let unused = UndoStack::default();
-        crate::undo::revert::<()>(doc, state, inserts, deletes, None, &unused, &unused)
+        crate::undo::revert::<()>(doc, state, inserts, deletes, &Scope::Doc, &unused, &unused)
     }
 
     /// Perform garbage collection of deleted blocks, even if a document was created with `skip_gc`
@@ -694,18 +698,6 @@ impl<'doc> Transaction<&'doc mut Doc> {
             let tx = self.as_readonly();
             reporter.fill(tx);
             reporter.committing(tx);
-        }
-
-        // keep content deleted under reporter's scope from being GC'ed
-        if let Some(scope) = reporter.keep(self.as_readonly()) {
-            let state = self.state.as_deref().unwrap();
-            for slice in state.delete_set.iter_blocks(&self.doc.blocks) {
-                if let Some(item) = slice.as_item() {
-                    if scope.iter().any(|node| node.is_parent_of(Some(item))) {
-                        item.keep(true);
-                    }
-                }
-            }
         }
 
         // 5. try GC delete set
@@ -810,7 +802,7 @@ impl<'doc> Transaction<&'doc mut Doc> {
 
 /// Calls `f` with `node` and its ancestors, following weak links to their holders.
 /// `visited` dedups link holders.
-fn for_each_ancestor(
+pub(crate) fn for_each_ancestor(
     links: &HashMap<ItemPtr, HashSet<NodePtr>>,
     node: NodePtr,
     visited: &mut HashSet<NodePtr>,

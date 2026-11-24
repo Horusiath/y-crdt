@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use fastrand::Rng;
@@ -100,17 +100,6 @@ impl<F: FnMut(&Transaction<&Doc>)> Reporter for OnCommitted<F> {
 
     fn committed(&mut self, txn: &Transaction<&Doc>) {
         (self.0)(txn)
-    }
-}
-
-/// Keeps content deleted under given nodes.
-pub struct Keep(pub HashSet<NodePtr>);
-
-impl Reporter for Keep {
-    type Encoder = EncoderV1;
-
-    fn keep(&self, _: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
-        Some(&self.0)
     }
 }
 

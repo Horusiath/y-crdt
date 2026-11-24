@@ -1,24 +1,21 @@
 use crate::block::ItemPtr;
-use crate::cell::{Acquire, AcquireMut};
 use crate::id_set::DeleteSet;
-use crate::iter::TxnIterator;
 use crate::lib0::EncoderV1;
-use crate::node::NodePtr;
 use crate::slice::BlockSlice;
+use crate::transaction::for_each_ancestor;
 use crate::{
-    Cell, Doc, ID, IdSet, NodeRef, OwnedMut, Reporter, Transaction, TransactionState, Uuid,
+    Doc, DocHandle, ID, IdSet, NodeID, NodeRef, Reporter, Transaction, TransactionState, Uuid,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 /// Undo manager is a structure used to perform undo/redo operations over the associated shared
-/// type(s).
+/// type(s), possibly spread over multiple documents.
 ///
-/// Undo manager is a [Reporter]: it only sees changes of transactions committed with it
-/// (see [Transaction::commit]), filtered by its scope (see: [UndoManager::expand_scope]).
+/// Changes are tracked with [UndoManager::track] (also called when a transaction is committed
+/// with the manager as its [Reporter]), filtered by its scope (see: [UndoManager::expand_scope]).
 ///
 /// Undo-/redo-able actions (a.k.a. [StackItem]s) are not equivalent to [crate::TransactionMut]
 /// unit of work: tracked changes extend the last [StackItem] until [UndoManager::capture] is
@@ -27,13 +24,9 @@ use std::sync::Arc;
 /// In order to revert an operation, call [UndoManager::undo], then [UndoManager::redo] to bring it
 /// back.
 pub struct UndoManager<M> {
-    docs: HashMap<Arc<str>, Cell<Doc>>,
-    scope: HashSet<NodePtr>,
-    options: Options<M>,
+    scope: HashMap<Uuid, Scope>,
     undo_stack: UndoStack<M>,
     redo_stack: UndoStack<M>,
-    undoing: bool,
-    redoing: bool,
     /// Top of the undo stack is extended by tracked changes until captured.
     open: bool,
 }
@@ -42,106 +35,64 @@ impl<M> UndoManager<M>
 where
     M: Default,
 {
-    /// Creates a new instance of the [UndoManager]. While it's possible for undo manager to
-    /// observe multiple shared types (see: [UndoManager::expand_scope]), it can only work with
-    /// a single document at the same time.
+    /// Creates a new instance of the [UndoManager] without any scope.
     pub fn new() -> Self {
-        Self::with_options(Options::default())
-    }
-
-    /// Creates a new instance of the [UndoManager] without any pre-initialized scope.
-    /// While it's possible for undo manager to observe multiple shared types
-    /// (see: [UndoManager::expand_scope]), it can only work with a single document at the same time.
-    pub fn with_options(mut options: Options<M>) -> Self {
-        let undo_stack = UndoStack(std::mem::take(&mut options.init_undo_stack));
-        let redo_stack = UndoStack(std::mem::take(&mut options.init_redo_stack));
         UndoManager {
-            scope: HashSet::new(),
-            options,
-            undo_stack,
-            redo_stack,
-            undoing: false,
-            redoing: false,
+            scope: HashMap::new(),
+            undo_stack: UndoStack::default(),
+            redo_stack: UndoStack::default(),
             open: false,
-            docs: HashMap::new(),
         }
     }
 
-    /// Extends a list of shared types tracked by current undo manager by a given `node`.
-    pub fn expand_scope<T>(&mut self, node: &mut NodeRef<T>)
-    where
-        T: DerefMut<Target = Transaction<OwnedMut<Doc>>>,
-    {
-        let node_ptr = NodePtr::from(node.as_ref());
-        let txn = node.txn_mut();
-        let guid = txn.doc().guid().clone();
-        if !self.docs.contains_key(&guid) {
-            self.docs.insert(guid, txn.doc.cell().clone());
-        }
-        self.scope.insert(node_ptr);
-    }
-
-    pub fn docs(&self) -> impl Iterator<Item = &Cell<Doc>> {
-        self.docs.values()
-    }
-
-    /// Clears all [StackItem]s stored within current UndoManager undo AND redo stacks, effectively
-    /// resetting its state. Returns `true` if any stack had items.
-    ///
-    /// # Deadlocks
-    ///
-    /// In order to perform its function, this method must guarantee that underlying document store
-    /// is not being modified by another running `TransactionMut`. It does so by acquiring
-    /// a read-only transaction itself. If transaction couldn't be acquired (because another
-    /// read-write transaction is in progress), it will hold current thread until, acquisition is
-    /// available.
-    pub fn clear_all(&mut self) -> bool {
-        let undo = self.clear_undo();
-        self.clear_redo() || undo
-    }
-
-    /// Clears all [StackItem]s stored within current UndoManager undo stack alone, leaving redo
-    /// stack untouched. Returns `true` if the stack had items.
-    ///
-    /// # Deadlocks
-    ///
-    /// See [UndoManager::clear_all].
-    pub fn clear_undo(&mut self) -> bool {
-        self.open = false;
-        Self::clear_stack(&self.scope, &self.docs, &mut self.undo_stack)
-    }
-
-    /// Clears all [StackItem]s stored within current UndoManager redo stack alone, leaving undo
-    /// stack untouched. Returns `true` if the stack had items.
-    ///
-    /// # Deadlocks
-    ///
-    /// See [UndoManager::clear_all].
-    pub fn clear_redo(&mut self) -> bool {
-        Self::clear_stack(&self.scope, &self.docs, &mut self.redo_stack)
-    }
-
-    fn clear_stack(
-        scope: &HashSet<NodePtr>,
-        docs: &HashMap<Uuid, Cell<Doc>>,
-        stack: &mut UndoStack<M>,
-    ) -> bool {
-        let len = stack.len();
-        for stack_item in stack.drain(0..len) {
-            let mut deleted = stack_item.deletions.blocks();
-            if let Some(cell) = docs.get(&stack_item.doc) {
-                let doc = cell.acquire();
-                let txn = doc.transact();
-                while let Some(slice) = deleted.next(&txn) {
-                    if let Some(item) = slice.as_item() {
-                        if scope.iter().any(|b| b.is_parent_of(Some(item))) {
-                            item.keep(false);
-                        }
-                    }
+    /// Extends the scope tracked by current undo manager by a given node or a whole document.
+    pub fn expand_scope<S: UndoScope + ?Sized>(&mut self, s: &S) {
+        let guid = s.doc_guid().clone();
+        match s.node() {
+            None => {
+                self.scope.insert(guid, Scope::Doc);
+            }
+            Some(node) => {
+                let scope = self.scope.entry(guid);
+                if let Scope::Nodes(nodes) = scope.or_insert_with(|| Scope::Nodes(HashSet::new())) {
+                    nodes.insert(node);
                 }
             }
         }
-        len != 0
+    }
+
+    /// Guids of the documents tracked by current undo manager.
+    pub fn tracked_docs(&self) -> impl Iterator<Item = &Uuid> {
+        self.scope.keys()
+    }
+
+    /// Scope tracked within a document of a given guid.
+    pub fn scope(&self, doc: &Uuid) -> Option<&Scope> {
+        self.scope.get(doc)
+    }
+
+    /// Clears [StackItem]s of the `txn` document from both undo AND redo stacks. Items of other
+    /// documents stay untouched. Returns `true` if any item was removed.
+    pub fn clear_all<D: DocHandle + DerefMut>(&mut self, txn: &mut Transaction<D>) -> bool {
+        let undo = self.clear_undo(txn);
+        self.clear_redo(txn) || undo
+    }
+
+    /// Clears [StackItem]s of the `txn` document from the undo stack, leaving redo stack
+    /// untouched. Returns `true` if any item was removed.
+    pub fn clear_undo<D: DocHandle + DerefMut>(&mut self, txn: &mut Transaction<D>) -> bool {
+        let doc = txn.doc_mut();
+        if self.undo_stack.last().is_some_and(|i| i.doc == *doc.guid()) {
+            self.open = false;
+        }
+        clear_stack(&mut self.undo_stack, doc, self.scope.get(doc.guid()))
+    }
+
+    /// Clears [StackItem]s of the `txn` document from the redo stack, leaving undo stack
+    /// untouched. Returns `true` if any item was removed.
+    pub fn clear_redo<D: DocHandle + DerefMut>(&mut self, txn: &mut Transaction<D>) -> bool {
+        let doc = txn.doc_mut();
+        clear_stack(&mut self.redo_stack, doc, self.scope.get(doc.guid()))
     }
 
     /// Seals the last [StackItem] with given `meta`, so that next tracked changes start a new one.
@@ -149,34 +100,38 @@ where
     ///
     /// Example:
     /// ```rust
-    /// use yrs::{Acquire, AcquireMut, Cell, Doc, NoReporter, UndoManager};
+    /// use yrs::{Doc, NoReporter, UndoManager};
     ///
-    /// let doc = Cell::new(Doc::new());
-    /// // changes are tracked only if committed with the manager
-    /// let insert = |mgr: &mut UndoManager, name: &str, index: u32, chunk: &str| {
-    ///     let mut doc = doc.acquire_mut();
+    /// let mut doc = Doc::new();
+    /// let insert = |mgr: &mut UndoManager, doc: &mut Doc, name: &str, index: u32, chunk: &str| {
     ///     let mut txn = doc.transact_mut();
     ///     txn.node_mut(name).unwrap().insert_text(index, chunk);
-    ///     txn.commit(mgr);
+    ///     mgr.track(&txn);
+    ///     txn.commit(&mut NoReporter);
     /// };
-    /// let read = |name: &str| doc.acquire().transact().node(name).unwrap().to_string();
+    /// let undo = |mgr: &mut UndoManager, doc: &mut Doc| {
+    ///     let mut txn = doc.transact_mut();
+    ///     mgr.undo(&mut txn).unwrap();
+    ///     txn.commit(&mut NoReporter);
+    /// };
+    /// let read = |doc: &Doc, name: &str| doc.transact().node(name).unwrap().to_string();
     ///
     /// // without UndoManager::capture
     /// let mut mgr = UndoManager::new();
-    /// mgr.expand_scope(&mut doc.transact_owned_mut().node_mut("no-capture").unwrap());
-    /// insert(&mut mgr, "no-capture", 0, "a");
-    /// insert(&mut mgr, "no-capture", 1, "b");
-    /// mgr.undo(&mut NoReporter);
-    /// assert_eq!(read("no-capture"), ""); // note that 'ab' was removed
+    /// mgr.expand_scope(&doc.transact_mut().node_mut("no-capture").unwrap());
+    /// insert(&mut mgr, &mut doc, "no-capture", 0, "a");
+    /// insert(&mut mgr, &mut doc, "no-capture", 1, "b");
+    /// undo(&mut mgr, &mut doc);
+    /// assert_eq!(read(&doc, "no-capture"), ""); // note that 'ab' was removed
     ///
     /// // with UndoManager::capture
     /// let mut mgr = UndoManager::new();
-    /// mgr.expand_scope(&mut doc.transact_owned_mut().node_mut("with-capture").unwrap());
-    /// insert(&mut mgr, "with-capture", 0, "a");
+    /// mgr.expand_scope(&doc.transact_mut().node_mut("with-capture").unwrap());
+    /// insert(&mut mgr, &mut doc, "with-capture", 0, "a");
     /// mgr.capture(());
-    /// insert(&mut mgr, "with-capture", 1, "b");
-    /// mgr.undo(&mut NoReporter);
-    /// assert_eq!(read("with-capture"), "a"); // note that only 'b' was removed
+    /// insert(&mut mgr, &mut doc, "with-capture", 1, "b");
+    /// undo(&mut mgr, &mut doc);
+    /// assert_eq!(read(&doc, "with-capture"), "a"); // note that only 'b' was removed
     /// ```
     pub fn capture(&mut self, meta: M) -> bool {
         if !self.open {
@@ -200,24 +155,79 @@ where
         &self.undo_stack.0
     }
 
+    /// Mutable counterpart of [UndoManager::undo_stack]. Until [UndoManager::capture] is called,
+    /// tracked changes extend the last item of the same document.
+    pub fn undo_stack_mut(&mut self) -> &mut Vec<StackItem<M>> {
+        &mut self.undo_stack.0
+    }
+
     /// Returns a list of [StackItem]s stored within current undo manager responsible for performing
     /// potential redo operations.
     pub fn redo_stack(&self) -> &[StackItem<M>] {
         &self.redo_stack.0
     }
 
-    /// Undo last action tracked by current undo manager. Actions (a.k.a. [StackItem]s) are
-    /// separated by [UndoManager::capture]. The reverting transaction is committed with `r`.
+    /// Mutable counterpart of [UndoManager::redo_stack].
+    pub fn redo_stack_mut(&mut self) -> &mut Vec<StackItem<M>> {
+        &mut self.redo_stack.0
+    }
+
+    /// Records changes of a read-write `txn` which touch current undo manager scope: they extend
+    /// the last [StackItem] (until [UndoManager::capture]) and the redo stack of `txn` document is
+    /// cleared. Content deleted within the scope is kept from being garbage collected, so it must
+    /// be called before `txn` is committed (eg. from [Reporter::committing]).
     ///
-    /// Returns the reverted [StackItem], or `None` if nothing could be reverted.
+    /// Read-only transactions, ones without changes and ones performing undo/redo are ignored.
     ///
-    /// # Deadlocks
+    /// Tracking the same transaction twice only will take note of changes that happened before
+    /// first track.
+    pub fn track<D: DocHandle>(&mut self, txn: &Transaction<D>) {
+        let (doc, Some(state)) = (txn.doc(), txn.state.as_deref()) else {
+            return;
+        };
+        if state.undo_redo || !txn.has_changes() {
+            return;
+        }
+        let guid = doc.guid();
+        let Some(scope) = self.scope.get(guid) else {
+            return;
+        };
+        let in_scope = match scope {
+            Scope::Doc => true,
+            Scope::Nodes(nodes) => changes_any(doc, state, nodes),
+        };
+        if !in_scope {
+            return;
+        }
+        // neither undoing nor redoing: drop redo stack items of this doc
+        clear_stack(&mut self.redo_stack, doc, Some(scope));
+        let top = self.undo_stack.last_mut();
+        match top {
+            Some(item) if self.open && &item.doc == guid => {
+                item.deletions.merge_with(state.delete_set.clone());
+                item.insertions.merge_with(state.insert_set.clone());
+            }
+            _ => {
+                let (deletes, inserts) = (state.delete_set.clone(), state.insert_set.clone());
+                let item = StackItem::new(guid.clone(), deletes, inserts);
+                self.undo_stack.push(item);
+            }
+        }
+        self.open = true;
+        // make sure that deleted content is not GC'ed
+        keep_deleted(doc, scope, &state.delete_set, true);
+    }
+
+    /// Undo last action tracked by current undo manager within a given `txn`. Actions (a.k.a.
+    /// [StackItem]s) are separated by [UndoManager::capture].
     ///
-    /// This method requires exclusive access to underlying document store. This means that
-    /// no other transaction on that same document can be active while calling this method.
-    /// Otherwise, it may cause a deadlock.
-    pub fn undo<R: Reporter>(&mut self, r: &mut R) -> Option<StackItem<M>> {
-        self.pop(true, r)
+    /// Returns the reverted [StackItem], or `None` if nothing could be reverted. Fails if `txn`
+    /// already has changes, or if the last [StackItem] belongs to another document than `txn`.
+    pub fn undo<D: DocHandle + DerefMut>(
+        &mut self,
+        txn: &mut Transaction<D>,
+    ) -> Result<Option<StackItem<M>>, UndoError> {
+        self.pop(true, txn)
     }
 
     /// Are there any redo steps available?
@@ -225,129 +235,106 @@ where
         !self.redo_stack.is_empty()
     }
 
-    /// Redo'es last action previously undo'ed by current undo manager. The reapplying transaction
-    /// is committed with `r`.
+    /// Redo'es last action previously undo'ed by current undo manager within a given `txn`.
     ///
-    /// Returns the reapplied [StackItem], or `None` if nothing could be reapplied.
-    ///
-    /// # Deadlocks
-    ///
-    /// This method requires exclusive access to underlying document store. This means that
-    /// no other transaction on that same document can be active while calling this method.
-    /// Otherwise, it may cause a deadlock.
-    pub fn redo<R: Reporter>(&mut self, r: &mut R) -> Option<StackItem<M>> {
-        self.pop(false, r)
+    /// Returns the reapplied [StackItem], or `None` if nothing could be reapplied. Fails if `txn`
+    /// already has changes, or if the last [StackItem] belongs to another document than `txn`.
+    pub fn redo<D: DocHandle + DerefMut>(
+        &mut self,
+        txn: &mut Transaction<D>,
+    ) -> Result<Option<StackItem<M>>, UndoError> {
+        self.pop(false, txn)
     }
 
-    fn pop<R: Reporter>(&mut self, undoing: bool, r: &mut R) -> Option<StackItem<M>> {
-        self.undoing = undoing;
-        self.redoing = !undoing;
-        let mut result = None;
-        loop {
-            let stack = if undoing {
-                &mut self.undo_stack
-            } else {
-                &mut self.redo_stack
-            };
-            let Some(item) = stack.pop() else { break };
-            // cloned, so that `inner` isn't borrowed by the transaction
-            let Some(cell) = self.docs.get(&item.doc).cloned() else {
-                continue;
-            };
-            let mut doc = cell.acquire_mut();
-            let origin = if undoing { "undo" } else { "redo" };
-            let mut txn = doc.transact_mut_with(origin);
-            let (stack, other) = if undoing {
-                (&self.undo_stack, &self.redo_stack)
-            } else {
-                (&self.redo_stack, &self.undo_stack)
-            };
-            let (doc_ref, state) = txn.split_mut();
-            let changed = revert(
-                doc_ref,
-                state,
-                &item.insertions,
-                &item.deletions,
-                Some(&self.scope),
-                stack,
-                other,
-            );
-            // the manager fills the opposite stack
-            txn.commit(&mut (&mut *self, &mut *r));
-            if changed {
-                result = Some(item);
-                break;
+    fn pop<D: DocHandle + DerefMut>(
+        &mut self,
+        undoing: bool,
+        txn: &mut Transaction<D>,
+    ) -> Result<Option<StackItem<M>>, UndoError> {
+        if txn.has_changes() {
+            return Err(UndoError::DirtyTransaction);
+        }
+        let (doc, state) = txn.split_mut();
+        let guid = doc.guid().clone();
+        let none = Scope::Nodes(HashSet::new());
+        let scope = self.scope.get(&guid).unwrap_or(&none);
+        let (stack, other) = if undoing {
+            (&mut self.undo_stack, &mut self.redo_stack)
+        } else {
+            (&mut self.redo_stack, &mut self.undo_stack)
+        };
+        // pop until a change is performed, all within the same transaction
+        while let Some(top) = stack.last() {
+            if top.doc != guid {
+                let expected = top.doc.clone();
+                return Err(UndoError::DocMismatch {
+                    expected,
+                    actual: guid,
+                });
+            }
+            let item = stack.pop().unwrap();
+            let (ins, del) = (&item.insertions, &item.deletions);
+            if revert(doc, state, ins, del, scope, stack, other) {
+                keep_deleted(doc, scope, &state.delete_set, true);
+                let (deletes, inserts) = (state.delete_set.clone(), state.insert_set.clone());
+                other.push(StackItem::new(guid, deletes, inserts));
+                if undoing {
+                    self.open = false;
+                }
+                state.undo_redo = true;
+                return Ok(Some(item));
             }
         }
-        self.undoing = false;
-        self.redoing = false;
-        result
-    }
-
-    fn should_skip(&self, txn: &Transaction<&Doc>) -> bool {
-        if let Some(capture_transaction) = &self.options.capture_transaction {
-            if !capture_transaction(txn) {
-                return true;
-            }
-        }
-        let parents = txn.changed_parent_types();
-        !self.scope.iter().any(|node| parents.contains(node))
+        Ok(None)
     }
 }
 
 impl<M: Default> Reporter for UndoManager<M> {
     type Encoder = EncoderV1;
 
-    fn keep(&self, txn: &Transaction<&Doc>) -> Option<&HashSet<NodePtr>> {
-        (!self.should_skip(txn)).then_some(&self.scope)
+    fn committing(&mut self, txn: &Transaction<&Doc>) {
+        self.track(txn)
     }
+}
 
-    fn committed(&mut self, txn: &Transaction<&Doc>) {
-        if self.should_skip(txn) {
-            return;
-        }
-        let target = txn.doc().guid();
-        let (undoing, redoing) = (self.undoing, self.redoing);
-        if !undoing && !redoing {
-            // neither undoing nor redoing: drop redo stack items of this doc
-            let scope = &self.scope;
-            self.redo_stack.0.retain(|stack_item| {
-                if stack_item.doc != *target {
-                    return true;
-                }
-                let mut deleted = stack_item.deletions.blocks();
-                while let Some(slice) = deleted.next(txn) {
-                    if let Some(item) = slice.as_item() {
-                        if scope.iter().any(|b| b.is_parent_of(Some(item))) {
-                            item.keep(false);
-                        }
-                    }
-                }
-                false
-            });
-        }
-        let stack = if undoing {
-            &mut self.redo_stack
-        } else {
-            &mut self.undo_stack
-        };
-        let same_doc = stack.last().is_some_and(|item| item.doc == *target);
-        let extend = !undoing && !redoing && same_doc && self.open;
-        if extend {
-            let last = stack.last_mut().unwrap();
-            last.deletions.merge_with(txn.delete_set().clone());
-            last.insertions.merge_with(txn.insert_set().clone());
-        } else {
-            let deletes = txn.delete_set().clone();
-            let item = StackItem::new(target.clone(), deletes, txn.insert_set().clone());
-            stack.push(item);
-        }
-        if undoing {
-            self.open = false;
-        } else if !redoing {
-            self.open = true;
+/// Checks if any node changed within `state` is nested in (or equal to) one of the `nodes`.
+fn changes_any(doc: &Doc, state: &TransactionState, nodes: &HashSet<NodeID>) -> bool {
+    let mut visited = HashSet::new();
+    state.changed.keys().any(|&node| {
+        let mut found = false;
+        visited.clear();
+        for_each_ancestor(&doc.linked_by, node, &mut visited, &mut |n| {
+            found |= nodes.contains(&n.id())
+        });
+        found
+    })
+}
+
+fn keep_deleted(doc: &Doc, scope: &Scope, ids: &IdSet, keep: bool) {
+    let mut deleted = ids.blocks();
+    while let Some(slice) = deleted.next_in(&doc.blocks) {
+        if let Some(item) = slice.as_item() {
+            if scope.contains(item) {
+                item.keep(keep);
+            }
         }
     }
+}
+
+/// Removes `stack` items of the `doc`, releasing their deleted content in `scope`.
+/// Returns `true` if any item was removed.
+fn clear_stack<M>(stack: &mut UndoStack<M>, doc: &Doc, scope: Option<&Scope>) -> bool {
+    let len = stack.len();
+    stack.retain(|item| {
+        if item.doc != *doc.guid() {
+            return true;
+        }
+        if let Some(scope) = scope {
+            keep_deleted(doc, scope, &item.deletions, false);
+        }
+        false
+    });
+    len != stack.len()
 }
 
 pub(crate) fn revert<M>(
@@ -355,12 +342,10 @@ pub(crate) fn revert<M>(
     state: &mut TransactionState,
     insertions: &IdSet,
     deletions: &IdSet,
-    scope: Option<&HashSet<NodePtr>>,
+    scope: &Scope,
     stack_a: &UndoStack<M>,
     stack_b: &UndoStack<M>,
 ) -> bool {
-    let in_scope =
-        |item: ItemPtr| scope.is_none_or(|s| s.iter().any(|b| b.is_parent_of(Some(item))));
     let mut to_redo = HashSet::<ItemPtr>::new();
     let mut to_delete = Vec::<ItemPtr>::new();
     let mut change_performed = false;
@@ -376,7 +361,7 @@ pub(crate) fn revert<M>(
                 };
                 item = doc.materialize(slice);
             }
-            if !item.is_deleted() && in_scope(item) {
+            if !item.is_deleted() && scope.contains(item) {
                 to_delete.push(item);
             }
         }
@@ -387,7 +372,7 @@ pub(crate) fn revert<M>(
         if let BlockSlice::Item(slice) = slice {
             let ptr = doc.materialize(slice);
             // never redo structs in `insertions`: they were created and deleted in the same change
-            if in_scope(ptr) && !insertions.contains(ptr.id()) {
+            if scope.contains(ptr) && !insertions.contains(ptr.id()) {
                 to_redo.insert(ptr);
             }
         }
@@ -407,6 +392,101 @@ pub(crate) fn revert<M>(
         change_performed = true;
     }
     change_performed
+}
+
+/// Part of a document tracked by an [UndoManager].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// The whole document.
+    Doc,
+    /// Given nodes and everything nested in them.
+    Nodes(HashSet<NodeID>),
+}
+
+impl Scope {
+    /// Checks if a node of a given `id` is tracked. Its ancestors are not taken into account.
+    pub fn contains_node(&self, id: &NodeID) -> bool {
+        match self {
+            Scope::Doc => true,
+            Scope::Nodes(nodes) => nodes.contains(id),
+        }
+    }
+
+    /// Checks if an `item` is nested (at any depth) in a tracked node.
+    pub(crate) fn contains(&self, item: ItemPtr) -> bool {
+        let nodes = match self {
+            Scope::Doc => return true,
+            Scope::Nodes(nodes) if nodes.is_empty() => return false,
+            Scope::Nodes(nodes) => nodes,
+        };
+        let mut parent = item.parent.as_node().copied();
+        while let Some(node) = parent {
+            if nodes.contains(&node.id()) {
+                return true;
+            }
+            parent = node.item.and_then(|item| item.parent.as_node().copied());
+        }
+        false
+    }
+}
+
+/// Something which can be added to an [UndoManager] scope (see: [UndoManager::expand_scope]).
+pub trait UndoScope {
+    /// Guid of the document this scope belongs to.
+    fn doc_guid(&self) -> &Uuid;
+    /// Tracked node or `None` if the whole document is tracked.
+    fn node(&self) -> Option<NodeID>;
+}
+
+impl UndoScope for Doc {
+    fn doc_guid(&self) -> &Uuid {
+        self.guid()
+    }
+
+    fn node(&self) -> Option<NodeID> {
+        None
+    }
+}
+
+impl<D: DocHandle> UndoScope for Transaction<D> {
+    fn doc_guid(&self) -> &Uuid {
+        self.doc().guid()
+    }
+
+    fn node(&self) -> Option<NodeID> {
+        None
+    }
+}
+
+impl<D: DocHandle> UndoScope for NodeRef<&Transaction<D>> {
+    fn doc_guid(&self) -> &Uuid {
+        self.txn().doc().guid()
+    }
+
+    fn node(&self) -> Option<NodeID> {
+        Some(self.id())
+    }
+}
+
+impl<D: DocHandle> UndoScope for NodeRef<&mut Transaction<D>> {
+    fn doc_guid(&self) -> &Uuid {
+        self.txn().doc().guid()
+    }
+
+    fn node(&self) -> Option<NodeID> {
+        Some(self.id())
+    }
+}
+
+/// Errors returned by [UndoManager] operations.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UndoError {
+    /// The [StackItem] to apply belongs to another document than the transaction.
+    #[error("stack item belongs to document '{expected}', but transaction is over '{actual}'")]
+    DocMismatch { expected: Uuid, actual: Uuid },
+    /// Undo/redo must run within a transaction without prior changes.
+    #[error("transaction already contains changes")]
+    DirtyTransaction,
 }
 
 #[repr(transparent)]
@@ -438,39 +518,14 @@ impl<M> UndoStack<M> {
     }
 }
 
-/// Set of options used to configure [UndoManager].
-pub struct Options<M> {
-    /// Custom logic decider, that can be used to determine if transaction changes should be
-    /// captured or not.
-    pub capture_transaction: Option<CaptureTransactionFn>,
-
-    /// Initial undo stack that can be pre-filled with some operations that can be undone.
-    pub init_undo_stack: Vec<StackItem<M>>,
-
-    /// Initial redo stack that can be pre-filled with some operations that can be redone.
-    pub init_redo_stack: Vec<StackItem<M>>,
-}
-
-pub type CaptureTransactionFn = Arc<dyn Fn(&Transaction<&Doc>) -> bool + Send + Sync + 'static>;
-
-impl<M> Default for Options<M> {
-    fn default() -> Self {
-        Options {
-            capture_transaction: None,
-            init_undo_stack: Vec::new(),
-            init_redo_stack: Vec::new(),
-        }
-    }
-}
-
 /// A unit of work for the [UndoManager]. It contains a compressed information about all updates and
 /// deletions tracked by a corresponding undo manager. Whenever an [UndoManager::undo] or
 /// [UndoManager::redo] methods are called a last [StackItem] is being used to modify a state of
 /// the document.
 ///
-/// Stack items are stored internally by undo manager and created automatically whenever a new
-/// update from tracked shared type and transaction of tracked origin has been committed with the
-/// manager after the last [UndoManager::capture], which marks the end of the last stack item batch.
+/// Stack items are stored internally by undo manager and created automatically whenever changes
+/// of a tracked shared type are [tracked](UndoManager::track) after the last
+/// [UndoManager::capture], which marks the end of the last stack item batch.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct StackItem<T> {
     doc: Uuid,
@@ -493,6 +548,11 @@ impl<M> StackItem<M> {
         }
     }
 
+    /// Guid of the document this [StackItem] belongs to.
+    pub fn doc(&self) -> &Uuid {
+        &self.doc
+    }
+
     /// A set of identifiers of element deleted at part of the timeframe current [StackItem] is
     /// responsible for.
     pub fn deletions(&self) -> &IdSet {
@@ -511,14 +571,21 @@ impl<M> StackItem<M> {
     }
 
     /// Merged another [StackItem] into current one. `merge_meta` function is used to merge user's
-    /// custom metadata structures together.
-    pub fn merge<F>(&mut self, other: Self, merge_meta: F)
+    /// custom metadata structures together. Fails if `other` belongs to another document.
+    pub fn merge<F>(&mut self, other: Self, merge_meta: F) -> Result<(), UndoError>
     where
         F: FnOnce(&mut M, M),
     {
+        if other.doc != self.doc {
+            return Err(UndoError::DocMismatch {
+                expected: self.doc.clone(),
+                actual: other.doc,
+            });
+        }
         self.insertions.merge_with(other.insertions);
         self.deletions.merge_with(other.deletions);
         merge_meta(&mut self.meta, other.meta);
+        Ok(())
     }
 }
 
@@ -547,139 +614,100 @@ mod test {
     use std::convert::TryInto;
 
     use crate::block::ClientID;
-    use crate::cell::{Acquire, AcquireMut};
 
     use crate::lib0::{Decode, EncoderV1};
     use crate::node::{Attrs, NodePtr};
     use crate::test_utils::{Report, exchange_updates};
-    use crate::undo::{Options, StackItem};
+    use crate::undo::{Scope, StackItem, UndoError};
     use crate::{
-        Any, Cell, Delta, DeltaOptions, Doc, ID, In, NoReporter, NodeID, NodeRef, Origin, Out,
-        OwnedMut, Reporter, StateVector, Transaction, UndoManager, Update, any,
+        Any, Delta, DeltaOptions, Doc, ID, IdSet, In, NoReporter, NodeID, NodeRef, Origin, Out,
+        Reporter, StateVector, Transaction, UndoManager, Update, any,
     };
     use serde::Deserialize;
 
     #[test]
     fn selective_clear_preserves_other_stack_and_reports_actual_changes() {
         for (clear_undo, clear_redo) in [(true, false), (false, true), (true, true)] {
-            let doc = Cell::new(Doc::new());
-            let mut undo = UndoManager::new();
-            node(&doc, "text", &mut NoReporter, |mut n| {
-                undo.expand_scope(&mut n)
-            });
-            node(&doc, "text", &mut undo, |mut n| n.insert_text(0, "a"));
-            undo.capture(());
-            node(&doc, "text", &mut undo, |mut n| n.insert_text(1, "b"));
-            assert!(undo.undo(&mut NoReporter).is_some());
-            assert!(undo.can_undo() && undo.can_redo());
-            let text = || doc.acquire().transact().node("text").unwrap().to_string();
+            let mut doc = Doc::new();
+            let mut mgr = UndoManager::new();
+            node(&mut doc, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+            node(&mut doc, "text", &mut mgr, |mut n| n.insert_text(0, "a"));
+            mgr.capture(());
+            node(&mut doc, "text", &mut mgr, |mut n| n.insert_text(1, "b"));
+            assert!(undo(&mut mgr, &mut doc).is_some());
+            assert!(mgr.can_undo() && mgr.can_redo());
+            let text = |doc: &Doc| doc.transact().node("text").unwrap().to_string();
             for i in 0..2 {
-                let cleared = match (clear_undo, clear_redo) {
-                    (true, false) => undo.clear_undo(),
-                    (false, true) => undo.clear_redo(),
-                    _ => undo.clear_all(),
+                let cleared = {
+                    let mut txn = doc.transact_mut();
+                    match (clear_undo, clear_redo) {
+                        (true, false) => mgr.clear_undo(&mut txn),
+                        (false, true) => mgr.clear_redo(&mut txn),
+                        _ => mgr.clear_all(&mut txn),
+                    }
                 };
-                assert_eq!(undo.can_undo(), !clear_undo);
-                assert_eq!(undo.can_redo(), !clear_redo);
-                assert_eq!(text(), "a");
+                assert_eq!(mgr.can_undo(), !clear_undo);
+                assert_eq!(mgr.can_redo(), !clear_redo);
+                assert_eq!(text(&doc), "a");
                 // was: stack_cleared event fired once, with (clear_undo, clear_redo)
                 assert_eq!(cleared, i == 0);
             }
             if !clear_undo {
-                assert!(undo.undo(&mut NoReporter).is_some());
-                assert_eq!(text(), "");
+                assert!(undo(&mut mgr, &mut doc).is_some());
+                assert_eq!(text(&doc), "");
             } else if !clear_redo {
-                assert!(undo.redo(&mut NoReporter).is_some());
-                assert_eq!(text(), "ab");
+                assert!(redo(&mut mgr, &mut doc).is_some());
+                assert_eq!(text(&doc), "ab");
             }
         }
     }
 
     #[test]
     fn undo_text() {
-        let d1 = Cell::new(Doc::with_client_id(1));
-        let txt1 = NodePtr::from(
-            d1.acquire_mut()
-                .transact_mut()
-                .node_mut("test")
-                .unwrap()
-                .as_ref(),
-        );
+        let mut d1 = Doc::with_client_id(1);
+        let txt1 = NodePtr::from(d1.transact_mut().node_mut("test").unwrap().as_ref());
         let mut mgr = UndoManager::new();
-        node(&d1, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut d1, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
 
-        let d2 = Cell::new(Doc::with_client_id(2));
+        let mut d2 = Doc::with_client_id(2);
 
         // items that are added & deleted in the same transaction won't be undo
-        node(&d1, "test", &mut mgr, |mut n| n.insert_text(0, "test"));
-        node(&d1, "test", &mut mgr, |mut n| n.remove(0, 4));
-        mgr.undo(&mut NoReporter);
-        assert_eq!(
-            d1.acquire().transact().node("test").unwrap().to_string(),
-            ""
-        );
+        node(&mut d1, "test", &mut mgr, |mut n| n.insert_text(0, "test"));
+        node(&mut d1, "test", &mut mgr, |mut n| n.remove(0, 4));
+        undo(&mut mgr, &mut d1);
+        assert_eq!(d1.transact().node("test").unwrap().to_string(), "");
 
         // follow redone items
-        node(&d1, "test", &mut mgr, |mut n| n.insert_text(0, "a"));
+        node(&mut d1, "test", &mut mgr, |mut n| n.insert_text(0, "a"));
         mgr.capture(());
-        node(&d1, "test", &mut mgr, |mut n| n.remove(0, 1));
+        node(&mut d1, "test", &mut mgr, |mut n| n.remove(0, 1));
         mgr.capture(());
-        mgr.undo(&mut NoReporter);
-        assert_eq!(
-            d1.acquire().transact().node("test").unwrap().to_string(),
-            "a"
-        );
-        mgr.undo(&mut NoReporter);
-        assert_eq!(
-            d1.acquire().transact().node("test").unwrap().to_string(),
-            ""
-        );
+        undo(&mut mgr, &mut d1);
+        assert_eq!(d1.transact().node("test").unwrap().to_string(), "a");
+        undo(&mut mgr, &mut d1);
+        assert_eq!(d1.transact().node("test").unwrap().to_string(), "");
 
-        node(&d1, "test", &mut mgr, |mut n| n.insert_text(0, "abc"));
-        node(&d2, "test", &mut NoReporter, |mut n| {
+        node(&mut d1, "test", &mut mgr, |mut n| n.insert_text(0, "abc"));
+        node(&mut d2, "test", &mut NoReporter, |mut n| {
             n.insert_text(0, "xyz")
         });
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
-        mgr.undo(&mut NoReporter);
-        assert_eq!(
-            d1.acquire().transact().node("test").unwrap().to_string(),
-            "xyz"
-        );
-        mgr.redo(&mut NoReporter);
-        assert_eq!(
-            d1.acquire().transact().node("test").unwrap().to_string(),
-            "abcxyz"
-        );
+        exchange_updates(&mut [&mut d1, &mut d2]);
+        undo(&mut mgr, &mut d1);
+        assert_eq!(d1.transact().node("test").unwrap().to_string(), "xyz");
+        redo(&mut mgr, &mut d1);
+        assert_eq!(d1.transact().node("test").unwrap().to_string(), "abcxyz");
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        node(&d2, "test", &mut NoReporter, |mut n| n.remove(0, 1));
+        node(&mut d2, "test", &mut NoReporter, |mut n| n.remove(0, 1));
 
-        {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        }
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        mgr.undo(&mut NoReporter);
-        assert_eq!(
-            d1.acquire().transact().node("test").unwrap().to_string(),
-            "xyz"
-        );
-        mgr.redo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
+        assert_eq!(d1.transact().node("test").unwrap().to_string(), "xyz");
+        redo(&mut mgr, &mut d1);
         {
-            let mut d1 = d1.acquire_mut();
             let mut t1 = d1.transact_mut();
             let mut txt1 = t1.node_mut("test").unwrap();
             assert_eq!(txt1.to_string(), "bcxyz");
@@ -696,62 +724,47 @@ mod test {
             );
             t1.commit(&mut mgr);
         }
-        mgr.undo(&mut NoReporter);
-        mgr.redo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
+        redo(&mut mgr, &mut d1);
     }
 
     #[test]
     fn double_undo() {
-        let doc = Cell::new(Doc::with_client_id(1));
-        node(&doc, "test", &mut NoReporter, |mut n| {
+        let mut doc = Doc::with_client_id(1);
+        node(&mut doc, "test", &mut NoReporter, |mut n| {
             n.insert_text(0, "1221")
         });
 
         let mut mgr = UndoManager::new();
-        node(&doc, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
-        node(&doc, "test", &mut mgr, |mut n| n.insert_text(2, "3"));
-        node(&doc, "test", &mut mgr, |mut n| n.insert_text(3, "3"));
+        node(&mut doc, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, "test", &mut mgr, |mut n| n.insert_text(2, "3"));
+        node(&mut doc, "test", &mut mgr, |mut n| n.insert_text(3, "3"));
 
-        mgr.undo(&mut NoReporter);
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut doc);
+        undo(&mut mgr, &mut doc);
 
-        node(&doc, "test", &mut mgr, |mut n| n.insert_text(2, "3"));
-        assert_eq!(
-            doc.acquire().transact().node("test").unwrap().to_string(),
-            "12321"
-        );
+        node(&mut doc, "test", &mut mgr, |mut n| n.insert_text(2, "3"));
+        assert_eq!(doc.transact().node("test").unwrap().to_string(), "12321");
     }
 
     #[test]
     fn undo_map() {
-        let d1 = Cell::new(Doc::with_client_id(1));
+        let mut d1 = Doc::with_client_id(1);
 
-        node(&d1, "test", &mut NoReporter, |mut n| n.insert_attr("a", 0));
-        let mut mgr = UndoManager::new();
-        node(&d1, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
+        node(&mut d1, "test", &mut NoReporter, |mut n| {
+            n.insert_attr("a", 0)
         });
-        node(&d1, "test", &mut mgr, |mut n| n.insert_attr("a", 1));
-        mgr.undo(&mut NoReporter);
+        let mut mgr = UndoManager::new();
+        node(&mut d1, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d1, "test", &mut mgr, |mut n| n.insert_attr("a", 1));
+        undo(&mut mgr, &mut d1);
         assert_eq!(
-            d1.acquire()
-                .transact()
-                .node("test")
-                .unwrap()
-                .attr("a")
-                .unwrap(),
+            d1.transact().node("test").unwrap().attr("a").unwrap(),
             0.into()
         );
-        mgr.redo(&mut NoReporter);
+        redo(&mut mgr, &mut d1);
         assert_eq!(
-            d1.acquire()
-                .transact()
-                .node("test")
-                .unwrap()
-                .attr("a")
-                .unwrap(),
+            d1.transact().node("test").unwrap().attr("a").unwrap(),
             1.into()
         );
 
@@ -761,52 +774,64 @@ mod test {
         // with 44 (concurrent overwrite makes undo skip).
 
         // test setting value multiple times
-        node(&d1, "test", &mut mgr, |mut n| {
+        node(&mut d1, "test", &mut mgr, |mut n| {
             n.insert_attr("b", "initial".to_string())
         });
         mgr.capture(());
-        node(&d1, "test", &mut mgr, |mut n| {
+        node(&mut d1, "test", &mut mgr, |mut n| {
             n.insert_attr("b", "val1".to_string())
         });
-        node(&d1, "test", &mut mgr, |mut n| {
+        node(&mut d1, "test", &mut mgr, |mut n| {
             n.insert_attr("b", "val2".to_string())
         });
         mgr.capture(());
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
         assert_eq!(
-            d1.acquire()
-                .transact()
-                .node("test")
-                .unwrap()
-                .attr("b")
-                .unwrap(),
+            d1.transact().node("test").unwrap().attr("b").unwrap(),
             "initial".into()
         );
     }
 
     /// Runs `f` over a `node` in a new transaction committed with `r`.
-    fn node<F, T>(cell: &Cell<Doc>, node: impl Into<NodeID>, r: &mut impl Reporter, f: F) -> T
+    fn node<F, T>(doc: &mut Doc, node: impl Into<NodeID>, r: &mut impl Reporter, f: F) -> T
     where
-        F: FnOnce(NodeRef<&mut Transaction<OwnedMut<Doc>>>) -> T,
+        F: FnOnce(NodeRef<&mut Transaction<&mut Doc>>) -> T,
     {
-        let mut txn = cell.transact_owned_mut();
+        let mut txn = doc.transact_mut();
         let result = f(txn.node_mut(node.into()).unwrap());
         txn.commit(r);
         result
     }
 
+    /// Undoes the last change within a new transaction over `doc`, committed with [NoReporter].
+    fn undo<M: Default>(mgr: &mut super::UndoManager<M>, doc: &mut Doc) -> Option<StackItem<M>> {
+        let mut txn = doc.transact_mut();
+        let item = mgr.undo(&mut txn).unwrap();
+        txn.commit(&mut NoReporter);
+        item
+    }
+
+    /// Redoes the last undone change within a new transaction over `doc`, committed with
+    /// [NoReporter].
+    fn redo<M: Default>(mgr: &mut super::UndoManager<M>, doc: &mut Doc) -> Option<StackItem<M>> {
+        let mut txn = doc.transact_mut();
+        let item = mgr.redo(&mut txn).unwrap();
+        txn.commit(&mut NoReporter);
+        item
+    }
+
     /// Same as [node], but the underlying transaction is tagged with a given `origin`.
     fn node_with<F, T>(
-        cell: &Cell<Doc>,
+        doc: &mut Doc,
         origin: impl Into<Origin>,
         node: impl Into<NodeID>,
         r: &mut impl Reporter,
         f: F,
     ) -> T
     where
-        F: FnOnce(NodeRef<&mut Transaction<OwnedMut<Doc>>>) -> T,
+        F: FnOnce(NodeRef<&mut Transaction<&mut Doc>>) -> T,
     {
-        let mut txn = cell.transact_owned_mut_with(origin);
+        let mut txn = doc.transact_mut_with(origin);
         let result = f(txn.node_mut(node.into()).unwrap());
         txn.commit(r);
         result
@@ -827,61 +852,61 @@ mod test {
         }
 
         let array = NodeID::root("test");
-        let d1 = Cell::new(Doc::with_client_id(1));
+        let mut d1 = Doc::with_client_id(1);
 
-        let d2 = Cell::new(Doc::with_client_id(2));
+        let mut d2 = Doc::with_client_id(2);
 
         let mut mgr = UndoManager::new();
-        node(&d1, array.clone(), &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
+        node(&mut d1, array.clone(), &mut NoReporter, |n| {
+            mgr.expand_scope(&n)
         });
-        node(&d1, "test", &mut mgr, |mut array| {
+        node(&mut d1, "test", &mut mgr, |mut array| {
             array.insert_range(0, [1, 2, 3])
         });
-        node(&d2, "test", &mut NoReporter, |mut array| {
+        node(&mut d2, "test", &mut NoReporter, |mut array| {
             array.insert_range(0, [4, 5, 6])
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<i32>>().unwrap(),
                 vec![1, 2, 3, 4, 5, 6]
             )
         });
 
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
 
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(array.deserialize::<Vec<i32>>().unwrap(), vec![4, 5, 6])
         });
 
-        mgr.redo(&mut NoReporter);
+        redo(&mut mgr, &mut d1);
 
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<i32>>().unwrap(),
                 vec![1, 2, 3, 4, 5, 6]
             )
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        node(&d2, "test", &mut NoReporter, |mut array| {
+        node(&mut d2, "test", &mut NoReporter, |mut array| {
             array.remove(0, 1); // user2 deletes [1]
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        mgr.undo(&mut NoReporter);
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        undo(&mut mgr, &mut d1);
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(array.deserialize::<Vec<i32>>().unwrap(), vec![4, 5, 6]);
         });
 
-        mgr.redo(&mut NoReporter);
+        redo(&mut mgr, &mut d1);
 
-        node(&d1, "test", &mut mgr, |mut array| {
+        node(&mut d1, "test", &mut mgr, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<i32>>().unwrap(),
                 vec![2, 3, 4, 5, 6]
@@ -890,7 +915,7 @@ mod test {
         });
 
         // test nested structure
-        let map = node(&d1, "test", &mut mgr, |mut array| {
+        let map = node(&mut d1, "test", &mut mgr, |mut array| {
             let Out::Node(map) = array.insert(0, Delta::new()) else {
                 unreachable!()
             };
@@ -903,95 +928,95 @@ mod test {
 
         mgr.capture(());
 
-        node(&d1, map.id.clone(), &mut mgr, |mut map| {
+        node(&mut d1, map.id.clone(), &mut mgr, |mut map| {
             map.insert_attr("a", 1);
         });
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(Some(1), None)]
             );
         });
 
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
 
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(None, None)]
             );
         });
 
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
 
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<i32>>().unwrap(),
                 vec![2, 3, 4, 5, 6]
             );
         });
 
-        mgr.redo(&mut NoReporter);
+        redo(&mut mgr, &mut d1);
 
-        node(&d1, "test", &mut NoReporter, |mut array| {
+        node(&mut d1, "test", &mut NoReporter, |mut array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(None, None)]
             );
         });
 
-        mgr.redo(&mut NoReporter);
-        node(&d1, "test", &mut NoReporter, |array| {
+        redo(&mut mgr, &mut d1);
+        node(&mut d1, "test", &mut NoReporter, |array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(Some(1), None)]
             );
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        let map2 = node(&d2, "test", &mut NoReporter, |array| {
+        let map2 = node(&mut d2, "test", &mut NoReporter, |array| {
             array.get(0).unwrap().node_id().unwrap()
         });
-        node(&d2, map2, &mut NoReporter, |mut map| {
+        node(&mut d2, map2, &mut NoReporter, |mut map| {
             map.insert_attr("b", 2);
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        node(&d1, "test", &mut NoReporter, |array| {
+        node(&mut d1, "test", &mut NoReporter, |array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(Some(1), Some(2))]
             );
         });
 
-        mgr.undo(&mut NoReporter);
-        node(&d1, "test", &mut NoReporter, |array| {
+        undo(&mut mgr, &mut d1);
+        node(&mut d1, "test", &mut NoReporter, |array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(None, Some(2))]
             );
         });
 
-        mgr.undo(&mut NoReporter);
-        node(&d1, "test", &mut NoReporter, |array| {
+        undo(&mut mgr, &mut d1);
+        node(&mut d1, "test", &mut NoReporter, |array| {
             assert_eq!(
                 array.deserialize::<Vec<i32>>().unwrap(),
                 vec![2, 3, 4, 5, 6]
             );
         });
 
-        mgr.redo(&mut NoReporter);
-        node(&d1, "test", &mut NoReporter, |array| {
+        redo(&mut mgr, &mut d1);
+        node(&mut d1, "test", &mut NoReporter, |array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(None, Some(2))]
             );
         });
 
-        mgr.redo(&mut NoReporter);
-        node(&d1, "test", &mut NoReporter, |array| {
+        redo(&mut mgr, &mut d1);
+        node(&mut d1, "test", &mut NoReporter, |array| {
             assert_eq!(
                 array.deserialize::<Vec<Entry>>().unwrap(),
                 vec![Entry::new(Some(1), Some(2))]
@@ -1001,55 +1026,55 @@ mod test {
 
     #[test]
     fn undo_xml() {
-        let d1 = Cell::new(Doc::with_client_id(1));
-        let xml1 = node(&d1, "xml", &mut NoReporter, |mut frag| {
+        let mut d1 = Doc::with_client_id(1);
+        let xml1 = node(&mut d1, "xml", &mut NoReporter, |mut frag| {
             frag.insert(0, Delta::with_name("undefined"))
                 .node_id()
                 .unwrap()
         });
 
         let mut mgr = UndoManager::new();
-        node(&d1, xml1.clone(), &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
+        node(&mut d1, xml1.clone(), &mut NoReporter, |n| {
+            mgr.expand_scope(&n)
         });
-        let child = node(&d1, xml1.clone(), &mut mgr, |mut xml| {
+        let child = node(&mut d1, xml1.clone(), &mut mgr, |mut xml| {
             xml.insert(0, Delta::with_name("p")).node_id().unwrap()
         });
-        let text_child = node(&d1, child, &mut mgr, |mut child| {
+        let text_child = node(&mut d1, child, &mut mgr, |mut child| {
             child
                 .insert(0, Delta::new().insert_text("content"))
                 .node_id()
                 .unwrap()
         });
 
-        let as_string = || {
-            node(&d1, xml1.clone(), &mut NoReporter, |xml| {
+        let as_string = |d1: &mut Doc| {
+            node(d1, xml1.clone(), &mut NoReporter, |xml| {
                 xml.format_xml().to_string()
             })
         };
 
-        assert_eq!(as_string(), "<undefined><p>content</p></undefined>");
+        assert_eq!(as_string(&mut d1), "<undefined><p>content</p></undefined>");
         // format textchild and revert that change
         mgr.capture(());
-        node(&d1, text_child, &mut mgr, |mut text| {
+        node(&mut d1, text_child, &mut mgr, |mut text| {
             text.format(3, 4, &Attrs::from([("bold".into(), any!({}))]))
         });
         assert_eq!(
-            as_string(),
+            as_string(&mut d1),
             "<undefined><p>con<bold>tent</bold></p></undefined>"
         );
-        mgr.undo(&mut NoReporter);
-        assert_eq!(as_string(), "<undefined><p>content</p></undefined>");
-        mgr.redo(&mut NoReporter);
+        undo(&mut mgr, &mut d1);
+        assert_eq!(as_string(&mut d1), "<undefined><p>content</p></undefined>");
+        redo(&mut mgr, &mut d1);
         assert_eq!(
-            as_string(),
+            as_string(&mut d1),
             "<undefined><p>con<bold>tent</bold></p></undefined>"
         );
-        node(&d1, xml1.clone(), &mut mgr, |mut xml| xml.remove(0, 1));
-        assert_eq!(as_string(), "<undefined></undefined>");
-        mgr.undo(&mut NoReporter);
+        node(&mut d1, xml1.clone(), &mut mgr, |mut xml| xml.remove(0, 1));
+        assert_eq!(as_string(&mut d1), "<undefined></undefined>");
+        undo(&mut mgr, &mut d1);
         assert_eq!(
-            as_string(),
+            as_string(&mut d1),
             "<undefined><p>con<bold>tent</bold></p></undefined>"
         );
     }
@@ -1059,30 +1084,26 @@ mod test {
         use crate::undo::UndoManager;
         type Metadata = HashMap<String, usize>;
 
-        let doc = Cell::new(Doc::with_client_id(1));
-        let txt = NodePtr::from(
-            doc.acquire_mut()
-                .transact_mut()
-                .node_mut("test")
-                .unwrap()
-                .as_ref(),
-        );
+        let mut doc = Doc::with_client_id(1);
+        let txt = NodePtr::from(doc.transact_mut().node_mut("test").unwrap().as_ref());
         let mut mgr: UndoManager<Metadata> = UndoManager::new();
-        node(&doc, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut doc, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
 
         let mut r = Report::new(EncoderV1::new());
-        node(&doc, "test", &mut (&mut mgr, &mut r), |mut n| {
+        node(&mut doc, "test", &mut (&mut mgr, &mut r), |mut n| {
             n.insert_text(0, "abc")
         });
         assert!(r.parents.contains(&txt));
         assert!(mgr.capture(Metadata::from([("test".to_string(), 1)])));
 
-        let item = mgr.undo(&mut r).unwrap();
+        let mut txn = doc.transact_mut();
+        let item = mgr.undo(&mut txn).unwrap().unwrap();
+        txn.commit(&mut r);
         assert!(r.parents.contains(&txt));
         assert_eq!(item.meta().get("test"), Some(&1));
-        let item = mgr.redo(&mut r).unwrap();
+        let mut txn = doc.transact_mut();
+        let item = mgr.redo(&mut txn).unwrap().unwrap();
+        txn.commit(&mut r);
         assert!(r.parents.contains(&txt));
         // was 2: meta was set on redo stack items by observers, now they get `M::default()`
         assert_eq!(item.meta().get("test"), None);
@@ -1093,42 +1114,31 @@ mod test {
         use crate::undo::UndoManager;
         type Metadata = HashMap<String, usize>;
         let (undo_stack_json, redo_stack_json, state) = {
-            let d1 = Cell::new(Doc::with_options(crate::Options {
+            let mut d1 = Doc::with_options(crate::Options {
                 client_id: ClientID::new(1),
                 guid: "A".into(),
                 ..crate::Options::default()
-            }));
-            let mut m1: UndoManager<Metadata> = UndoManager::new();
-            node(&d1, "test", &mut NoReporter, |mut n| {
-                m1.expand_scope(&mut n)
             });
+            let mut m1: UndoManager<Metadata> = UndoManager::new();
+            node(&mut d1, "test", &mut NoReporter, |n| m1.expand_scope(&n));
 
             let meta = || Metadata::from([("test".to_string(), 0)]);
 
-            node(&d1, "test", &mut m1, |mut n| n.insert_text(0, "c"));
+            node(&mut d1, "test", &mut m1, |mut n| n.insert_text(0, "c"));
             m1.capture(meta());
-            node(&d1, "test", &mut m1, |mut n| n.insert_text(0, "b"));
+            node(&mut d1, "test", &mut m1, |mut n| n.insert_text(0, "b"));
             m1.capture(meta());
-            node(&d1, "test", &mut m1, |mut n| n.insert_text(0, "a"));
+            node(&mut d1, "test", &mut m1, |mut n| n.insert_text(0, "a"));
             m1.capture(meta());
 
-            m1.undo(&mut NoReporter);
-            assert_eq!(
-                d1.acquire().transact().node("test").unwrap().to_string(),
-                "bc"
-            );
-            m1.redo(&mut NoReporter);
-            assert_eq!(
-                d1.acquire().transact().node("test").unwrap().to_string(),
-                "abc"
-            );
+            undo(&mut m1, &mut d1);
+            assert_eq!(d1.transact().node("test").unwrap().to_string(), "bc");
+            redo(&mut m1, &mut d1);
+            assert_eq!(d1.transact().node("test").unwrap().to_string(), "abc");
 
             let undo_stack_json = serde_json::to_string(m1.undo_stack()).unwrap();
             let redo_stack_json = serde_json::to_string(m1.redo_stack()).unwrap();
-            let doc_state = d1
-                .acquire()
-                .transact()
-                .encode_diff_v1(&StateVector::default());
+            let doc_state = d1.transact().encode_diff_v1(&StateVector::default());
             (undo_stack_json, redo_stack_json, doc_state)
         };
 
@@ -1136,92 +1146,82 @@ mod test {
         let redo_stack: Vec<StackItem<Metadata>> = serde_json::from_str(&redo_stack_json).unwrap();
 
         // try to recreate the stack
-        let d2 = Cell::new(Doc::with_options(crate::Options {
+        let mut d2 = Doc::with_options(crate::Options {
             client_id: ClientID::new(2),
             guid: "A".into(),
             ..crate::Options::default()
-        }));
-        let undo_options = Options {
-            init_undo_stack: undo_stack,
-            init_redo_stack: redo_stack,
-            ..Default::default()
-        };
-        d2.acquire_mut()
-            .transact_mut()
+        });
+        d2.transact_mut()
             .apply_update(Update::decode_v1(&state).unwrap())
             .unwrap();
-        let mut m2: UndoManager<Metadata> = UndoManager::with_options(undo_options);
-        node(&d2, "test", &mut NoReporter, |mut n| {
-            m2.expand_scope(&mut n)
-        });
+        let mut m2: UndoManager<Metadata> = UndoManager::new();
+        *m2.undo_stack_mut() = undo_stack;
+        *m2.redo_stack_mut() = redo_stack;
+        node(&mut d2, "test", &mut NoReporter, |n| m2.expand_scope(&n));
 
-        m2.undo(&mut NoReporter);
-        assert_eq!(
-            d2.acquire().transact().node("test").unwrap().to_string(),
-            "bc"
-        );
-        m2.redo(&mut NoReporter);
-        assert_eq!(
-            d2.acquire().transact().node("test").unwrap().to_string(),
-            "abc"
-        );
+        undo(&mut m2, &mut d2);
+        assert_eq!(d2.transact().node("test").unwrap().to_string(), "bc");
+        redo(&mut m2, &mut d2);
+        assert_eq!(d2.transact().node("test").unwrap().to_string(), "abc");
     }
 
     #[test]
     fn undo_until_change_performed() {
-        let d1 = Cell::new(Doc::with_client_id(1));
-        let d2 = Cell::new(Doc::with_client_id(2));
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
 
-        let map1a = node(&d1, "array", &mut NoReporter, |mut arr| {
+        let map1a = node(&mut d1, "array", &mut NoReporter, |mut arr| {
             arr.push_back(Delta::new().insert_attr("hello", "world".to_string()))
                 .node_id()
                 .unwrap()
         });
-        let map1b = node(&d1, "array", &mut NoReporter, |mut arr| {
+        let map1b = node(&mut d1, "array", &mut NoReporter, |mut arr| {
             arr.push_back(Delta::new().insert_attr("key", "value".to_string()))
                 .node_id()
                 .unwrap()
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
         let mut mgr1 = UndoManager::new();
-        node(&d1, "array", &mut NoReporter, |mut n| {
-            mgr1.expand_scope(&mut n)
-        });
-        let d1_client_id = d1.acquire().client_id();
+        node(&mut d1, "array", &mut NoReporter, |n| mgr1.expand_scope(&n));
+        let d1_client_id = d1.client_id();
 
         let mut mgr2 = UndoManager::new();
-        node(&d2, "array", &mut NoReporter, |mut n| {
-            mgr2.expand_scope(&mut n)
-        });
-        let d2_client_id = d2.acquire().client_id();
+        node(&mut d2, "array", &mut NoReporter, |n| mgr2.expand_scope(&n));
+        let d2_client_id = d2.client_id();
 
-        node_with(&d1, d1_client_id, map1b.clone(), &mut mgr1, |mut map| {
-            map.insert_attr("key", "value modified".to_string());
-        });
+        node_with(
+            &mut d1,
+            d1_client_id,
+            map1b.clone(),
+            &mut mgr1,
+            |mut map| {
+                map.insert_attr("key", "value modified".to_string());
+            },
+        );
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
         mgr1.capture(());
 
-        node_with(&d1, d1_client_id, map1a, &mut mgr1, |mut map| {
+        node_with(&mut d1, d1_client_id, map1a, &mut mgr1, |mut map| {
             map.insert_attr("hello", "world modified".to_string());
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        node_with(&d2, d2_client_id, "array", &mut mgr2, |mut arr| {
+        node_with(&mut d2, d2_client_id, "array", &mut mgr2, |mut arr| {
             arr.remove(0, 1)
         });
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
-        mgr2.undo(&mut NoReporter);
+        exchange_updates(&mut [&mut d1, &mut d2]);
+        undo(&mut mgr2, &mut d2);
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
-        mgr1.undo(&mut NoReporter);
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
+        undo(&mut mgr1, &mut d1);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        node(&d1, map1b, &mut NoReporter, |map| {
+        node(&mut d1, map1b, &mut NoReporter, |map| {
             assert_eq!(map.attr("key"), Some("value".into()));
         });
     }
@@ -1253,74 +1253,70 @@ mod test {
     #[test]
     fn nested_undo() {
         // This issue has been reported in https://github.com/yjs/yjs/issues/317
-        let doc = Cell::new(Doc::with_options(crate::doc::Options {
+        let mut doc = Doc::with_options(crate::doc::Options {
             skip_gc: true,
             client_id: ClientID::new(1),
             ..crate::doc::Options::default()
-        }));
-        let mut mgr = UndoManager::new();
-        node(&doc, "map", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
         });
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "map", &mut NoReporter, |n| mgr.expand_scope(&n));
 
         let blocks = |text: &str| Delta::new().insert_attr("text", text.to_owned());
-        let text = node(&doc, "map", &mut mgr, |mut design| {
+        let text = node(&mut doc, "map", &mut mgr, |mut design| {
             let content = Delta::new().insert_attr("blocks", blocks("Type something"));
             design.insert_attr("text", content).node_id().unwrap()
         });
         mgr.capture(());
 
-        node(&doc, text.clone(), &mut mgr, |mut text| {
+        node(&mut doc, text.clone(), &mut mgr, |mut text| {
             text.insert_attr("blocks", blocks("Something"));
         });
         mgr.capture(());
 
-        node(&doc, text, &mut mgr, |mut text| {
+        node(&mut doc, text, &mut mgr, |mut text| {
             text.insert_attr("blocks", blocks("Something else"));
         });
         mgr.capture(());
 
-        let design_json = || {
-            node(&doc, "map", &mut NoReporter, |design| {
+        let design_json = |doc: &mut Doc| {
+            node(doc, "map", &mut NoReporter, |design| {
                 design.deserialize::<Design>().unwrap()
             })
         };
 
-        assert_eq!(design_json(), design("Something else"));
-        mgr.undo(&mut NoReporter);
-        assert_eq!(design_json(), design("Something"));
-        mgr.undo(&mut NoReporter);
-        assert_eq!(design_json(), design("Type something"));
-        mgr.undo(&mut NoReporter);
-        assert_eq!(design_json(), Design { text: None });
-        mgr.redo(&mut NoReporter);
-        assert_eq!(design_json(), design("Type something"));
-        mgr.redo(&mut NoReporter);
-        assert_eq!(design_json(), design("Something"));
-        mgr.redo(&mut NoReporter);
-        assert_eq!(design_json(), design("Something else"));
+        assert_eq!(design_json(&mut doc), design("Something else"));
+        undo(&mut mgr, &mut doc);
+        assert_eq!(design_json(&mut doc), design("Something"));
+        undo(&mut mgr, &mut doc);
+        assert_eq!(design_json(&mut doc), design("Type something"));
+        undo(&mut mgr, &mut doc);
+        assert_eq!(design_json(&mut doc), Design { text: None });
+        redo(&mut mgr, &mut doc);
+        assert_eq!(design_json(&mut doc), design("Type something"));
+        redo(&mut mgr, &mut doc);
+        assert_eq!(design_json(&mut doc), design("Something"));
+        redo(&mut mgr, &mut doc);
+        assert_eq!(design_json(&mut doc), design("Something else"));
     }
 
     #[test]
     fn consecutive_redo_bug() {
         // https://github.com/yjs/yjs/issues/355
-        let doc = Cell::new(Doc::with_client_id(1));
+        let mut doc = Doc::with_client_id(1);
         let mut mgr = UndoManager::new();
-        node(&doc, "root", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut doc, "root", &mut NoReporter, |n| mgr.expand_scope(&n));
 
-        let point = node(&doc, "root", &mut mgr, |mut root| {
+        let point = node(&mut doc, "root", &mut mgr, |mut root| {
             let content = Delta::new().insert_attr("x", 0).insert_attr("y", 0);
             root.insert_attr("a", content).node_id().unwrap()
         });
         mgr.capture(());
 
-        let set_point = |mgr: &mut UndoManager, x: i32, y: i32| {
-            node(&doc, point.clone(), mgr, |mut point| {
+        let mut set_point = |mgr: &mut UndoManager, x: i32, y: i32| {
+            node(&mut doc, point.clone(), mgr, |mut point| {
                 point.insert_attr("x", x)
             });
-            node(&doc, point.clone(), mgr, |mut point| {
+            node(&mut doc, point.clone(), mgr, |mut point| {
                 point.insert_attr("y", y)
             });
         };
@@ -1342,51 +1338,51 @@ mod test {
             a: Point,
         }
         // read through root: redo restores the point as a new node
-        let point_json = || {
-            node(&doc, "root", &mut NoReporter, |r| {
+        let point_json = |doc: &mut Doc| {
+            node(doc, "root", &mut NoReporter, |r| {
                 r.deserialize::<R>().unwrap().a
             })
         };
 
-        assert_eq!(point_json(), Point { x: 300, y: 300 });
+        assert_eq!(point_json(&mut doc), Point { x: 300, y: 300 });
 
-        mgr.undo(&mut NoReporter); // x=200, y=200
-        assert_eq!(point_json(), Point { x: 200, y: 200 });
+        undo(&mut mgr, &mut doc); // x=200, y=200
+        assert_eq!(point_json(&mut doc), Point { x: 200, y: 200 });
 
-        mgr.undo(&mut NoReporter); // x=100, y=100
-        assert_eq!(point_json(), Point { x: 100, y: 100 });
+        undo(&mut mgr, &mut doc); // x=100, y=100
+        assert_eq!(point_json(&mut doc), Point { x: 100, y: 100 });
 
-        mgr.undo(&mut NoReporter); // x=0, y=0
-        assert_eq!(point_json(), Point { x: 0, y: 0 });
+        undo(&mut mgr, &mut doc); // x=0, y=0
+        assert_eq!(point_json(&mut doc), Point { x: 0, y: 0 });
 
-        mgr.undo(&mut NoReporter); // null
-        node(&doc, "root", &mut NoReporter, |root| {
+        undo(&mut mgr, &mut doc); // null
+        node(&mut doc, "root", &mut NoReporter, |root| {
             assert_eq!(root.attr("a"), None)
         });
 
-        mgr.redo(&mut NoReporter); // x=0, y=0
-        assert_eq!(point_json(), Point { x: 0, y: 0 });
+        redo(&mut mgr, &mut doc); // x=0, y=0
+        assert_eq!(point_json(&mut doc), Point { x: 0, y: 0 });
 
-        mgr.redo(&mut NoReporter); // x=100, y=100
-        assert_eq!(point_json(), Point { x: 100, y: 100 });
+        redo(&mut mgr, &mut doc); // x=100, y=100
+        assert_eq!(point_json(&mut doc), Point { x: 100, y: 100 });
 
-        mgr.redo(&mut NoReporter); // x=200, y=200
-        assert_eq!(point_json(), Point { x: 200, y: 200 });
+        redo(&mut mgr, &mut doc); // x=200, y=200
+        assert_eq!(point_json(&mut doc), Point { x: 200, y: 200 });
 
-        mgr.redo(&mut NoReporter); // x=300, y=300
-        assert_eq!(point_json(), Point { x: 300, y: 300 });
+        redo(&mut mgr, &mut doc); // x=300, y=300
+        assert_eq!(point_json(&mut doc), Point { x: 300, y: 300 });
     }
 
     #[test]
     fn undo_xml_bug() {
         // https://github.com/yjs/yjs/issues/304
         const ORIGIN: &str = "origin";
-        let doc = Cell::new(Doc::with_client_id(1));
+        let mut doc = Doc::with_client_id(1);
         let mut mgr = UndoManager::new();
-        node(&doc, "t", &mut NoReporter, |mut n| mgr.expand_scope(&mut n));
+        node(&mut doc, "t", &mut NoReporter, |n| mgr.expand_scope(&n));
 
         // create element
-        let e = node_with(&doc, ORIGIN, "t", &mut mgr, |mut f| {
+        let e = node_with(&mut doc, ORIGIN, "t", &mut mgr, |mut f| {
             let content = Delta::with_name("test-node")
                 .insert_attr("a", "100".to_string())
                 .insert_attr("b", "0".to_string());
@@ -1395,27 +1391,29 @@ mod test {
         mgr.capture(());
 
         // change one attribute
-        node_with(&doc, ORIGIN, e.clone(), &mut mgr, |mut e| {
+        node_with(&mut doc, ORIGIN, e.clone(), &mut mgr, |mut e| {
             e.insert_attr("a", "200".to_string());
         });
         mgr.capture(());
 
         // change both attributes
-        node_with(&doc, ORIGIN, e, &mut mgr, |mut e| {
+        node_with(&mut doc, ORIGIN, e, &mut mgr, |mut e| {
             e.insert_attr("a", "180".to_string());
             e.insert_attr("b", "50".to_string());
         });
         mgr.capture(());
 
-        mgr.undo(&mut NoReporter);
-        mgr.undo(&mut NoReporter);
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut doc);
+        undo(&mut mgr, &mut doc);
+        undo(&mut mgr, &mut doc);
 
-        mgr.redo(&mut NoReporter);
-        mgr.redo(&mut NoReporter);
-        mgr.redo(&mut NoReporter);
+        redo(&mut mgr, &mut doc);
+        redo(&mut mgr, &mut doc);
+        redo(&mut mgr, &mut doc);
 
-        let str = node(&doc, "t", &mut NoReporter, |f| f.format_xml().to_string());
+        let str = node(&mut doc, "t", &mut NoReporter, |f| {
+            f.format_xml().to_string()
+        });
         assert!(
             str == r#"<test-node a="180" b="50"></test-node>"#
                 || str == r#"<test-node b="50" a="180"></test-node>"#
@@ -1425,39 +1423,37 @@ mod test {
     #[test]
     fn undo_block_bug() {
         // https://github.com/yjs/yjs/issues/343
-        let doc = Cell::new(Doc::with_options({
+        let mut doc = Doc::with_options({
             let mut o = crate::doc::Options::default();
             o.client_id = ClientID::new(1);
             o.skip_gc = true;
             o
-        }));
-        let mut mgr = UndoManager::new();
-        node(&doc, "map", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
         });
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "map", &mut NoReporter, |n| mgr.expand_scope(&n));
 
         let blocks = |text: &str| Delta::new().insert_attr("text", text.to_owned());
-        let text = node(&doc, "map", &mut mgr, |mut design| {
+        let text = node(&mut doc, "map", &mut mgr, |mut design| {
             let content = Delta::new().insert_attr("blocks", blocks("1"));
             design.insert_attr("text", content).node_id().unwrap()
         });
         mgr.capture(());
         for content in ["1", "3", "4"] {
-            node(&doc, text.clone(), &mut mgr, |mut text| {
+            node(&mut doc, text.clone(), &mut mgr, |mut text| {
                 text.insert_attr("blocks", blocks(content));
             });
             mgr.capture(());
         }
         // {"text":{"blocks":{"text":"4"}}}
-        mgr.undo(&mut NoReporter); // {"text":{"blocks":{"3"}}}
-        mgr.undo(&mut NoReporter); // {"text":{"blocks":{"text":"2"}}}
-        mgr.undo(&mut NoReporter); // {"text":{"blocks":{"text":"1"}}}
-        mgr.undo(&mut NoReporter); // {}
-        mgr.redo(&mut NoReporter); // {"text":{"blocks":{"text":"1"}}}
-        mgr.redo(&mut NoReporter); // {"text":{"blocks":{"text":"2"}}}
-        mgr.redo(&mut NoReporter); // {"text":{"blocks":{"text":"3"}}}
-        mgr.redo(&mut NoReporter); // {"text":{}}
-        let actual = node(&doc, "map", &mut NoReporter, |design| {
+        undo(&mut mgr, &mut doc); // {"text":{"blocks":{"3"}}}
+        undo(&mut mgr, &mut doc); // {"text":{"blocks":{"text":"2"}}}
+        undo(&mut mgr, &mut doc); // {"text":{"blocks":{"text":"1"}}}
+        undo(&mut mgr, &mut doc); // {}
+        redo(&mut mgr, &mut doc); // {"text":{"blocks":{"text":"1"}}}
+        redo(&mut mgr, &mut doc); // {"text":{"blocks":{"text":"2"}}}
+        redo(&mut mgr, &mut doc); // {"text":{"blocks":{"text":"3"}}}
+        redo(&mut mgr, &mut doc); // {"text":{}}
+        let actual = node(&mut doc, "map", &mut NoReporter, |design| {
             design.deserialize::<Design>().unwrap()
         });
         assert_eq!(actual, design("4"));
@@ -1466,50 +1462,46 @@ mod test {
     #[test]
     fn undo_delete_text_format() {
         // https://github.com/yrs/yjs/issues/392
-        fn send(src: &Cell<Doc>, dst: &Cell<Doc>) {
+        fn send(src: &Doc, dst: &mut Doc) {
             let update = Update::decode_v1(
-                &src.acquire()
-                    .transact()
+                &src.transact()
                     .encode_state_as_update_v1(&StateVector::default()),
             )
             .unwrap();
-            dst.acquire_mut()
-                .transact_mut()
-                .apply_update(update)
-                .unwrap();
+            dst.transact_mut().apply_update(update).unwrap();
         }
 
-        let doc1 = Cell::new(Doc::with_client_id(1));
-        node(&doc1, "test", &mut NoReporter, |mut n| {
+        let mut doc1 = Doc::with_client_id(1);
+        node(&mut doc1, "test", &mut NoReporter, |mut n| {
             n.insert_text(0, "Attack ships on fire off the shoulder of Orion.")
         }); // D1: 'Attack ships on fire off the shoulder of Orion.'
-        let doc2 = Cell::new(Doc::with_client_id(2));
+        let mut doc2 = Doc::with_client_id(2);
 
-        send(&doc1, &doc2); // D2: 'Attack ships on fire off the shoulder of Orion.'
+        send(&doc1, &mut doc2); // D2: 'Attack ships on fire off the shoulder of Orion.'
         let mut mgr = UndoManager::new();
-        node(&doc1, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut doc1, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
 
         let attrs = Attrs::from([("bold".into(), true.into())]);
-        node(&doc1, "test", &mut mgr, |mut n| n.format(13, 7, &attrs)); // D1: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
+        node(&mut doc1, "test", &mut mgr, |mut n| n.format(13, 7, &attrs)); // D1: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
 
         mgr.capture(());
 
-        send(&doc1, &doc2); // D2: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
+        send(&doc1, &mut doc2); // D2: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
 
         let attrs2 = Attrs::from([("bold".into(), Any::Null)]);
-        node(&doc1, "test", &mut mgr, |mut n| n.format(16, 4, &attrs2)); // D1: 'Attack ships <b>on </b>fire off the shoulder of Orion.'
+        node(&mut doc1, "test", &mut mgr, |mut n| {
+            n.format(16, 4, &attrs2)
+        }); // D1: 'Attack ships <b>on </b>fire off the shoulder of Orion.'
 
         // TODO(unified-api): rich-text `diff`/`Diff`/`YChange` assertions have no NodeRef
         // equivalent yet (`to_delta` is not implemented). Original expected the delta:
         //   ["Attack ships ", <b>"on "</b>, "fire off the shoulder of Orion."]
 
         mgr.capture(());
-        send(&doc1, &doc2); // D2: 'Attack ships <b>on </b>fire off the shoulder of Orion.'
+        send(&doc1, &mut doc2); // D2: 'Attack ships <b>on </b>fire off the shoulder of Orion.'
 
-        mgr.undo(&mut NoReporter); // D1: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
-        send(&doc1, &doc2); // D2: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
+        undo(&mut mgr, &mut doc1); // D1: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
+        send(&doc1, &mut doc2); // D2: 'Attack ships <b>on fire</b> off the shoulder of Orion.'
 
         // TODO(unified-api): rich-text `diff`/`Diff`/`YChange` assertions have no NodeRef
         // equivalent yet. Original expected on both docs the delta:
@@ -1519,90 +1511,84 @@ mod test {
     #[test]
     fn special_deletion_case() {
         // https://github.com/yjs/yjs/issues/447
-        let doc = Cell::new(Doc::with_client_id(1));
+        let mut doc = Doc::with_client_id(1);
         let mut mgr = UndoManager::new();
-        node(&doc, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut doc, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
 
         // setup is not undoable
-        let e = node(&doc, "test", &mut NoReporter, |mut f| {
+        let e = node(&mut doc, "test", &mut NoReporter, |mut f| {
             let content = Delta::with_name("test")
                 .insert_attr("a", "1".to_string())
                 .insert_attr("b", "2".to_string());
             f.insert(0, content).node_id().unwrap()
         });
-        let as_string = || {
-            node(&doc, "test", &mut NoReporter, |f| {
-                f.format_xml().to_string()
-            })
-        };
+        let as_string =
+            |doc: &mut Doc| node(doc, "test", &mut NoReporter, |f| f.format_xml().to_string());
 
-        let s = as_string();
+        let s = as_string(&mut doc);
         assert!(s == r#"<test a="1" b="2"></test>"# || s == r#"<test b="2" a="1"></test>"#);
 
         {
             // change attribute "b" and delete test-node within a single transaction
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
+            let mut txn = doc.transact_mut();
             txn.node_mut(e).unwrap().insert_attr("b", "3".to_string());
             txn.node_mut("test").unwrap().remove(0, 1);
             txn.commit(&mut mgr);
         }
-        assert_eq!(as_string(), "");
+        assert_eq!(as_string(&mut doc), "");
 
-        mgr.undo(&mut NoReporter);
-        let s = as_string();
+        undo(&mut mgr, &mut doc);
+        let s = as_string(&mut doc);
         assert!(s == r#"<test a="1" b="2"></test>"# || s == r#"<test b="2" a="1"></test>"#);
     }
 
     #[test]
     fn undo_in_embed() {
-        let d1 = Cell::new(Doc::with_client_id(1));
+        let mut d1 = Doc::with_client_id(1);
         let mut mgr = UndoManager::new();
-        node(&d1, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut d1, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
 
-        let d2 = Cell::new(Doc::with_client_id(2));
+        let mut d2 = Doc::with_client_id(2);
 
         let attrs = Attrs::from([("bold".into(), true.into())]);
-        let nested = node(&d1, "test", &mut mgr, |mut txt1| {
+        let nested = node(&mut d1, "test", &mut mgr, |mut txt1| {
             let embed = Delta::new().insert_text("initial text");
             txt1.apply_delta(Delta::new().insert_fmt(embed, &attrs));
             txt1.get(0).unwrap().node_id().unwrap()
         });
-        let nested_string = || {
-            node(&d1, nested.clone(), &mut NoReporter, |nested| {
+        let nested_string = |d1: &mut Doc| {
+            node(d1, nested.clone(), &mut NoReporter, |nested| {
                 nested.to_string()
             })
         };
 
-        assert_eq!(nested_string(), "initial text".to_string());
+        assert_eq!(nested_string(&mut d1), "initial text".to_string());
         mgr.capture(());
-        node(&d1, nested.clone(), &mut mgr, |mut nested| {
+        node(&mut d1, nested.clone(), &mut mgr, |mut nested| {
             let len = nested.len();
             nested.remove(0, len);
         });
-        node(&d1, nested.clone(), &mut mgr, |mut nested| {
+        node(&mut d1, nested.clone(), &mut mgr, |mut nested| {
             nested.insert_text(0, "other text")
         });
-        assert_eq!(nested_string(), "other text".to_string());
-        mgr.undo(&mut NoReporter);
-        assert_eq!(nested_string(), "initial text".to_string());
+        assert_eq!(nested_string(&mut d1), "other text".to_string());
+        undo(&mut mgr, &mut d1);
+        assert_eq!(nested_string(&mut d1), "initial text".to_string());
 
-        exchange_updates(&mut [&mut *d1.acquire_mut(), &mut *d2.acquire_mut()]);
+        exchange_updates(&mut [&mut d1, &mut d2]);
 
-        let nested2 = node(&d2, "test", &mut NoReporter, |txt2| {
+        let nested2 = node(&mut d2, "test", &mut NoReporter, |txt2| {
             txt2.get(0).unwrap().node_id().unwrap()
         });
         assert_eq!(
-            node(&d2, nested2, &mut NoReporter, |nested2| nested2.to_string()),
+            node(&mut d2, nested2, &mut NoReporter, |nested2| {
+                nested2.to_string()
+            }),
             "initial text".to_string()
         );
 
-        mgr.undo(&mut NoReporter);
-        assert_eq!(node(&d1, "test", &mut NoReporter, |txt1| txt1.len()), 0);
+        undo(&mut mgr, &mut d1);
+        assert_eq!(node(&mut d1, "test", &mut NoReporter, |txt1| txt1.len()), 0);
     }
 
     /// `{ s1: T }` root shape shared by github issue regression tests.
@@ -1614,37 +1600,37 @@ mod test {
     #[test]
     fn github_issue_345() {
         // https://github.com/y-crdt/y-crdt/issues/345
-        let doc = Cell::new(Doc::new());
-        let mut mgr = UndoManager::with_options(Options::default());
-        node(&doc, "r", &mut NoReporter, |mut n| mgr.expand_scope(&mut n));
-        let client_id = doc.acquire().client_id();
+        let mut doc = Doc::new();
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "r", &mut NoReporter, |n| mgr.expand_scope(&n));
+        let client_id = doc.client_id();
 
-        let s1 = node_with(&doc, client_id, "r", &mut mgr, |mut map| {
+        let s1 = node_with(&mut doc, client_id, "r", &mut mgr, |mut map| {
             map.insert_attr("s1", Delta::new()).node_id().unwrap()
         });
         mgr.capture(());
 
-        let a = node_with(&doc, client_id, s1.clone(), &mut mgr, |mut s1| {
+        let a = node_with(&mut doc, client_id, s1.clone(), &mut mgr, |mut s1| {
             s1.insert_attr("a", Delta::new().insert("a1".to_string()))
                 .node_id()
                 .unwrap()
         });
         mgr.capture(());
 
-        let b = node_with(&doc, client_id, s1, &mut mgr, |mut s1| {
+        let b = node_with(&mut doc, client_id, s1, &mut mgr, |mut s1| {
             s1.insert_attr("b", Delta::new().insert("b1".to_string()))
                 .node_id()
                 .unwrap()
         });
         mgr.capture(());
 
-        node_with(&doc, client_id, b, &mut mgr, |mut b| {
+        node_with(&mut doc, client_id, b, &mut mgr, |mut b| {
             b.insert(1, "b2".to_string())
         });
         mgr.capture(());
 
         for (index, value) in [(1, "a3"), (2, "a4"), (3, "a5")] {
-            node_with(&doc, client_id, a.clone(), &mut mgr, |mut a| {
+            node_with(&mut doc, client_id, a.clone(), &mut mgr, |mut a| {
                 a.insert(index, value.to_string())
             });
             mgr.capture(());
@@ -1659,52 +1645,58 @@ mod test {
             a: a.iter().map(|s| s.to_string()).collect(),
             b: b.iter().map(|s| s.to_string()).collect(),
         };
-        let map_json = || {
-            node(&doc, "r", &mut NoReporter, |map| {
+        let map_json = |doc: &mut Doc| {
+            node(doc, "r", &mut NoReporter, |map| {
                 map.deserialize::<Root<S1>>().unwrap().s1
             })
         };
 
-        assert_eq!(map_json(), s1(&["a1", "a3", "a4", "a5"], &["b1", "b2"]));
+        assert_eq!(
+            map_json(&mut doc),
+            s1(&["a1", "a3", "a4", "a5"], &["b1", "b2"])
+        );
 
-        mgr.undo(&mut NoReporter); // {"s1": {"a": ["a1", "a3", "a4"], "b": ["b1", "b2"]}}
-        mgr.undo(&mut NoReporter); // {"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}}
-        mgr.undo(&mut NoReporter); // {"s1": {"a": ["a1"], "b": ["b1", "b2"]}}
-        mgr.undo(&mut NoReporter); // {"s1": {"a": ["a1"], "b": ["b1"]}}
-        assert_eq!(map_json(), s1(&["a1"], &["b1"]));
+        undo(&mut mgr, &mut doc); // {"s1": {"a": ["a1", "a3", "a4"], "b": ["b1", "b2"]}}
+        undo(&mut mgr, &mut doc); // {"s1": {"a": ["a1", "a3"], "b": ["b1", "b2"]}}
+        undo(&mut mgr, &mut doc); // {"s1": {"a": ["a1"], "b": ["b1", "b2"]}}
+        undo(&mut mgr, &mut doc); // {"s1": {"a": ["a1"], "b": ["b1"]}}
+        assert_eq!(map_json(&mut doc), s1(&["a1"], &["b1"]));
 
-        mgr.redo(&mut NoReporter);
-        assert_eq!(map_json(), s1(&["a1"], &["b1", "b2"]));
+        redo(&mut mgr, &mut doc);
+        assert_eq!(map_json(&mut doc), s1(&["a1"], &["b1", "b2"]));
 
-        mgr.redo(&mut NoReporter);
-        assert_eq!(map_json(), s1(&["a1", "a3"], &["b1", "b2"]));
+        redo(&mut mgr, &mut doc);
+        assert_eq!(map_json(&mut doc), s1(&["a1", "a3"], &["b1", "b2"]));
 
-        mgr.redo(&mut NoReporter);
-        assert_eq!(map_json(), s1(&["a1", "a3", "a4"], &["b1", "b2"]));
+        redo(&mut mgr, &mut doc);
+        assert_eq!(map_json(&mut doc), s1(&["a1", "a3", "a4"], &["b1", "b2"]));
 
-        mgr.redo(&mut NoReporter);
-        assert_eq!(map_json(), s1(&["a1", "a3", "a4", "a5"], &["b1", "b2"]));
+        redo(&mut mgr, &mut doc);
+        assert_eq!(
+            map_json(&mut doc),
+            s1(&["a1", "a3", "a4", "a5"], &["b1", "b2"])
+        );
     }
 
     #[test]
     fn github_issue_345_part_2() {
         // https://github.com/y-crdt/y-crdt/issues/345
-        let d = Cell::new(Doc::new());
-        let s1 = node(&d, "r", &mut NoReporter, |mut r| {
+        let mut d = Doc::new();
+        let s1 = node(&mut d, "r", &mut NoReporter, |mut r| {
             r.insert_attr("s1", Delta::new()).node_id().unwrap()
         });
 
-        let mut mgr = UndoManager::with_options(Options::default());
-        node(&d, "r", &mut NoReporter, |mut n| mgr.expand_scope(&mut n));
-        node(&d, s1.clone(), &mut mgr, |mut s1| {
+        let mut mgr = UndoManager::new();
+        node(&mut d, "r", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d, s1.clone(), &mut mgr, |mut s1| {
             s1.insert_attr("b1", Delta::new().insert_attr("f1", 11));
         });
         mgr.capture(());
 
-        node(&d, s1.clone(), &mut mgr, |mut s1| s1.remove_attr("b1"));
+        node(&mut d, s1.clone(), &mut mgr, |mut s1| s1.remove_attr("b1"));
         mgr.capture(());
 
-        node(&d, s1, &mut mgr, |mut s1| {
+        node(&mut d, s1, &mut mgr, |mut s1| {
             s1.insert_attr("b1", Delta::new().insert_attr("f1", 20));
         });
         mgr.capture(());
@@ -1717,48 +1709,47 @@ mod test {
         struct B1 {
             f1: i32,
         }
-        let r_json = || {
-            node(&d, "r", &mut NoReporter, |r| {
+        let r_json = |d: &mut Doc| {
+            node(d, "r", &mut NoReporter, |r| {
                 r.deserialize::<Root<S1>>().unwrap().s1.b1
             })
         };
 
-        assert_eq!(r_json(), Some(B1 { f1: 20 }));
+        assert_eq!(r_json(&mut d), Some(B1 { f1: 20 }));
 
-        mgr.undo(&mut NoReporter);
-        assert_eq!(r_json(), None);
+        undo(&mut mgr, &mut d);
+        assert_eq!(r_json(&mut d), None);
         assert!(mgr.can_undo(), "should be able to undo");
 
-        mgr.undo(&mut NoReporter);
-        assert_eq!(r_json(), Some(B1 { f1: 11 }));
+        undo(&mut mgr, &mut d);
+        assert_eq!(r_json(&mut d), Some(B1 { f1: 11 }));
         assert!(mgr.can_undo(), "should be able to undo to the init state");
     }
 
     #[test]
     fn issue_371() {
-        let doc = Cell::new(Doc::with_client_id(1));
+        let mut doc = Doc::with_client_id(1);
 
-        let s1 = node(&doc, "r", &mut NoReporter, |mut r| {
+        let s1 = node(&mut doc, "r", &mut NoReporter, |mut r| {
             r.insert_attr("s1", Delta::new()).node_id().unwrap()
         }); // { s1: {} }
-        let b1_arr = node(&doc, s1, &mut NoReporter, |mut s1| {
+        let b1_arr = node(&mut doc, s1, &mut NoReporter, |mut s1| {
             s1.insert_attr("b1", Delta::new()).node_id().unwrap()
         }); // { s1: { b1: [] } }
-        let el1 = node(&doc, b1_arr.clone(), &mut NoReporter, |mut b1_arr| {
+        let el1 = node(&mut doc, b1_arr.clone(), &mut NoReporter, |mut b1_arr| {
             b1_arr.insert(0, Delta::new()).node_id().unwrap()
         }); // { s1: { b1: [{}] } }
-        node(&doc, el1.clone(), &mut NoReporter, |mut el1| {
+        node(&mut doc, el1.clone(), &mut NoReporter, |mut el1| {
             el1.insert_attr("f1", 8)
         }); // { s1: { b1: [{ f1: 8 }] } }
-        node(&doc, el1.clone(), &mut NoReporter, |mut el1| {
+        node(&mut doc, el1.clone(), &mut NoReporter, |mut el1| {
             el1.insert_attr("f2", true)
         }); // { s1: { b1: [{ f1: 8, f2: true }] } }
 
-        let mut mgr = UndoManager::with_options(Options::default());
-        node(&doc, "r", &mut NoReporter, |mut n| mgr.expand_scope(&mut n));
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "r", &mut NoReporter, |n| mgr.expand_scope(&n));
         {
-            let mut guard = doc.acquire_mut();
-            let mut txn = guard.transact_mut();
+            let mut txn = doc.transact_mut();
             // { s1: { b1: [{ f1: 8, f2: false }, { f1: 8, f2: true }] } }
             let el0 = Delta::new().insert_attr("f1", 8).insert_attr("f2", false);
             txn.node_mut(b1_arr).unwrap().insert(0, el0);
@@ -1771,13 +1762,15 @@ mod test {
         mgr.capture(());
 
         // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
-        node(&doc, el1.clone(), &mut mgr, |mut el1| {
+        node(&mut doc, el1.clone(), &mut mgr, |mut el1| {
             el1.insert_attr("f2", false)
         });
         mgr.capture(());
 
         // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: true }] } }
-        node(&doc, el1, &mut mgr, |mut el1| el1.insert_attr("f2", true));
+        node(&mut doc, el1, &mut mgr, |mut el1| {
+            el1.insert_attr("f2", true)
+        });
         mgr.capture(());
 
         #[derive(Debug, Deserialize, PartialEq)]
@@ -1790,45 +1783,47 @@ mod test {
             f2: Option<bool>,
         }
         let el = |f1, f2| El { f1, f2 };
-        let r_json = || {
-            node(&doc, "r", &mut NoReporter, |r| {
+        let r_json = |doc: &mut Doc| {
+            node(doc, "r", &mut NoReporter, |r| {
                 r.deserialize::<Root<S1>>().unwrap().s1.b1
             })
         };
 
-        mgr.undo(&mut NoReporter); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
-        assert_eq!(r_json(), [el(8, Some(false)), el(13, Some(false))]);
-        mgr.undo(&mut NoReporter); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13 }] } }
-        assert_eq!(r_json(), [el(8, Some(false)), el(13, None)]);
-        mgr.undo(&mut NoReporter); // { s1: { b1: [{ f1: 8, f2: true }] } }
-        assert_eq!(r_json(), [el(8, Some(true))]);
-        assert!(!mgr.undo(&mut NoReporter).is_some()); // no more changes tracked by undo manager
+        undo(&mut mgr, &mut doc); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13, f2: false }] } }
+        assert_eq!(r_json(&mut doc), [el(8, Some(false)), el(13, Some(false))]);
+        undo(&mut mgr, &mut doc); // { s1: { b1: [{ f1: 8, f2: false }, { f1: 13 }] } }
+        assert_eq!(r_json(&mut doc), [el(8, Some(false)), el(13, None)]);
+        undo(&mut mgr, &mut doc); // { s1: { b1: [{ f1: 8, f2: true }] } }
+        assert_eq!(r_json(&mut doc), [el(8, Some(true))]);
+        assert!(!undo(&mut mgr, &mut doc).is_some()); // no more changes tracked by undo manager
     }
 
     #[test]
     fn issue_371_2() {
-        let doc = Cell::new(Doc::with_client_id(1));
-        let s1 = node(&doc, "r", &mut NoReporter, |mut r| {
+        let mut doc = Doc::with_client_id(1);
+        let s1 = node(&mut doc, "r", &mut NoReporter, |mut r| {
             r.insert_attr("s1", Delta::new()).node_id().unwrap()
         }); // { s1:{} }
-        node(&doc, s1.clone(), &mut NoReporter, |mut s1| {
+        node(&mut doc, s1.clone(), &mut NoReporter, |mut s1| {
             s1.insert_attr("f2", "AAA".to_string())
         }); // { s1: { f2: AAA } }
-        node(&doc, s1.clone(), &mut NoReporter, |mut s1| {
+        node(&mut doc, s1.clone(), &mut NoReporter, |mut s1| {
             s1.insert_attr("f1", false)
         }); // { s1: { f1: false, f2: AAA } }
 
-        let mut mgr = UndoManager::with_options(Options::default());
-        node(&doc, "r", &mut NoReporter, |mut n| mgr.expand_scope(&mut n));
-        node(&doc, s1.clone(), &mut mgr, |mut s1| s1.remove_attr("f2")); // { s1: { f1: false } }
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "r", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, s1.clone(), &mut mgr, |mut s1| {
+            s1.remove_attr("f2")
+        }); // { s1: { f1: false } }
         mgr.capture(());
 
-        node(&doc, s1.clone(), &mut mgr, |mut s1| {
+        node(&mut doc, s1.clone(), &mut mgr, |mut s1| {
             s1.insert_attr("f2", "C1".to_string())
         }); // { s1: { f1: false, f2: C1 } }
         mgr.capture(());
 
-        node(&doc, s1, &mut mgr, |mut s1| {
+        node(&mut doc, s1, &mut mgr, |mut s1| {
             s1.insert_attr("f2", "C2".to_string())
         }); // { s1: { f1: false, f2: C2 } }
         mgr.capture(());
@@ -1842,59 +1837,58 @@ mod test {
             f1: false,
             f2: f2.map(String::from),
         };
-        let r_json = || {
-            node(&doc, "r", &mut NoReporter, |r| {
+        let r_json = |doc: &mut Doc| {
+            node(doc, "r", &mut NoReporter, |r| {
                 r.deserialize::<Root<S1>>().unwrap().s1
             })
         };
 
-        mgr.undo(&mut NoReporter); // { s1: { f1: false, f2: C1 } }
-        assert_eq!(r_json(), s1(Some("C1")));
-        mgr.undo(&mut NoReporter); // { s1: { f1: false } }
-        assert_eq!(r_json(), s1(None));
-        mgr.undo(&mut NoReporter); // { s1: { f1: false, f2: AAA } }
-        assert_eq!(r_json(), s1(Some("AAA")));
-        assert!(!mgr.undo(&mut NoReporter).is_some()); // no more changes tracked by undo manager
+        undo(&mut mgr, &mut doc); // { s1: { f1: false, f2: C1 } }
+        assert_eq!(r_json(&mut doc), s1(Some("C1")));
+        undo(&mut mgr, &mut doc); // { s1: { f1: false } }
+        assert_eq!(r_json(&mut doc), s1(None));
+        undo(&mut mgr, &mut doc); // { s1: { f1: false, f2: AAA } }
+        assert_eq!(r_json(&mut doc), s1(Some("AAA")));
+        assert!(!undo(&mut mgr, &mut doc).is_some()); // no more changes tracked by undo manager
     }
 
     #[test]
     fn issue_380() {
-        let d = Cell::new(Doc::with_client_id(1));
-        let s1 = node(&d, "r", &mut NoReporter, |mut r| {
+        let mut d = Doc::with_client_id(1);
+        let s1 = node(&mut d, "r", &mut NoReporter, |mut r| {
             r.insert_attr("s1", Delta::new()).node_id().unwrap()
         }); // {r:{s1:{}}
-        let b1_arr = node(&d, s1, &mut NoReporter, |mut s1| {
+        let b1_arr = node(&mut d, s1, &mut NoReporter, |mut s1| {
             s1.insert_attr("b1", Delta::new()).node_id().unwrap()
         }); // {r:{s1:{b1:[]}}
 
-        let b1_el1 = node(&d, b1_arr.clone(), &mut NoReporter, |mut b1_arr| {
+        let b1_el1 = node(&mut d, b1_arr.clone(), &mut NoReporter, |mut b1_arr| {
             b1_arr.insert(0, Delta::new()).node_id().unwrap()
         }); // {r:{s1:{b1:[{}]}}
-        let b2_arr = node(&d, b1_el1, &mut NoReporter, |mut b1_el1| {
+        let b2_arr = node(&mut d, b1_el1, &mut NoReporter, |mut b1_el1| {
             b1_el1.insert_attr("b2", Delta::new()).node_id().unwrap()
         }); // {r:{s1:{b1:[{b2:[]}]}}
-        let b2_arr_nest = node(&d, b2_arr, &mut NoReporter, |mut b2_arr| {
+        let b2_arr_nest = node(&mut d, b2_arr, &mut NoReporter, |mut b2_arr| {
             b2_arr.insert(0, Delta::new()).node_id().unwrap()
         }); // {r:{s1:{b1:[{b2:[[]]}]}}
-        node(&d, b2_arr_nest.clone(), &mut NoReporter, |mut nest| {
+        node(&mut d, b2_arr_nest.clone(), &mut NoReporter, |mut nest| {
             nest.insert(0, 232291652)
         }); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
-        node(&d, b2_arr_nest.clone(), &mut NoReporter, |mut nest| {
+        node(&mut d, b2_arr_nest.clone(), &mut NoReporter, |mut nest| {
             nest.insert(1, -30)
         }); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
 
-        let mut mgr = UndoManager::with_options(Options::default());
-        node(&d, "r", &mut NoReporter, |mut n| mgr.expand_scope(&mut n));
+        let mut mgr = UndoManager::new();
+        node(&mut d, "r", &mut NoReporter, |n| mgr.expand_scope(&n));
 
-        node(&d, b2_arr_nest, &mut mgr, |mut nest| {
+        node(&mut d, b2_arr_nest, &mut mgr, |mut nest| {
             nest.remove(1, 1); // {r:{s1:{b1:[{b2:[[232291652]]}]}}
             nest.insert(1, -5); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
         });
         mgr.capture(());
 
         {
-            let mut guard = d.acquire_mut();
-            let mut txn = guard.transact_mut();
+            let mut txn = d.transact_mut();
 
             // {r:{s1:{b1:[{b2:[[232291652, -6]]},{b2:[[232291652, -5]]}]}}
             let b2_0_arr_nest = Delta::new().insert(232291652).insert(-6);
@@ -1927,108 +1921,74 @@ mod test {
             b2: None,
             f2: Some(s.into()),
         };
-        let r_json = || {
-            node(&d, "r", &mut NoReporter, |r| {
+        let r_json = |d: &mut Doc| {
+            node(d, "r", &mut NoReporter, |r| {
                 r.deserialize::<Root<S1>>().unwrap().s1.b1
             })
         };
 
-        assert_eq!(r_json(), [b2(-6), f2("C1")]);
+        assert_eq!(r_json(&mut d), [b2(-6), f2("C1")]);
 
-        mgr.undo(&mut NoReporter); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
-        assert_eq!(r_json(), [b2(-5)]);
+        undo(&mut mgr, &mut d); // {r:{s1:{b1:[{b2:[[232291652, -5]]}]}}
+        assert_eq!(r_json(&mut d), [b2(-5)]);
 
-        mgr.undo(&mut NoReporter); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
-        assert_eq!(r_json(), [b2(-30)]);
+        undo(&mut mgr, &mut d); // {r:{s1:{b1:[{b2:[[232291652, -30]]}]}}
+        assert_eq!(r_json(&mut d), [b2(-30)]);
     }
 
     #[test]
     fn multi_doc_undo() {
         let mut um = UndoManager::new();
-        let d1 = Cell::new(Doc::new());
-        let d2 = Cell::new(Doc::new());
-        node(&d1, "text", &mut NoReporter, |mut n| {
-            um.expand_scope(&mut n)
-        });
-        node(&d2, "text", &mut NoReporter, |mut n| {
-            um.expand_scope(&mut n)
-        });
+        let mut d1 = Doc::new();
+        let mut d2 = Doc::new();
+        node(&mut d1, "text", &mut NoReporter, |n| um.expand_scope(&n));
+        node(&mut d2, "text", &mut NoReporter, |n| um.expand_scope(&n));
 
-        node(&d1, "text", &mut um, |mut n| n.insert_text(0, "abc"));
-        node(&d2, "text", &mut um, |mut n| n.insert_text(0, "xyz"));
+        node(&mut d1, "text", &mut um, |mut n| n.insert_text(0, "abc"));
+        node(&mut d2, "text", &mut um, |mut n| n.insert_text(0, "xyz"));
 
         assert_eq!(um.undo_stack().len(), 2);
         assert!(um.can_undo(), "should be undoable (1)");
         assert!(!um.can_redo(), "should not be redoable (1)");
 
-        um.undo(&mut NoReporter);
+        undo(&mut um, &mut d2);
 
         assert!(um.can_undo(), "should be undoable (2)");
         assert!(um.can_redo(), "should be redoable (2)");
-        assert_eq!(
-            d1.acquire().transact().node("text").unwrap().to_string(),
-            "abc"
-        );
-        assert_eq!(
-            d2.acquire().transact().node("text").unwrap().to_string(),
-            ""
-        );
+        assert_eq!(d1.transact().node("text").unwrap().to_string(), "abc");
+        assert_eq!(d2.transact().node("text").unwrap().to_string(), "");
 
-        um.undo(&mut NoReporter);
+        undo(&mut um, &mut d1);
 
         assert!(!um.can_undo(), "should not be undoable (3)");
         assert!(um.can_redo(), "should be redoable (3)");
-        assert_eq!(
-            d1.acquire().transact().node("text").unwrap().to_string(),
-            ""
-        );
-        assert_eq!(
-            d2.acquire().transact().node("text").unwrap().to_string(),
-            ""
-        );
+        assert_eq!(d1.transact().node("text").unwrap().to_string(), "");
+        assert_eq!(d2.transact().node("text").unwrap().to_string(), "");
 
         // shouldn't have any effect
         assert!(
-            !um.undo(&mut NoReporter).is_some(),
+            !undo(&mut um, &mut d1).is_some(),
             "undo should have no effect"
         );
         assert!(!um.can_undo(), "should not be undoable (4)");
         assert!(um.can_redo(), "should be redoable (4)");
-        assert_eq!(
-            d1.acquire().transact().node("text").unwrap().to_string(),
-            ""
-        );
-        assert_eq!(
-            d2.acquire().transact().node("text").unwrap().to_string(),
-            ""
-        );
+        assert_eq!(d1.transact().node("text").unwrap().to_string(), "");
+        assert_eq!(d2.transact().node("text").unwrap().to_string(), "");
 
-        um.redo(&mut NoReporter);
+        redo(&mut um, &mut d1);
 
         assert!(um.can_undo(), "should be undoable (5)");
         assert!(um.can_redo(), "should be redoable (5)");
-        assert_eq!(
-            d1.acquire().transact().node("text").unwrap().to_string(),
-            "abc"
-        );
-        assert_eq!(
-            d2.acquire().transact().node("text").unwrap().to_string(),
-            ""
-        );
+        assert_eq!(d1.transact().node("text").unwrap().to_string(), "abc");
+        assert_eq!(d2.transact().node("text").unwrap().to_string(), "");
 
-        um.redo(&mut NoReporter);
+        redo(&mut um, &mut d2);
 
         assert_eq!(um.undo_stack().len(), 2);
         assert!(um.can_undo(), "should be undoable (6)");
         assert!(!um.can_redo(), "should not be redoable (6)");
-        assert_eq!(
-            d1.acquire().transact().node("text").unwrap().to_string(),
-            "abc"
-        );
-        assert_eq!(
-            d2.acquire().transact().node("text").unwrap().to_string(),
-            "xyz"
-        );
+        assert_eq!(d1.transact().node("text").unwrap().to_string(), "abc");
+        assert_eq!(d2.transact().node("text").unwrap().to_string(), "xyz");
     }
 
     #[test]
@@ -2036,113 +1996,272 @@ mod test {
         // #667, #676: clearing the redo stack un-keeps map "p" though "number", which the undo
         // stack still holds, stays kept. Collecting "p" after a remote removal freed its branch
         // and left "number" pointing into it, so encoding read freed memory.
-        let d1 = Cell::new(Doc::with_client_id(1));
-        let d2 = Cell::new(Doc::with_client_id(2));
-        let exchange = || {
-            let mut g1 = d1.acquire_mut();
-            let mut g2 = d2.acquire_mut();
-            exchange_updates(&mut [&mut *g1, &mut *g2]);
-        };
-        node(&d1, "styles", &mut NoReporter, |mut styles| {
+        let mut d1 = Doc::with_client_id(1);
+        let mut d2 = Doc::with_client_id(2);
+        let exchange = |d1: &mut Doc, d2: &mut Doc| exchange_updates(&mut [d1, d2]);
+        node(&mut d1, "styles", &mut NoReporter, |mut styles| {
             styles.insert_attr(
                 "p",
                 In::Node(Box::new(Delta::new().insert_attr("kind", "number"))),
             );
         });
-        exchange();
+        exchange(&mut d1, &mut d2);
         let number = ID::new(ClientID::new(1), 1);
 
         let mut mgr = UndoManager::new();
-        node(&d2, "styles", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
+        node(&mut d2, "styles", &mut NoReporter, |n| mgr.expand_scope(&n));
         {
-            let mut txn = d2.transact_owned_mut();
+            let mut txn = d2.transact_mut();
             let Some(Out::Node(p)) = txn.node("styles").unwrap().attr("p") else {
                 panic!("expected a nested map")
             };
             txn.node_mut(p.id).unwrap().insert_attr("kind", "bullet");
             txn.commit(&mut mgr);
         }
-        mgr.undo(&mut NoReporter);
+        undo(&mut mgr, &mut d2);
         mgr.capture(());
-        node(&d2, "styles", &mut mgr, |mut n| {
+        node(&mut d2, "styles", &mut mgr, |mut n| {
             n.insert_attr("q", In::Node(Box::new(Delta::new()))); // clears the redo stack
         });
 
-        node(&d1, "styles", &mut NoReporter, |mut n| {
+        node(&mut d1, "styles", &mut NoReporter, |mut n| {
             n.remove_attr("p");
         });
-        exchange();
+        exchange(&mut d1, &mut d2);
 
         // "number" went with its map, as in Yjs.
-        assert!(d2.acquire().blocks.get_item(&number).is_none());
-        d2.acquire()
-            .transact()
+        assert!(d2.blocks.get_item(&number).is_none());
+        d2.transact()
             .encode_state_as_update_v1(&StateVector::default());
-        while mgr.undo(&mut NoReporter).is_some() {}
-        exchange();
+        while undo(&mut mgr, &mut d2).is_some() {}
+        exchange(&mut d1, &mut d2);
         assert_eq!(
-            d1.acquire().transact().node("styles").unwrap().to_json(),
-            d2.acquire().transact().node("styles").unwrap().to_json()
+            d1.transact().node("styles").unwrap().to_json(),
+            d2.transact().node("styles").unwrap().to_json()
         );
     }
-
-    // no Reporter equivalent: UndoManager no longer observes Doc::destroy
-    // #[test]
-    // fn multi_doc_after_destroy() {
-    //     let mut um = UndoManager::new();
-    //     let d1 = Cell::new(Doc::new());
-    //     let d2 = Cell::new(Doc::new());
-    //     node(&d1, "text", &mut NoReporter, |mut n| um.expand_scope(&mut n));
-    //     node(&d2, "text", &mut NoReporter, |mut n| um.expand_scope(&mut n));
-    //     node(&d1, "text", &mut NoReporter, |mut n| um.expand_scope(&mut n)); // doing this twice for test-coverage
-    //
-    //     node(&d1, "text", &mut um, |mut n| n.insert_text(0, "a"));
-    //     node(&d2, "text", &mut um, |mut n| n.insert_text(0, "b"));
-    //
-    //     assert_eq!(
-    //         d1.acquire().transact().node("text").unwrap().to_string(),
-    //         "a"
-    //     );
-    //     let d2_guid = d2.acquire().guid().clone();
-    //     d2.acquire_mut().destroy(None);
-    //     assert!(um.docs().all(|d| *d.acquire().guid() != d2_guid));
-    //
-    //     um.undo(&mut NoReporter);
-    //     assert_eq!(
-    //         d1.acquire().transact().node("text").unwrap().to_string(),
-    //         ""
-    //     );
-    // }
 
     #[test]
     fn sticky_index_inside_redone_text_keeps_its_offset() {
         use crate::Assoc;
 
-        let doc = Cell::new(Doc::with_client_id(1));
+        let mut doc = Doc::with_client_id(1);
         let mut mgr = UndoManager::new();
-        node(&doc, "test", &mut NoReporter, |mut n| {
-            mgr.expand_scope(&mut n)
-        });
-        node(&doc, "test", &mut mgr, |mut n| {
+        node(&mut doc, "test", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, "test", &mut mgr, |mut n| {
             n.insert_text(0, "hello world")
         });
         let pos = doc
-            .acquire()
             .transact()
             .node("test")
             .unwrap()
             .sticky_index(5, Assoc::After)
             .unwrap();
-        let text = || doc.acquire().transact().node("test").unwrap().to_string();
+        let text = |doc: &Doc| doc.transact().node("test").unwrap().to_string();
 
-        mgr.undo(&mut NoReporter);
-        assert_eq!(text(), "");
-        mgr.redo(&mut NoReporter);
-        assert_eq!(text(), "hello world");
+        undo(&mut mgr, &mut doc);
+        assert_eq!(text(&doc), "");
+        redo(&mut mgr, &mut doc);
+        assert_eq!(text(&doc), "hello world");
 
-        let offset = pos.get_offset(&doc.acquire().transact()).unwrap();
+        let offset = pos.get_offset(&doc.transact()).unwrap();
         assert_eq!(offset.index, 5, "Yjs resolves the same position to 5");
+    }
+
+    fn text(doc: &Doc, name: &str) -> String {
+        doc.transact().node(name).unwrap().to_string()
+    }
+
+    /// Deletion tracked explicitly and committed without the manager can be undone.
+    #[test]
+    fn track_without_committing_with_manager() {
+        let mut doc = Doc::new();
+        node(&mut doc, "text", &mut NoReporter, |mut n| {
+            n.insert_text(0, "abc")
+        });
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        {
+            let mut txn = doc.transact_mut();
+            txn.node_mut("text").unwrap().remove(0, 3);
+            mgr.track(&txn);
+            txn.commit(&mut NoReporter);
+        }
+        assert!(undo(&mut mgr, &mut doc).is_some());
+        assert_eq!(text(&doc, "text"), "abc");
+    }
+
+    /// Tracking a transaction and then committing it with the manager pushes a single change.
+    #[test]
+    fn track_then_commit_with_manager() {
+        let mut doc = Doc::new();
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        let mut txn = doc.transact_mut();
+        txn.node_mut("text").unwrap().insert_text(0, "abc");
+        mgr.track(&txn);
+        let expected = txn.insert_set().clone();
+        txn.commit(&mut mgr);
+        assert_eq!(mgr.undo_stack().len(), 1);
+        assert_eq!(mgr.undo_stack()[0].insertions(), &expected);
+    }
+
+    /// Undo/redo transactions committed with the manager are not tracked.
+    #[test]
+    fn undo_committed_with_manager() {
+        let mut doc = Doc::new();
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, "text", &mut mgr, |mut n| n.insert_text(0, "abc"));
+        {
+            let mut txn = doc.transact_mut();
+            mgr.undo(&mut txn).unwrap().unwrap();
+            txn.commit(&mut mgr);
+            assert_eq!((mgr.undo_stack().len(), mgr.redo_stack().len()), (0, 1));
+            let mut txn = doc.transact_mut();
+            mgr.redo(&mut txn).unwrap().unwrap();
+            txn.commit(&mut mgr);
+            assert_eq!((mgr.undo_stack().len(), mgr.redo_stack().len()), (1, 0));
+        }
+        assert_eq!(text(&doc, "text"), "abc");
+    }
+
+    /// Undo over another document than the last stack item fails and keeps the item.
+    #[test]
+    fn undo_doc_mismatch() {
+        let (mut d1, mut d2) = (Doc::new(), Doc::new());
+        let mut mgr = UndoManager::new();
+        node(&mut d1, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d1, "text", &mut mgr, |mut n| n.insert_text(0, "abc"));
+        let mut txn = d2.transact_mut();
+        let expected = d1.guid().clone();
+        let actual = txn.doc().guid().clone();
+        let err = mgr.undo(&mut txn).unwrap_err();
+        assert_eq!(err, UndoError::DocMismatch { expected, actual });
+        assert_eq!(mgr.undo_stack().len(), 1);
+    }
+
+    /// Undo within a transaction which already has changes fails.
+    #[test]
+    fn undo_dirty_transaction() {
+        let mut doc = Doc::new();
+        let mut mgr = UndoManager::new();
+        node(&mut doc, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, "text", &mut mgr, |mut n| n.insert_text(0, "abc"));
+        let mut txn = doc.transact_mut();
+        txn.node_mut("text").unwrap().insert_text(0, "x");
+        assert_eq!(mgr.undo(&mut txn).unwrap_err(), UndoError::DirtyTransaction);
+    }
+
+    /// Whole-document scope tracks changes of every root, but not transactions without changes.
+    #[test]
+    fn doc_scope() {
+        let mut doc = Doc::new();
+        let mut mgr = UndoManager::new();
+        mgr.expand_scope(&doc);
+        node(&mut doc, "a", &mut NoReporter, |n| mgr.expand_scope(&n)); // no-op for whole doc
+        assert_eq!(mgr.scope(doc.guid()), Some(&Scope::Doc));
+        {
+            let mut txn = doc.transact_mut();
+            txn.node_mut("a").unwrap().insert_text(0, "a");
+            txn.node_mut("b").unwrap().insert_text(0, "b");
+            txn.commit(&mut mgr);
+            mgr.capture(());
+            doc.transact_mut().commit(&mut mgr);
+        }
+        assert_eq!(mgr.undo_stack().len(), 1);
+        undo(&mut mgr, &mut doc);
+        assert_eq!((text(&doc, "a"), text(&doc, "b")), ("".into(), "".into()));
+    }
+
+    /// Stacks interleave items of many docs, while clearing only affects the given doc.
+    #[test]
+    fn multi_doc_clear() {
+        let (mut d1, mut d2) = (Doc::new(), Doc::new());
+        let mut mgr = UndoManager::new();
+        node(&mut d1, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d2, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        let mut docs: Vec<_> = mgr.tracked_docs().cloned().collect();
+        docs.sort();
+        let mut expected = vec![d1.guid().clone(), d2.guid().clone()];
+        expected.sort();
+        assert_eq!(docs, expected);
+        node(&mut d1, "text", &mut mgr, |mut n| n.insert_text(0, "a"));
+        node(&mut d2, "text", &mut mgr, |mut n| n.insert_text(0, "b"));
+        node(&mut d1, "text", &mut mgr, |mut n| n.insert_text(1, "c"));
+        assert_eq!(mgr.undo_stack().len(), 3);
+        assert!(mgr.clear_undo(&mut d1.transact_mut()));
+        assert!(!mgr.clear_all(&mut d1.transact_mut()));
+        assert_eq!(mgr.undo_stack().len(), 1);
+        assert_eq!(mgr.undo_stack()[0].doc(), d2.guid());
+        undo(&mut mgr, &mut d2);
+        assert_eq!(
+            (text(&d1, "text"), text(&d2, "text")),
+            ("ac".into(), "".into())
+        );
+    }
+
+    /// Dropping a tracked document doesn't affect tracking and undoing changes of another one.
+    #[test]
+    fn drop_tracked_doc() {
+        let (mut d1, mut d2) = (Doc::new(), Doc::new());
+        let mut mgr = UndoManager::new();
+        node(&mut d1, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d2, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d2, "text", &mut mgr, |mut n| n.insert_text(0, "b"));
+        node(&mut d1, "text", &mut mgr, |mut n| n.insert_text(0, "a"));
+        drop(d2);
+        mgr.capture(());
+        node(&mut d1, "text", &mut mgr, |mut n| n.insert_text(1, "c"));
+        undo(&mut mgr, &mut d1);
+        assert_eq!(text(&d1, "text"), "a");
+        undo(&mut mgr, &mut d1);
+        assert_eq!(text(&d1, "text"), "");
+    }
+
+    /// Items of a dropped document on top of the stack can be removed to unblock undo.
+    #[test]
+    fn remove_dropped_doc_items() {
+        let (mut d1, mut d2) = (Doc::new(), Doc::new());
+        let mut mgr = UndoManager::new();
+        node(&mut d1, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d2, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut d1, "text", &mut mgr, |mut n| n.insert_text(0, "a"));
+        node(&mut d2, "text", &mut mgr, |mut n| n.insert_text(0, "b"));
+        let guid = d2.guid().clone();
+        drop(d2);
+        mgr.undo_stack_mut().retain(|item| item.doc() != &guid);
+        assert!(undo(&mut mgr, &mut d1).is_some());
+        assert_eq!(text(&d1, "text"), "");
+    }
+
+    /// Garbage collected node in scope doesn't affect tracking and undoing other nodes.
+    #[test]
+    fn collected_node_in_scope() {
+        let mut doc = Doc::new();
+        let map = node(&mut doc, "root", &mut NoReporter, |mut n| {
+            n.insert_attr("map", Delta::new()).node_id().unwrap()
+        });
+        let mut mgr = UndoManager::new();
+        node(&mut doc, map, &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, "text", &mut NoReporter, |n| mgr.expand_scope(&n));
+        node(&mut doc, "root", &mut NoReporter, |mut n| {
+            n.remove_attr("map")
+        });
+        node(&mut doc, "text", &mut mgr, |mut n| n.insert_text(0, "abc"));
+        undo(&mut mgr, &mut doc);
+        assert_eq!(text(&doc, "text"), "");
+    }
+
+    /// Stack items of different documents can't be merged.
+    #[test]
+    fn stack_item_merge_foreign_doc() {
+        let mut a = StackItem::<()>::new("a".into(), IdSet::new(), IdSet::new());
+        let b = StackItem::new("b".into(), IdSet::new(), IdSet::new());
+        let expected = UndoError::DocMismatch {
+            expected: "a".into(),
+            actual: "b".into(),
+        };
+        assert_eq!(a.merge(b, |_, _| {}), Err(expected));
     }
 }
